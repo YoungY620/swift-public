@@ -21,7 +21,7 @@
     "remaining_cash": 55,
     "cold_start": false,
     "new_position_limit": 2,
-    "diversification_summary": "The new candidate adds a distinct causal driver without increasing the existing position."
+    "diversification_summary": "新增候选具有独立的因果驱动因素，且没有增加现有持仓的集中度。"
   },
   "current_positions": [
     {
@@ -36,7 +36,7 @@
       "model": {
         "probability": 0.65,
         "model_value": 0.65,
-        "conclusion": "The researched conditions favor final settlement at Yes."
+        "conclusion": "现有证据支持该市场最终结算为 YES。"
       },
       "evidence": [
         {
@@ -46,10 +46,10 @@
           "url": "https://example.test/statistics",
           "published_at": "2026-07-18T10:00:00Z",
           "retrieved_at": "2026-07-19T00:10:00Z",
-          "summary": "The primary series rose in the latest release.",
-          "conclusion": "The release raises the adoption factor.",
+          "summary": "最新一期官方数据中的主要指标有所上升。",
+          "conclusion": "该数据提高了政策采纳因子的估计概率。",
           "factor_id": "policy-adoption",
-          "credibility": "Primary official release with a documented method.",
+          "credibility": "这是附有明确统计方法的官方一手数据。",
           "new_since_previous": true,
           "impact": {
             "affected_factor": "policy-adoption",
@@ -60,7 +60,7 @@
       ],
       "signal": {
         "action": "HOLD",
-        "rationale": "The model remains above price, but the current position already exceeds its half-Kelly target."
+        "rationale": "模型价值仍高于价格，但当前持仓已经超过半 Kelly 目标，因此继续持有。"
       },
       "opportunity": {
         "entry_eligible": true,
@@ -68,7 +68,7 @@
         "model_value": 0.65,
         "executable_price": 0.51,
         "net_edge": 0.14,
-        "reason": "A standalone entry edge exists, but no ADD is required at the current target."
+        "reason": "市场仍存在独立入场优势，但当前目标仓位不需要继续加仓。"
       },
       "allocation": {
         "priority": null,
@@ -79,7 +79,7 @@
         "cash_before": 80,
         "allocated_cash": 0,
         "cash_after": 80,
-        "reason": "No incremental allocation for the existing position."
+        "reason": "现有持仓不分配新增资金。"
       },
       "comparison": {
         "previous_report_id": "sample-previous",
@@ -101,7 +101,7 @@
       "model": {
         "probability": 0.7,
         "model_value": 0.7,
-        "conclusion": "The evidence supports a value above the executable ask."
+        "conclusion": "证据支持模型价值高于当前可执行卖价。"
       },
       "evidence": [
         {
@@ -111,15 +111,15 @@
           "url": "https://example.test/study",
           "published_at": "2025-01-01",
           "retrieved_at": "2026-07-19T00:12:00Z",
-          "summary": "The study estimates the relevant historical base rate.",
-          "conclusion": "The base rate supports the main scenario weight.",
+          "summary": "该研究估算了相关事件的历史基础发生率。",
+          "conclusion": "这一基础发生率支持主要情景的权重。",
           "factor_id": "historical-base-rate",
-          "credibility": "Public peer-reviewed work using a comparable population."
+          "credibility": "这是采用可比样本、经过同行评审的公开研究。"
         }
       ],
       "signal": {
         "action": "BUY",
-        "rationale": "Executable edge survives fees, slippage, reserve, and half-Kelly sizing."
+        "rationale": "计入手续费、滑点、储备资金和半 Kelly 仓位后，仍保留可执行优势。"
       },
       "opportunity": {
         "entry_eligible": true,
@@ -127,7 +127,7 @@
         "model_value": 0.7,
         "executable_price": 0.55,
         "net_edge": 0.15,
-        "reason": "The minimum executable order retains more than 70% of raw edge."
+        "reason": "最小可执行订单保留了超过 70% 的原始优势。"
       },
       "allocation": {
         "priority": 1,
@@ -138,7 +138,7 @@
         "cash_before": 80,
         "allocated_cash": 25,
         "cash_after": 55,
-        "reason": "Allocated from real deployable cash."
+        "reason": "从真实可部署现金中进行分配。"
       }
     }
   ],
@@ -149,7 +149,7 @@
       "market_question": "Will the sample event resolve Yes?",
       "outcome": "YES",
       "recommended_cash": 0,
-      "rationale": "The current position remains below its sell crossing and needs no incremental allocation."
+      "rationale": "当前持仓尚未出现卖出交叉，也不需要新增资金，因此继续持有。"
     },
     {
       "action": "BUY",
@@ -157,8 +157,8 @@
       "market_question": "Will another sample event resolve Yes?",
       "outcome": "YES",
       "recommended_cash": 25,
-      "rationale": "The candidate passes the executable-edge and relative-quality rules."
+      "rationale": "该候选通过了可执行优势和相对质量规则，可以买入。"
     }
   ],
-  "summary": "Continue holding the existing position and consider one new evidence-backed purchase."
+  "summary": "继续持有现有仓位，并根据证据支持买入一个新的候选市场。"
 }

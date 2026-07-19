@@ -11,7 +11,9 @@ The limit applies to new research, not to re-evaluating current holdings. It lim
 
 ## Preferred domains
 
-Cover politics, economics, culture, and markets. Prefer questions where systematic public-information retrieval, slow-moving developments, causal analysis, empirical research, or exact reading of resolution criteria gives an Agent a plausible advantage.
+Prioritize politics and economics. Consider culture and markets only as secondary domains. Prefer questions where systematic public-information retrieval, slow-moving developments, causal analysis, empirical research, or exact reading of resolution criteria gives an Agent a plausible advantage.
+
+Exclude sports and esports from new-candidate research, including matches, tournaments, athlete performance, team results, roster moves, transfers, and future-team markets. These outcomes contain substantial irreducible randomness and offer less durable information-retrieval or causal-reasoning advantage for an Agent. Continue to fully re-research an already-held sports position until it is sold or settled; the exclusion applies to new discovery, not portfolio oversight.
 
 Do not assume that a popular or liquid market is inefficient. Liquidity and volume improve price responsiveness and exit execution; the model-price comparison must independently demonstrate the edge.
 

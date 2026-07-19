@@ -21,12 +21,21 @@
     "candidate_research_soft_limit": 10,
     "cold_start_new_positions_min": 1,
     "cold_start_new_positions_max": 2,
-    "themes": [
+    "primary_themes": [
       "politics",
-      "economics",
+      "economics"
+    ],
+    "secondary_themes": [
       "culture",
       "markets"
+    ],
+    "excluded_themes": [
+      "sports",
+      "esports"
     ]
+  },
+  "report": {
+    "language": "zh-CN"
   },
   "portfolio": {
     "require_canonical_account_snapshot": true,

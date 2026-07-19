@@ -21,6 +21,8 @@ Estimate final settlement probabilities more accurately than the market, compare
 - Use only the observed account snapshot for cash, holdings, and bankroll. Never invent a nominal or reference bankroll.
 - Distinguish a market entry opportunity from an executable account action. An unfunded opportunity may remain research-worthy but cannot produce a nonzero account BUY or ADD.
 - Keep market-correlation analysis qualitative. Do not create risk-cluster fields, graphs, identifiers, or persistent state, and do not change a market's probability tree merely to represent portfolio correlation.
+- Prioritize political and economic candidates. Treat culture and markets as secondary domains, and exclude sports and esports markets from new-candidate research.
+- Write the final private report and operation guidance in Simplified Chinese. Preserve machine keys, enums, URLs, proper names, and exact source text when necessary.
 
 ## Run a full scan
 
@@ -33,7 +35,7 @@ Estimate final settlement probabilities more accurately than the market, compare
 7. Reassess the researched opportunities as one portfolio. Apply the second semantic-diversification pass in [portfolio-management.md](references/portfolio-management.md), remove or demote redundant risks, and rank the retained BUY and ADD opportunities.
 8. Submit the entire retained opportunity set to one shared `scripts/portfolio_allocate.py` call with the canonical cash, holdings value, reserve references, cold-start state, and final ranking. Never call it independently per market. Use its allocations as the only tentative BUY and ADD amounts.
 9. Review the tentative portfolio after allocation. Confirm total funding, protected reserve, cold-start count, liquidity, concentration, shared-loss scenarios, and idle cash. If the review fails, revise eligibility, order, or portfolio caps and rerun the one shared allocation; discard the rejected output. Use only the final accepted allocation in the report.
-10. Build `report.json`, validate cross-field portfolio consistency, render `report.md`, and archive both with `scripts/report_tool.py`. Read [report-format.md](references/report-format.md) first.
+10. Build `report.json`, validate cross-field portfolio consistency and required Chinese narrative fields, render the Simplified-Chinese `report.md`, and archive both with `scripts/report_tool.py`. Read [report-format.md](references/report-format.md) first.
 
 When holdings or candidates are numerous, parallelize independent market research if sub-agents are available. Give each worker the exact market, settlement criteria, and required output fields; independently verify its citations and calculations before merging.
 

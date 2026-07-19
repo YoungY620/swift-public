@@ -22,8 +22,17 @@ class ReportToolTests(unittest.TestCase):
         report = report_tool.read_report(FIXTURES / "report.json")
         markdown = report_tool.render_report(report)
         self.assertIn("## 行动", markdown)
+        self.assertIn("买入（BUY）", markdown)
+        self.assertIn("持有（HOLD）", markdown)
+        self.assertIn("是（YES）", markdown)
         self.assertIn("Example Statistics Office", markdown)
         self.assertIn("新增证据影响", markdown)
+
+    def test_v2_report_rejects_non_chinese_narrative(self) -> None:
+        report = json.loads((FIXTURES / "report.json").read_text())
+        report["summary"] = "Hold one position and buy one candidate."
+        with self.assertRaisesRegex(report_tool.ReportError, "Simplified-Chinese"):
+            report_tool.validate_report(report)
 
     def test_current_position_requires_previous_comparison_field(self) -> None:
         report = json.loads((FIXTURES / "report.json").read_text())
@@ -45,7 +54,7 @@ class ReportToolTests(unittest.TestCase):
 
     def test_rejects_nominal_funded_action(self) -> None:
         report = json.loads((FIXTURES / "report.json").read_text())
-        report["actions"][1]["rationale"] = "Theoretical cash from a reference bankroll."
+        report["actions"][1]["rationale"] = "理论金额来自 reference bankroll。"
         with self.assertRaisesRegex(report_tool.ReportError, "nominal or theoretical"):
             report_tool.validate_report(report)
 

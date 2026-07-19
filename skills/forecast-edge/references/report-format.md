@@ -26,6 +26,12 @@ Treat `report.json` as canonical. Validate it against the required contract, the
 
 The JSON Schema is [report.schema.json](report.schema.json). The script also performs dependency-free semantic validation, including evidence and action checks.
 
+## Output language
+
+Write the final `report.md` and all private operation guidance in Simplified Chinese. For schema version `2.0`, the validator requires Chinese narrative content in the portfolio summary, report summary, model conclusions, signal rationales, action rationales, and evidence summaries, conclusions, and credibility assessments.
+
+Keep JSON keys, signal enums, outcome enums, IDs, URLs, exact market questions, source names, publication titles, and necessary verbatim quotations in their original form. Explain any retained foreign-language material in Chinese. Render signal and outcome enums with Chinese labels while preserving their machine values, such as `买入（BUY）` and `否（NO）`.
+
 ## Required run sections
 
 - Run identity, timestamps, account input, resolved address, data cutoff, and previous report IDs.
@@ -34,7 +40,7 @@ The JSON Schema is [report.schema.json](report.schema.json). The script also per
 - Every current position with complete new research.
 - Fully researched new candidates, including rejected and held candidates when useful for the opportunity baseline.
 - A consolidated list of `BUY`, `ADD`, `HOLD`, and `SELL` actions.
-- A concise portfolio-level summary.
+- A concise Simplified-Chinese portfolio-level summary.
 
 ## Market research fields
 
@@ -80,4 +86,4 @@ Use report schema version `2.0` for new runs. Keep older reports readable as his
 - Cold-start funded BUY count does not exceed the configured limit.
 - Market opportunities without funding remain distinct from account actions.
 
-Reject inconsistent reports. Do not archive them with explanatory labels such as “theoretical” or “nominal.” Include a concise private natural-language portfolio-diversification conclusion, but no formal risk-cluster structure.
+Reject inconsistent or non-Chinese narrative reports. Do not archive them with explanatory labels such as “theoretical” or “nominal.” Include a concise private Simplified-Chinese portfolio-diversification conclusion, but no formal risk-cluster structure.

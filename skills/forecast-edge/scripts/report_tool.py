@@ -14,6 +14,9 @@ from typing import Any
 
 
 SIGNALS = {"BUY", "ADD", "HOLD", "SELL"}
+SIGNAL_LABELS = {"BUY": "买入", "ADD": "加仓", "HOLD": "持有", "SELL": "卖出"}
+OUTCOME_LABELS = {"YES": "是", "NO": "否"}
+CHINESE_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 EVIDENCE_FIELDS = {
     "source_name",
     "source_type",
@@ -30,6 +33,11 @@ EVIDENCE_FIELDS = {
 
 class ReportError(ValueError):
     """Raised when a report violates the forecast-edge report contract."""
+
+
+def require_chinese_text(value: Any, path: str) -> None:
+    if not isinstance(value, str) or not CHINESE_RE.search(value):
+        raise ReportError(f"{path} must contain Simplified-Chinese narrative text")
 
 
 def finite_number(value: Any, path: str, *, minimum: float = 0.0) -> float:
@@ -102,6 +110,11 @@ def validate_analysis(raw: Any, path: str, *, current_position: bool, schema_ver
     if current_position and "comparison" not in analysis:
         raise ReportError(f"{path}.comparison is required for current positions; use null on the first run")
     if schema_version == "2.0":
+        require_chinese_text(model["conclusion"], f"{path}.model.conclusion")
+        require_chinese_text(signal["rationale"], f"{path}.signal.rationale")
+        for index, evidence in enumerate(analysis["evidence"]):
+            for field in ("summary", "conclusion", "credibility"):
+                require_chinese_text(evidence[field], f"{path}.evidence[{index}].{field}")
         require_fields(analysis, {"opportunity", "allocation"}, path)
         opportunity = require_object(analysis["opportunity"], f"{path}.opportunity")
         require_fields(
@@ -226,6 +239,9 @@ def validate_report(report: Any) -> dict[str, Any]:
     if not isinstance(root["summary"], str) or not root["summary"].strip():
         raise ReportError("report.summary must be a non-empty string")
     if schema_version == "2.0":
+        require_chinese_text(root["summary"], "report.summary")
+        for index, action in enumerate(actions):
+            require_chinese_text(action["rationale"], f"report.actions[{index}].rationale")
         validate_portfolio_consistency(root)
     return root
 
@@ -258,6 +274,9 @@ def validate_portfolio_consistency(root: dict[str, Any]) -> None:
         "diversification_summary"
     ].strip():
         raise ReportError("report.portfolio.diversification_summary must be non-empty")
+    require_chinese_text(
+        portfolio["diversification_summary"], "report.portfolio.diversification_summary"
+    )
 
     current_market_ids = {str(analysis["market"]["id"]) for analysis in root["current_positions"]}
     candidate_market_ids = {str(analysis["market"]["id"]) for analysis in root["candidates"]}
@@ -358,6 +377,31 @@ def markdown_escape(value: Any) -> str:
     return str(value if value is not None else "—").replace("|", "\\|").replace("\n", " ")
 
 
+def localized_enum(value: Any, labels: dict[str, str]) -> str:
+    machine_value = str(value)
+    label = labels.get(machine_value)
+    return f"{label}（{machine_value}）" if label else machine_value
+
+
+def render_comparison(comparison: Any) -> str:
+    if comparison is None:
+        return "首次研究，无上一轮报告"
+    if not isinstance(comparison, dict):
+        return markdown_escape(comparison)
+    labels = {
+        "previous_report_id": "上一轮报告",
+        "probability_change": "概率变化",
+        "price_change": "价格变化",
+        "action_change": "操作变化",
+        "reason": "变化原因",
+    }
+    parts = [
+        f"{labels.get(key, key)}：{markdown_escape(value)}"
+        for key, value in comparison.items()
+    ]
+    return "；".join(parts) if parts else "无可比字段"
+
+
 def render_evidence(items: list[dict[str, Any]], *, current_position: bool) -> list[str]:
     lines = [
         "| 来源 | 发布时间 | 摘要 | 结论 | 概率因子 | 可信度 |" + (" 新证据 |" if current_position else ""),
@@ -391,17 +435,16 @@ def render_analysis(item: dict[str, Any], *, current_position: bool) -> list[str
     model = item["model"]
     signal = item["signal"]
     lines = [
-        f"### [{market['question']}]({market['url']}) — {signal['action']}",
+        f"### [{market['question']}]({market['url']}) — {localized_enum(signal['action'], SIGNAL_LABELS)}",
         "",
-        f"- 市场：`{market['id']}`；研究方向：{market['outcome']}",
-        f"- 最终结算概率：{model['probability']}; 模型价值：{model['model_value']}",
+        f"- 市场：`{market['id']}`；研究方向：{localized_enum(market['outcome'], OUTCOME_LABELS)}",
+        f"- 最终结算概率：{model['probability']}；模型价值：{model['model_value']}",
         f"- 结论：{model['conclusion']}",
         f"- 行动理由：{signal['rationale']}",
-        f"- 结算标准：{market['resolution_criteria']}",
+        f"- 结算标准（原文）：{market['resolution_criteria']}",
     ]
     if current_position:
-        comparison = item.get("comparison")
-        lines.append(f"- 上轮对比：{comparison if comparison is not None else '首次研究，无上一轮报告'}")
+        lines.append(f"- 上轮对比：{render_comparison(item.get('comparison'))}")
     lines.extend(["", "#### 关键证据", ""])
     lines.extend(render_evidence(item["evidence"], current_position=current_position))
     return lines
@@ -448,9 +491,9 @@ def render_report(report: dict[str, Any]) -> str:
             "| "
             + " | ".join(
                 [
-                    markdown_escape(action["action"]),
+                    markdown_escape(localized_enum(action["action"], SIGNAL_LABELS)),
                     markdown_escape(action["market_question"]),
-                    markdown_escape(action["outcome"]),
+                    markdown_escape(localized_enum(action["outcome"], OUTCOME_LABELS)),
                     markdown_escape(action["recommended_cash"]),
                     markdown_escape(action["rationale"]),
                 ]
