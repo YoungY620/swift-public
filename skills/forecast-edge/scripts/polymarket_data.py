@@ -356,6 +356,14 @@ def build_parser() -> argparse.ArgumentParser:
     balance.add_argument("--token-address", default=DEFAULT_COLLATERAL)
     balance.add_argument("--decimals", type=int, default=6)
 
+    account = subparsers.add_parser(
+        "account", help="Fetch one canonical account snapshot for portfolio sizing"
+    )
+    account.add_argument("account")
+    account.add_argument("--page-size", type=int, default=500)
+    account.add_argument("--token-address", default=DEFAULT_COLLATERAL)
+    account.add_argument("--decimals", type=int, default=6)
+
     market = subparsers.add_parser("market", help="Fetch one market by numeric id or slug")
     market.add_argument("identifier")
     market.add_argument("--raw", action="store_true")
@@ -391,6 +399,37 @@ def main(argv: list[str] | None = None) -> int:
             result = fetch_collateral_balance(
                 account["address"], client, args.rpc_url, args.token_address, args.decimals
             )
+        elif args.command == "account":
+            resolved = resolve_account(args.account, client, args.site_base)
+            profile = client.get_json(
+                join_url(args.gamma_base, "/public-profile", {"address": resolved["address"]})
+            )
+            positions = fetch_positions(resolved["address"], client, args.data_base, args.page_size)
+            collateral = fetch_collateral_balance(
+                resolved["address"], client, args.rpc_url, args.token_address, args.decimals
+            )
+            mismatched = sorted(
+                {
+                    str(item.get("proxyWallet", "")).lower()
+                    for item in positions
+                    if item.get("proxyWallet")
+                    and str(item.get("proxyWallet")).lower() != resolved["address"].lower()
+                }
+            )
+            if mismatched:
+                raise DataError("positions response contained a proxy wallet different from the resolved account")
+            result = {
+                "account": resolved,
+                "profile": profile,
+                "positions": {"count": len(positions), "positions": positions},
+                "collateral": collateral,
+                "sizing_inputs": {
+                    "available_cash": collateral["balance"],
+                    "balance_source": "public_onchain_collateral",
+                    "holdings_liquidation_value": None,
+                    "note": "Compute holdings liquidation value from complete bid VWAP after fees before allocation.",
+                },
+            }
         elif args.command == "market":
             path = f"/markets/{args.identifier}" if args.identifier.isdigit() else f"/markets/slug/{urllib.parse.quote(args.identifier)}"
             raw = client.get_json(join_url(args.gamma_base, path))

@@ -27,5 +27,11 @@
       "culture",
       "markets"
     ]
+  },
+  "portfolio": {
+    "require_canonical_account_snapshot": true,
+    "allow_nominal_bankroll": false,
+    "semantic_correlation": "qualitative",
+    "post_allocation_review": true
   }
 }

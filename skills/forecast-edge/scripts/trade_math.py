@@ -179,6 +179,24 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
     normal_cash_budget = available_cash if use_reserve else max(0.0, available_cash - reserve_cash)
 
     capacity = retention_capacity(asks, model_value, fee_rate, minimum_retention)
+    probe_shares = min_order_shares if min_order_shares > 0 else 1.0
+    probe_fill = walk_levels(asks, probe_shares, fee_rate, sell=False)
+    probe_actual_edge = (
+        model_value - probe_fill["all_in_unit"]
+        if probe_fill["fully_filled"] and probe_fill["all_in_unit"] is not None
+        else None
+    )
+    probe_retention = (
+        probe_actual_edge / capacity["raw_edge"]
+        if probe_actual_edge is not None and capacity["raw_edge"] not in (None, 0)
+        else None
+    )
+    entry_eligible = bool(
+        probe_actual_edge is not None
+        and probe_actual_edge > 0
+        and probe_retention is not None
+        and probe_retention + 1e-9 >= minimum_retention
+    )
     if asks:
         best_all_in_cost = asks[0]["price"] + fee_per_share(asks[0]["price"], fee_rate)
         if best_all_in_cost < 1.0:
@@ -238,6 +256,14 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
         "side": side,
         "model_probability": model_probability,
         "model_value": model_value,
+        "opportunity": {
+            "entry_eligible": entry_eligible,
+            "probe_shares": probe_shares,
+            "executable_all_in_price": probe_fill["all_in_unit"],
+            "actual_edge": probe_actual_edge,
+            "edge_retention": probe_retention,
+            "fill": probe_fill,
+        },
         "buy": {
             "cross": buy_cross,
             "best_all_in_cost": best_all_in_cost,

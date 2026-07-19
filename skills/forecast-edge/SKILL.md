@@ -1,6 +1,6 @@
 ---
 name: forecast-edge
-description: Research and size long-horizon prediction-market edges with public data, recursive Bayesian point estimates, executable order books, fees, half-Kelly sizing, and immutable reports. Use for scheduled or manual Polymarket portfolio scans, full re-evaluation of current positions, discovery and analysis of new political, economic, cultural, or market candidates, and BUY, ADD, HOLD, or SELL recommendations without placing orders.
+description: Research and allocate long-horizon prediction-market edges with public account data, recursive Bayesian point estimates, executable order books, fees, portfolio-aware selection, semantic diversification review, half-Kelly sizing, and immutable reports. Use for scheduled or manual Polymarket portfolio scans, full re-evaluation of current positions, discovery and analysis of new political, economic, cultural, or market candidates, and BUY, ADD, HOLD, or SELL recommendations without placing orders.
 ---
 
 # Forecast Edge
@@ -18,19 +18,22 @@ Estimate final settlement probabilities more accurately than the market, compare
 - Emit only `BUY`, `ADD`, `HOLD`, or `SELL` as the final action for a researched market.
 - Allow cash to remain idle. Never add a weak candidate merely to reach a position count or deployment target.
 - Never modify an archived report.
+- Use only the observed account snapshot for cash, holdings, and bankroll. Never invent a nominal or reference bankroll.
+- Distinguish a market entry opportunity from an executable account action. An unfunded opportunity may remain research-worthy but cannot produce a nonzero account BUY or ADD.
 - Keep market-correlation analysis qualitative. Do not create risk-cluster fields, graphs, identifiers, or persistent state, and do not change a market's probability tree merely to represent portfolio correlation.
 
 ## Run a full scan
 
-1. Establish the account input and output directory.
-2. Read the latest two archived reports with `scripts/report_tool.py previous`. Use them only for evidence comparison, recent opportunity quality, and reference-position sizing.
-3. Resolve the public Polymarket profile, read public collateral balance and every current position, and save the source responses as run snapshots. Read [polymarket-data.md](references/polymarket-data.md) before fetching.
-4. Reconstruct every current market's exact settlement criteria. Research it from scratch, then compare the completed result with the latest report.
-5. Discover new markets after excluding current holdings. Screen in order until the research round is full; treat approximately ten fully researched new markets as a soft operational limit, not a hard cap.
-6. For every current position and retained candidate, build and repeatedly revise a recursive scenario tree. Read [research-method.md](references/research-method.md) and [evidence-policy.md](references/evidence-policy.md). Use `scripts/probability_tree.py` for arithmetic and validation.
-7. Fetch a fresh order book and fee rate for the held or proposed outcome. Use `scripts/trade_math.py` for crossings, VWAP, fees, edge retention, half-Kelly sizing, reserve constraints, and time-adjusted quality.
-8. Rank only candidates that pass the absolute executable-edge rules. Apply the qualitative correlation check while selecting; do not mistake several contracts driven by one event for independent diversification. Read [market-selection.md](references/market-selection.md) and [signals-and-sizing.md](references/signals-and-sizing.md).
-9. Build `report.json`, validate it, render `report.md`, and archive both with `scripts/report_tool.py`. Read [report-format.md](references/report-format.md) first.
+1. Establish the account input and output directory. Read the latest two archived reports with `scripts/report_tool.py previous` for evidence comparison, recent opportunity quality, and reference-position sizing only.
+2. Create one canonical account snapshot with `scripts/polymarket_data.py account`. Save it unchanged, verify the resolved identity, and derive real cash and all current positions from it. Read [polymarket-data.md](references/polymarket-data.md).
+3. Fetch complete executable bids for all positions, then calculate holdings liquidation value and conservative bankroll. If cash is zero or unavailable, keep researching but do not invent buying power.
+4. Inspect the current portfolio before expensive candidate research. Discover new markets after excluding current holdings, then build a portfolio-aware research queue using the first pass in [portfolio-management.md](references/portfolio-management.md) and [market-selection.md](references/market-selection.md).
+5. Reconstruct and re-research every current market. For every queued candidate, build and repeatedly revise a recursive scenario tree. Read [research-method.md](references/research-method.md) and [evidence-policy.md](references/evidence-policy.md); use `scripts/probability_tree.py` for arithmetic.
+6. Fetch a fresh order book and fee rate for every held or proposed outcome. Use `scripts/trade_math.py` to separate standalone market opportunities from cash-constrained account actions and to calculate half-Kelly and liquidity caps. Read [signals-and-sizing.md](references/signals-and-sizing.md).
+7. Reassess the researched opportunities as one portfolio. Apply the second semantic-diversification pass in [portfolio-management.md](references/portfolio-management.md), remove or demote redundant risks, and rank the retained BUY and ADD opportunities.
+8. Submit the entire retained opportunity set to one shared `scripts/portfolio_allocate.py` call with the canonical cash, holdings value, reserve references, cold-start state, and final ranking. Never call it independently per market. Use its allocations as the only tentative BUY and ADD amounts.
+9. Review the tentative portfolio after allocation. Confirm total funding, protected reserve, cold-start count, liquidity, concentration, shared-loss scenarios, and idle cash. If the review fails, revise eligibility, order, or portfolio caps and rerun the one shared allocation; discard the rejected output. Use only the final accepted allocation in the report.
+10. Build `report.json`, validate cross-field portfolio consistency, render `report.md`, and archive both with `scripts/report_tool.py`. Read [report-format.md](references/report-format.md) first.
 
 When holdings or candidates are numerous, parallelize independent market research if sub-agents are available. Give each worker the exact market, settlement criteria, and required output fields; independently verify its citations and calculations before merging.
 
@@ -52,11 +55,12 @@ All scripts accept `--help`, print machine-readable JSON to stdout, send diagnos
 python3 scripts/polymarket_data.py --pretty positions 'https://polymarket.com/@account'
 python3 scripts/probability_tree.py --pretty tree.json
 python3 scripts/trade_math.py --pretty sizing.json
+python3 scripts/portfolio_allocate.py --pretty allocation.json
 python3 scripts/report_tool.py validate report.json
 python3 scripts/report_tool.py archive report.json --output-root ./forecast-edge-runs
 ```
 
-Treat script results as deterministic calculations, not research judgments. The Agent chooses the causal structure, evidence weights, point estimates, candidate quality, and whether an opportunity is exceptional enough to use reserve cash.
+Treat script results as deterministic calculations, not research judgments. The Agent chooses the causal structure, evidence weights, point estimates, semantic portfolio quality, candidate eligibility and priority, and whether an opportunity is exceptional enough to release reserve cash. Never replace a script's zero allocation with a theoretical dollar amount.
 
 ## Read resources progressively
 
@@ -64,6 +68,7 @@ Treat script results as deterministic calculations, not research judgments. The 
 - Read [research-method.md](references/research-method.md) whenever estimating or updating a settlement probability.
 - Read [evidence-policy.md](references/evidence-policy.md) whenever collecting, evaluating, or citing evidence.
 - Read [market-selection.md](references/market-selection.md) for candidate screening, horizon, cadence, relative quality, and qualitative correlation checks.
+- Read [portfolio-management.md](references/portfolio-management.md) before candidate research, after market research, and after tentative allocation.
 - Read [signals-and-sizing.md](references/signals-and-sizing.md) before calculating any action or position.
 - Read [report-format.md](references/report-format.md) and [report.schema.json](references/report.schema.json) before producing a report.
 

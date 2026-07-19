@@ -39,6 +39,7 @@ DATA=(
 "${DATA[@]}" resolve '@fixture-user' > "$TMP/resolved.json"
 "${DATA[@]}" positions '@fixture-user' > "$TMP/positions.json"
 "${DATA[@]}" balance '@fixture-user' > "$TMP/balance.json"
+"${DATA[@]}" account '@fixture-user' > "$TMP/account.json"
 "${DATA[@]}" discover --limit 1 > "$TMP/markets.json"
 "${DATA[@]}" market 540817 > "$TMP/market.json"
 "${DATA[@]}" book yes-token > "$TMP/book.json"
@@ -48,6 +49,10 @@ DATA=(
 
 # Sizing CLI: this fixture has a valid BUY after fees, slippage, reserve, and half Kelly.
 "$PYTHON_BIN" "$ROOT/scripts/trade_math.py" "$FIXTURES/trade-input.json" > "$TMP/trade.json"
+
+# Portfolio CLI: all opportunities share one real cash budget and protected reserve.
+"$PYTHON_BIN" "$ROOT/scripts/portfolio_allocate.py" \
+  "$FIXTURES/portfolio-allocation.json" > "$TMP/allocation.json"
 
 # Report CLI: validate, render, archive once, and read the latest two immutable reports.
 "$PYTHON_BIN" "$ROOT/scripts/report_tool.py" validate "$FIXTURES/report.json" > "$TMP/valid.json"
@@ -67,12 +72,17 @@ load = lambda name: json.loads((root / name).read_text())
 assert load("resolved.json")["address"] == "0x2222222222222222222222222222222222222222"
 assert load("positions.json")["count"] == 1
 assert load("balance.json")["balance"] == 123.456789
+assert load("account.json")["positions"]["count"] == 1
+assert load("account.json")["sizing_inputs"]["available_cash"] == 123.456789
 assert load("markets.json")[0]["outcomes"][0]["token_id"] == "yes-token"
 assert load("market.json")["id"] == "540817"
 assert load("book.json")["book"]["asks"][0]["price"] == 0.51
 assert load("book.json")["fee"]["fee_rate"] == 0.04
 assert abs(load("probability.json")["probability"] - 0.56) < 1e-12
 assert load("trade.json")["signal"] == "BUY"
+assert load("trade.json")["opportunity"]["entry_eligible"] is True
+assert load("allocation.json")["portfolio"]["allocated_cash"] == 72.5
+assert load("allocation.json")["portfolio"]["new_positions_allocated"] == 2
 assert load("valid.json")["valid"] is True
 assert len(load("previous.json")) == 1
 assert (root / "report.md").is_file()

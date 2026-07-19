@@ -18,19 +18,17 @@ if [[ -n "${POLYMARKET_RPC_URL:-}" ]]; then
   DATA+=(--rpc-url "$POLYMARKET_RPC_URL")
 fi
 
-# Resolve the account and fetch every account-level input required by a scan.
-"${DATA[@]}" resolve "$POLYMARKET_ACCOUNT" > "$TMP/account.json"
-"${DATA[@]}" profile "$POLYMARKET_ACCOUNT" > "$TMP/profile.json"
-"${DATA[@]}" positions "$POLYMARKET_ACCOUNT" > "$TMP/positions.json"
-"${DATA[@]}" balance "$POLYMARKET_ACCOUNT" > "$TMP/balance.json"
+# Fetch the canonical snapshot once so identity, positions, and collateral all
+# come from the same account resolution. Keep the injected account out of logs.
+"${DATA[@]}" account "$POLYMARKET_ACCOUNT" > "$TMP/account-snapshot.json"
 
 # Fetch metadata and, when tradable, an executable book plus fee for every holding.
 mkdir -p "$TMP/holding-markets" "$TMP/holding-books"
-"$PYTHON_BIN" - "$TMP/positions.json" > "$TMP/holdings.tsv" <<'PY'
+"$PYTHON_BIN" - "$TMP/account-snapshot.json" > "$TMP/holdings.tsv" <<'PY'
 import json
 import sys
 
-positions = json.load(open(sys.argv[1], encoding="utf-8"))["positions"]
+positions = json.load(open(sys.argv[1], encoding="utf-8"))["positions"]["positions"]
 for index, item in enumerate(positions):
     asset = str(item.get("asset") or "")
     slug = str(item.get("slug") or "")
@@ -78,16 +76,17 @@ import sys
 root = pathlib.Path(sys.argv[1])
 active_books = int(sys.argv[2])
 load = lambda name: json.loads((root / name).read_text(encoding="utf-8"))
-account = load("account.json")
-profile = load("profile.json")
-positions = load("positions.json")
-balance = load("balance.json")
+snapshot = load("account-snapshot.json")
+account = snapshot["account"]
+profile = snapshot["profile"]
+positions = snapshot["positions"]
+balance = snapshot["collateral"]
 candidate_book = load("candidate-book.json")
 assert account["address"].startswith("0x") and len(account["address"]) == 42
-assert profile["account"]["address"] == account["address"]
-assert isinstance(profile["profile"], dict)
+assert isinstance(profile, dict)
 assert isinstance(positions["positions"], list) and positions["count"] == len(positions["positions"])
 assert isinstance(balance["balance"], (int, float)) and balance["balance"] >= 0
+assert snapshot["sizing_inputs"]["available_cash"] == balance["balance"]
 assert len(list((root / "holding-markets").glob("*.json"))) == positions["count"]
 assert len(list((root / "holding-books").glob("*.json"))) == active_books
 assert isinstance(candidate_book["book"]["asks"], list)

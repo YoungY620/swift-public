@@ -1,0 +1,52 @@
+{
+  "portfolio": {
+    "available_cash": 100,
+    "holdings_liquidation_value": 20,
+    "reported_bankroll": 120,
+    "cold_start": true,
+    "new_position_limit": 2
+  },
+  "reserve": {
+    "reference_position_costs": [10, 12],
+    "target_positions": 2.5,
+    "release_cash": 0
+  },
+  "opportunities": [
+    {
+      "market_id": "buy-1",
+      "action": "BUY",
+      "priority": 1,
+      "eligible": true,
+      "standalone_kelly_cash": 40,
+      "orderbook_capacity_cash": 50,
+      "minimum_order_cash": 5
+    },
+    {
+      "market_id": "buy-2",
+      "action": "BUY",
+      "priority": 2,
+      "eligible": true,
+      "standalone_kelly_cash": 30,
+      "orderbook_capacity_cash": 20,
+      "minimum_order_cash": 5
+    },
+    {
+      "market_id": "buy-3",
+      "action": "BUY",
+      "priority": 3,
+      "eligible": true,
+      "standalone_kelly_cash": 30,
+      "orderbook_capacity_cash": 30,
+      "minimum_order_cash": 5
+    },
+    {
+      "market_id": "add-1",
+      "action": "ADD",
+      "priority": 4,
+      "eligible": true,
+      "standalone_kelly_cash": 20,
+      "orderbook_capacity_cash": 20,
+      "minimum_order_cash": 5
+    }
+  ]
+}

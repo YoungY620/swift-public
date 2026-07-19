@@ -1,4 +1,4 @@
 interface:
   display_name: "Forecast Edge"
-  short_description: "Research and size prediction-market edges"
+  short_description: "Research and allocate portfolio-aware edges"
   default_prompt: "Use $forecast-edge to scan my Polymarket portfolio and identify evidence-backed BUY, ADD, HOLD, or SELL signals."

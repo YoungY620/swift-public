@@ -4,10 +4,10 @@
 
 1. Research every current position first; none may be omitted because it appears unchanged.
 2. Exclude current holdings from new-market discovery.
-3. Pull active Polymarket markets in API order and screen them sequentially until the research round is full.
+3. Pull active Polymarket markets in API order and use the first pass in `portfolio-management.md` to build a varied research queue.
 4. Treat about ten fully researched new markets as a soft operational ceiling. Continue beyond it only when the opportunity set or available parallel capacity clearly justifies doing so.
 
-The limit applies to new research, not to re-evaluating current holdings. There is no maximum research time. Use independent sub-agents when available and useful.
+The limit applies to new research, not to re-evaluating current holdings. It limits expensive research, not cheap metadata inspection. There is no maximum research time. Use independent sub-agents when available and useful.
 
 ## Preferred domains
 
@@ -44,7 +44,7 @@ A candidate must first pass the absolute executable-edge and sizing rules. Then 
 
 Do not require a fixed number of holdings. Half-Kelly sizing, order-book capacity, opportunity quality, and available cash determine the number naturally.
 
-During final selection, reason qualitatively about whether several contracts depend on the same underlying event. Do not count highly related contracts as independent diversification. This is a process reminder only:
+Apply the qualitative process in `portfolio-management.md` both while building the research queue and during final selection. Do not count highly related contracts as independent diversification:
 
 - Do not create a risk-cluster entity or identifier.
 - Do not add a correlation matrix or automatic script.

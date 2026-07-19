@@ -42,6 +42,17 @@ Issue:
 
 Do not sell an un-crossed losing position to replace it with a better candidate.
 
+## Market opportunity versus account action
+
+Calculate an entry opportunity at the minimum executable order independently of account cash. Record whether its post-fee and post-slippage edge retains at least 70% of raw edge.
+
+Then calculate the account action with the real bankroll and available cash:
+
+- An entry opportunity may be `entry_eligible: true` while the account action remains `HOLD` with zero allocation.
+- Emit account `BUY` or `ADD` only after `portfolio_allocate.py` assigns a positive executable amount.
+- Never present a nominal, illustrative, or theoretical bankroll as an account recommendation.
+- Keep public market commentary separate from private executable instructions.
+
 ## Edge retention and capacity
 
 Define:
@@ -75,7 +86,7 @@ publicly visible available collateral
 
 Report model value separately. Do not use it to inflate the sizing bankroll.
 
-The final incremental position is bounded by:
+The standalone incremental position cap is bounded by:
 
 ```text
 min(
@@ -86,6 +97,8 @@ min(
 ```
 
 Respect token minimum order size. If the computed position is smaller, do not place or recommend the order.
+
+After calculating standalone caps for all retained opportunities, send them together in one `portfolio_allocate.py` request. Its sequential allocation, not independently repeated per-market cash budgets, determines tentative BUY and ADD amounts. A failed post-allocation portfolio review may revise the shared input and rerun it; retain only the accepted result.
 
 ## Opportunity reserve
 

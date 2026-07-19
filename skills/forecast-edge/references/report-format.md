@@ -30,6 +30,7 @@ The JSON Schema is [report.schema.json](report.schema.json). The script also per
 
 - Run identity, timestamps, account input, resolved address, data cutoff, and previous report IDs.
 - Available collateral, conservative bankroll, and reserve cash.
+- Holdings liquidation value, deployable cash, allocated cash, remaining cash, cold-start state, and new-position limit.
 - Every current position with complete new research.
 - Fully researched new candidates, including rejected and held candidates when useful for the opportunity baseline.
 - A consolidated list of `BUY`, `ADD`, `HOLD`, and `SELL` actions.
@@ -44,6 +45,7 @@ For current positions and candidates, include:
 - Book timestamp, best prices, fee rate, VWAP, raw and actual edge, edge retention, and depth capacity.
 - Half-Kelly result, reserve constraint, suggested shares/cash, and daily expected return.
 - Signal and rationale.
+- Standalone market opportunity, final account action, and portfolio allocation audit.
 - Complete key-evidence records defined in `evidence-policy.md`.
 
 Candidates require the same evidence fields as current positions.
@@ -63,3 +65,19 @@ An immediate crossing signal never waits for the comparison or a second confirmi
 ## No incomplete signal
 
 Do not create `INCOMPLETE`, `UNKNOWN`, or `REVIEW_REQUIRED` actions. Continue research, use defensible base rates or neutral leaves, and finish the model. A mechanical inability to retrieve an executable book produces `HOLD` for a current position or exclusion of a candidate, together with an explicit data-failure note.
+
+## Portfolio consistency
+
+Use report schema version `2.0` for new runs. Keep older reports readable as history. Validate all of the following before archival:
+
+- Conservative bankroll equals available collateral plus holdings liquidation value.
+- Deployable cash plus protected reserve equals available collateral.
+- Allocated cash plus remaining cash equals deployable cash.
+- Every sizing input uses the same bankroll and available cash as the portfolio summary.
+- Every BUY or ADD amount equals its portfolio allocation.
+- All BUY and ADD amounts combined equal portfolio allocated cash and never exceed deployable cash.
+- Zero available cash implies zero funded BUY and ADD actions.
+- Cold-start funded BUY count does not exceed the configured limit.
+- Market opportunities without funding remain distinct from account actions.
+
+Reject inconsistent reports. Do not archive them with explanatory labels such as “theoretical” or “nominal.” Include a concise private natural-language portfolio-diversification conclusion, but no formal risk-cluster structure.

@@ -23,6 +23,7 @@ Username resolution reads public profile-page data and extracts the repeated pro
 python3 scripts/polymarket_data.py --pretty resolve '@public-user'
 
 # Profile and complete public positions
+python3 scripts/polymarket_data.py --pretty account '@public-user'
 python3 scripts/polymarket_data.py --pretty profile '@public-user'
 python3 scripts/polymarket_data.py --pretty positions '@public-user'
 
@@ -40,6 +41,10 @@ python3 scripts/polymarket_data.py --pretty book TOKEN_ID
 The book command preserves the raw fee response and also returns `fee_rate_bps` plus decimal `fee_rate`. Pass the decimal field to `trade_math.py`.
 
 The discover command supplies markets for Agent screening; it does not decide topic, quality, causal analyzability, or settlement horizon.
+
+Use the `account` command once per scan as the canonical identity, position, and collateral snapshot. Do not assemble sizing inputs from different profile resolutions or fetch times. Verify that every returned position uses the resolved proxy wallet. Compute holdings liquidation value separately from complete live bid books; do not use the API's displayed `currentValue` as the sizing value.
+
+If the resolved account differs from the latest report, treat it as an account change and require explicit runtime intent. If the first snapshot returns both zero positions and zero collateral, continue market research but produce no funded BUY or ADD action and prominently identify the resolved public profile in the private report.
 
 ## Data sources
 

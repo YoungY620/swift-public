@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "run": {
     "id": "sample-run",
     "started_at": "2026-07-19T00:00:00Z",
@@ -13,8 +13,15 @@
   },
   "portfolio": {
     "available_collateral": 100,
+    "holdings_liquidation_value": 20,
     "estimated_bankroll": 120,
-    "reserve_cash": 20
+    "reserve_cash": 20,
+    "deployable_cash": 80,
+    "allocated_cash": 25,
+    "remaining_cash": 55,
+    "cold_start": false,
+    "new_position_limit": 2,
+    "diversification_summary": "The new candidate adds a distinct causal driver without increasing the existing position."
   },
   "current_positions": [
     {
@@ -55,6 +62,25 @@
         "action": "HOLD",
         "rationale": "The model remains above price, but the current position already exceeds its half-Kelly target."
       },
+      "opportunity": {
+        "entry_eligible": true,
+        "exit_eligible": false,
+        "model_value": 0.65,
+        "executable_price": 0.51,
+        "net_edge": 0.14,
+        "reason": "A standalone entry edge exists, but no ADD is required at the current target."
+      },
+      "allocation": {
+        "priority": null,
+        "standalone_kelly_cash": 0,
+        "orderbook_capacity_cash": 0,
+        "portfolio_cash_cap": null,
+        "minimum_order_cash": 0,
+        "cash_before": 80,
+        "allocated_cash": 0,
+        "cash_after": 80,
+        "reason": "No incremental allocation for the existing position."
+      },
       "comparison": {
         "previous_report_id": "sample-previous",
         "probability_change": "0.62 -> 0.65",
@@ -94,10 +120,37 @@
       "signal": {
         "action": "BUY",
         "rationale": "Executable edge survives fees, slippage, reserve, and half-Kelly sizing."
+      },
+      "opportunity": {
+        "entry_eligible": true,
+        "exit_eligible": false,
+        "model_value": 0.7,
+        "executable_price": 0.55,
+        "net_edge": 0.15,
+        "reason": "The minimum executable order retains more than 70% of raw edge."
+      },
+      "allocation": {
+        "priority": 1,
+        "standalone_kelly_cash": 40,
+        "orderbook_capacity_cash": 50,
+        "portfolio_cash_cap": null,
+        "minimum_order_cash": 5,
+        "cash_before": 80,
+        "allocated_cash": 25,
+        "cash_after": 55,
+        "reason": "Allocated from real deployable cash."
       }
     }
   ],
   "actions": [
+    {
+      "action": "HOLD",
+      "market_id": "540817",
+      "market_question": "Will the sample event resolve Yes?",
+      "outcome": "YES",
+      "recommended_cash": 0,
+      "rationale": "The current position remains below its sell crossing and needs no incremental allocation."
+    },
     {
       "action": "BUY",
       "market_id": "candidate-1",

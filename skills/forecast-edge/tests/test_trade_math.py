@@ -32,6 +32,16 @@ class TradeMathTests(unittest.TestCase):
         self.assertLessEqual(result["buy"]["suggested_cash"], result["orderbook_capacity"]["cash"] + 1e-8)
         self.assertEqual(result["cash"]["reserve"], 100.0)  # median(30,40,50) * 2.5
 
+    def test_zero_cash_preserves_market_opportunity_but_not_account_buy(self) -> None:
+        document = sample()
+        document["bankroll"] = 0
+        document["available_cash"] = 0
+        document["reserve"] = {"reference_position_costs": [], "target_positions": 2.5}
+        result = trade_math.evaluate_trade(document)
+        self.assertTrue(result["opportunity"]["entry_eligible"])
+        self.assertEqual(result["signal"], "HOLD")
+        self.assertEqual(result["buy"]["suggested_cash"], 0)
+
     def test_existing_position_adds_only_above_current_half_kelly_target(self) -> None:
         document = sample()
         document["current_position"] = {"shares": 20, "cost": 10}
