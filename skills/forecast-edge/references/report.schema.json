@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forecast-edge.local/report.schema.json",
+  "title": "Forecast Edge Report",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run",
+    "portfolio",
+    "current_positions",
+    "candidates",
+    "actions",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "run": {
+      "type": "object",
+      "required": ["id", "started_at", "completed_at", "data_cutoff", "account", "previous_report_ids"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "started_at": { "type": "string" },
+        "completed_at": { "type": "string" },
+        "data_cutoff": { "type": "string" },
+        "account": {
+          "type": "object",
+          "required": ["input", "address"],
+          "properties": {
+            "input": { "type": "string" },
+            "address": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" }
+          }
+        },
+        "previous_report_ids": { "type": "array", "items": { "type": "string" }, "maxItems": 2 }
+      }
+    },
+    "portfolio": {
+      "type": "object",
+      "required": ["available_collateral", "estimated_bankroll", "reserve_cash"],
+      "properties": {
+        "available_collateral": { "type": "number", "minimum": 0 },
+        "estimated_bankroll": { "type": "number", "minimum": 0 },
+        "reserve_cash": { "type": "number", "minimum": 0 }
+      }
+    },
+    "current_positions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/currentAnalysis" }
+    },
+    "candidates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/candidateAnalysis" }
+    },
+    "actions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/action" }
+    },
+    "summary": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "market": {
+      "type": "object",
+      "required": ["id", "question", "url", "outcome", "resolution_criteria"],
+      "properties": {
+        "id": { "type": "string" },
+        "question": { "type": "string" },
+        "url": { "type": "string" },
+        "outcome": { "enum": ["YES", "NO"] },
+        "resolution_criteria": { "type": "string" },
+        "end_date": { "type": ["string", "null"] }
+      }
+    },
+    "model": {
+      "type": "object",
+      "required": ["probability", "model_value", "conclusion"],
+      "properties": {
+        "probability": { "type": "number", "minimum": 0, "maximum": 1 },
+        "model_value": { "type": "number", "minimum": 0, "maximum": 1 },
+        "conclusion": { "type": "string" },
+        "tree": { "type": "object" },
+        "calculation": { "type": "object" }
+      }
+    },
+    "signal": {
+      "type": "object",
+      "required": ["action", "rationale"],
+      "properties": {
+        "action": { "enum": ["BUY", "ADD", "HOLD", "SELL"] },
+        "rationale": { "type": "string" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": [
+        "source_name",
+        "source_type",
+        "title",
+        "url",
+        "published_at",
+        "retrieved_at",
+        "summary",
+        "conclusion",
+        "factor_id",
+        "credibility"
+      ],
+      "properties": {
+        "source_name": { "type": "string" },
+        "source_type": { "type": "string" },
+        "title": { "type": "string" },
+        "url": { "type": "string" },
+        "published_at": { "type": ["string", "null"] },
+        "retrieved_at": { "type": "string" },
+        "summary": { "type": "string" },
+        "conclusion": { "type": "string" },
+        "factor_id": { "type": "string" },
+        "credibility": { "type": "string" },
+        "new_since_previous": { "type": "boolean" },
+        "impact": {
+          "type": ["object", "null"],
+          "properties": {
+            "affected_factor": { "type": "string" },
+            "factor_probability_change": {},
+            "final_probability_change": {}
+          }
+        }
+      }
+    },
+    "baseAnalysis": {
+      "type": "object",
+      "required": ["market", "model", "evidence", "signal"],
+      "properties": {
+        "market": { "$ref": "#/$defs/market" },
+        "model": { "$ref": "#/$defs/model" },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/evidence" }
+        },
+        "signal": { "$ref": "#/$defs/signal" },
+        "market_data": { "type": "object" },
+        "sizing": { "type": "object" },
+        "quality": { "type": "object" }
+      }
+    },
+    "currentAnalysis": {
+      "allOf": [
+        { "$ref": "#/$defs/baseAnalysis" },
+        {
+          "type": "object",
+          "required": ["comparison"],
+          "properties": {
+            "comparison": { "type": ["object", "null"] }
+          }
+        }
+      ]
+    },
+    "candidateAnalysis": { "$ref": "#/$defs/baseAnalysis" },
+    "action": {
+      "type": "object",
+      "required": ["action", "market_id", "market_question", "outcome", "recommended_cash", "rationale"],
+      "properties": {
+        "action": { "enum": ["BUY", "ADD", "HOLD", "SELL"] },
+        "market_id": { "type": "string" },
+        "market_question": { "type": "string" },
+        "outcome": { "enum": ["YES", "NO"] },
+        "recommended_cash": { "type": "number", "minimum": 0 },
+        "rationale": { "type": "string" }
+      }
+    }
+  }
+}

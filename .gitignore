@@ -1,0 +1,10 @@
+.DS_Store
+.env
+.env.*
+*.py[cod]
+__pycache__/
+.pytest_cache/
+
+# Runtime reports can contain account-specific research and must never be committed.
+forecast-edge-runs/
+.forecast-edge-runs/

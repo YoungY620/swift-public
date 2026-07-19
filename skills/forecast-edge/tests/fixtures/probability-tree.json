@@ -1,0 +1,27 @@
+{
+  "root": {
+    "id": "final-event",
+    "type": "partition",
+    "label": "Final settlement",
+    "branches": [
+      {
+        "label": "Policy adopted",
+        "weight": 0.6,
+        "child": {
+          "id": "yes-given-adoption",
+          "type": "estimate",
+          "probability": 0.8
+        }
+      },
+      {
+        "label": "Policy not adopted",
+        "weight": 0.4,
+        "child": {
+          "id": "yes-given-no-adoption",
+          "type": "estimate",
+          "probability": 0.2
+        }
+      }
+    ]
+  }
+}

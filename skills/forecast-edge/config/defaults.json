@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "probability": {
+    "max_depth": 64,
+    "branch_sum_tolerance": 1e-09
+  },
+  "kelly": {
+    "enabled": true,
+    "fraction": 0.5
+  },
+  "execution": {
+    "minimum_edge_retention": 0.7
+  },
+  "reserve": {
+    "reference_positions_min": 2,
+    "reference_positions_max": 3,
+    "default_reference_positions": 2.5,
+    "recent_reports": 2
+  },
+  "scan": {
+    "candidate_research_soft_limit": 10,
+    "cold_start_new_positions_min": 1,
+    "cold_start_new_positions_max": 2,
+    "themes": [
+      "politics",
+      "economics",
+      "culture",
+      "markets"
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "id": "540817",
+  "question": "Will a sample event resolve Yes?",
+  "slug": "sample-event",
+  "description": "Resolves Yes if the documented event happens by the deadline.",
+  "resolutionSource": "https://example.test/source",
+  "conditionId": "0xcondition",
+  "endDate": "2026-08-31T00:00:00Z",
+  "active": true,
+  "closed": false,
+  "acceptingOrders": true,
+  "feesEnabled": true,
+  "volume": "12345.67",
+  "volume24hr": "321.5",
+  "liquidity": "987.65",
+  "outcomes": "[\"Yes\", \"No\"]",
+  "outcomePrices": "[\"0.51\", \"0.49\"]",
+  "clobTokenIds": "[\"yes-token\", \"no-token\"]"
+}

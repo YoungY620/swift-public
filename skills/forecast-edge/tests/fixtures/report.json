@@ -1,0 +1,111 @@
+{
+  "schema_version": "1.0",
+  "run": {
+    "id": "sample-run",
+    "started_at": "2026-07-19T00:00:00Z",
+    "completed_at": "2026-07-19T00:30:00Z",
+    "data_cutoff": "2026-07-19T00:20:00Z",
+    "account": {
+      "input": "@fixture-user",
+      "address": "0x2222222222222222222222222222222222222222"
+    },
+    "previous_report_ids": ["sample-previous"]
+  },
+  "portfolio": {
+    "available_collateral": 100,
+    "estimated_bankroll": 120,
+    "reserve_cash": 20
+  },
+  "current_positions": [
+    {
+      "market": {
+        "id": "540817",
+        "question": "Will a sample event resolve Yes?",
+        "url": "https://polymarket.com/event/sample-event",
+        "outcome": "YES",
+        "resolution_criteria": "Resolves Yes if the documented event happens by the deadline.",
+        "end_date": "2026-08-31T00:00:00Z"
+      },
+      "model": {
+        "probability": 0.65,
+        "model_value": 0.65,
+        "conclusion": "The researched conditions favor final settlement at Yes."
+      },
+      "evidence": [
+        {
+          "source_name": "Example Statistics Office",
+          "source_type": "government",
+          "title": "Current sample series",
+          "url": "https://example.test/statistics",
+          "published_at": "2026-07-18T10:00:00Z",
+          "retrieved_at": "2026-07-19T00:10:00Z",
+          "summary": "The primary series rose in the latest release.",
+          "conclusion": "The release raises the adoption factor.",
+          "factor_id": "policy-adoption",
+          "credibility": "Primary official release with a documented method.",
+          "new_since_previous": true,
+          "impact": {
+            "affected_factor": "policy-adoption",
+            "factor_probability_change": "0.55 -> 0.60",
+            "final_probability_change": "0.62 -> 0.65"
+          }
+        }
+      ],
+      "signal": {
+        "action": "HOLD",
+        "rationale": "The model remains above price, but the current position already exceeds its half-Kelly target."
+      },
+      "comparison": {
+        "previous_report_id": "sample-previous",
+        "probability_change": "0.62 -> 0.65",
+        "price_change": "0.50 -> 0.51"
+      }
+    }
+  ],
+  "candidates": [
+    {
+      "market": {
+        "id": "candidate-1",
+        "question": "Will another sample event resolve Yes?",
+        "url": "https://polymarket.com/event/another-sample",
+        "outcome": "YES",
+        "resolution_criteria": "Resolves Yes under the stated public criterion.",
+        "end_date": "2026-09-15T00:00:00Z"
+      },
+      "model": {
+        "probability": 0.7,
+        "model_value": 0.7,
+        "conclusion": "The evidence supports a value above the executable ask."
+      },
+      "evidence": [
+        {
+          "source_name": "Example University",
+          "source_type": "academic",
+          "title": "A relevant base-rate study",
+          "url": "https://example.test/study",
+          "published_at": "2025-01-01",
+          "retrieved_at": "2026-07-19T00:12:00Z",
+          "summary": "The study estimates the relevant historical base rate.",
+          "conclusion": "The base rate supports the main scenario weight.",
+          "factor_id": "historical-base-rate",
+          "credibility": "Public peer-reviewed work using a comparable population."
+        }
+      ],
+      "signal": {
+        "action": "BUY",
+        "rationale": "Executable edge survives fees, slippage, reserve, and half-Kelly sizing."
+      }
+    }
+  ],
+  "actions": [
+    {
+      "action": "BUY",
+      "market_id": "candidate-1",
+      "market_question": "Will another sample event resolve Yes?",
+      "outcome": "YES",
+      "recommended_cash": 25,
+      "rationale": "The candidate passes the executable-edge and relative-quality rules."
+    }
+  ],
+  "summary": "Continue holding the existing position and consider one new evidence-backed purchase."
+}

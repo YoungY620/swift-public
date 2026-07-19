@@ -1,0 +1,12 @@
+[
+  {
+    "proxyWallet": "0x2222222222222222222222222222222222222222",
+    "asset": "yes-token",
+    "conditionId": "0xcondition",
+    "size": 20,
+    "avgPrice": 0.45,
+    "currentValue": 10.2,
+    "title": "Will a sample event resolve Yes?",
+    "outcome": "Yes"
+  }
+]

@@ -1,0 +1,29 @@
+{
+  "side": "YES",
+  "model_probability": 0.65,
+  "bankroll": 1000,
+  "available_cash": 500,
+  "fee_rate": 0.04,
+  "kelly_fraction": 0.5,
+  "minimum_edge_retention": 0.7,
+  "min_order_shares": 5,
+  "days_to_resolution": 30,
+  "reserve": {
+    "reference_position_costs": [30, 40, 50],
+    "target_positions": 2.5
+  },
+  "current_position": {
+    "shares": 0,
+    "cost": 0
+  },
+  "book": {
+    "bids": [
+      {"price": 0.48, "size": 500}
+    ],
+    "asks": [
+      {"price": 0.50, "size": 100},
+      {"price": 0.55, "size": 100},
+      {"price": 0.62, "size": 100}
+    ]
+  }
+}
