@@ -11,6 +11,11 @@
   "execution": {
     "minimum_edge_retention": 0.7
   },
+  "data": {
+    "collateral_symbol": "pUSD",
+    "discover_collateral_each_scan": true,
+    "allow_fixed_legacy_collateral": false
+  },
   "reserve": {
     "reference_positions_min": 2,
     "reference_positions_max": 3,

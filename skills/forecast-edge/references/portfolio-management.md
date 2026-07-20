@@ -6,14 +6,14 @@ Apply portfolio management throughout a scan. Use qualitative semantic reasoning
 
 Use one canonical account snapshot. Calculate:
 
-- Publicly visible spendable collateral.
+- Public pUSD balance from the dynamically discovered active collateral contract.
 - Every current position and its complete bid-VWAP liquidation value after fees.
 - Total holdings liquidation value.
 - Conservative bankroll as cash plus holdings liquidation value.
 - Each position's share of conservative bankroll.
 - Protected opportunity reserve and remaining deployable cash.
 
-Never use model value, a displayed last price, a nominal bankroll, or an illustrative account size as real buying power. When cash is zero, BUY and ADD allocations must be zero. Continue identifying market opportunities without presenting them as executable account actions.
+Never use model value, a displayed last price, a legacy token balance, a nominal bankroll, or an illustrative account size as real buying power. When a verified authenticated available-to-trade value is supplied, cap cash at the lower of that value and the public pUSD balance. When cash is zero, BUY and ADD allocations must be zero. Continue identifying market opportunities without presenting them as executable account actions.
 
 ## Pass 1: build the research queue
 

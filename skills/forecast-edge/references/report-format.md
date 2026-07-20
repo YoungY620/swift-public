@@ -35,7 +35,7 @@ Keep JSON keys, signal enums, outcome enums, IDs, URLs, exact market questions, 
 ## Required run sections
 
 - Run identity, timestamps, account input, resolved address, data cutoff, and previous report IDs.
-- Available collateral, conservative bankroll, and reserve cash.
+- Effective available pUSD cash, conservative bankroll, and reserve cash. Preserve the discovered asset symbol, token address, and raw public balance in the unchanged account snapshot; record any lower authenticated available-to-trade cap separately with its runtime provenance.
 - Holdings liquidation value, deployable cash, allocated cash, remaining cash, cold-start state, and new-position limit.
 - Every current position with complete new research.
 - Fully researched new candidates, including rejected and held candidates when useful for the opportunity baseline.

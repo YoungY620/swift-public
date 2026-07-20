@@ -28,8 +28,9 @@ DEFAULT_GAMMA = "https://gamma-api.polymarket.com"
 DEFAULT_DATA = "https://data-api.polymarket.com"
 DEFAULT_CLOB = "https://clob.polymarket.com"
 DEFAULT_SITE = "https://polymarket.com"
+DEFAULT_ASSETS = "https://api.perpetuals.polymarket.com"
 DEFAULT_RPC = "https://polygon-bor-rpc.publicnode.com"
-DEFAULT_COLLATERAL = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+DEFAULT_COLLATERAL_SYMBOL = "pUSD"
 
 
 class DataError(RuntimeError):
@@ -196,6 +197,63 @@ def optional_number(value: Any) -> float | None:
         return None
 
 
+def normalize_collateral_asset(raw: Any, source: str) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise DataError("collateral asset must be an object")
+    asset = str(raw.get("asset", "")).strip()
+    address = str(raw.get("address", "")).strip()
+    decimals_raw = raw.get("decimals")
+    if not asset:
+        raise DataError("collateral asset did not contain a symbol")
+    if ADDRESS_RE.fullmatch(address) is None:
+        raise DataError(f"collateral asset address was invalid: {address!r}")
+    if isinstance(decimals_raw, bool) or not isinstance(decimals_raw, int):
+        raise DataError(f"collateral asset decimals were invalid: {decimals_raw!r}")
+    if decimals_raw < 0 or decimals_raw > 36:
+        raise DataError(f"collateral asset decimals were invalid: {decimals_raw!r}")
+    return {
+        "asset": asset,
+        "token_address": address.lower(),
+        "decimals": decimals_raw,
+        "collateral_ratio": optional_number(raw.get("collateral_ratio")),
+        "withdrawal_fee": optional_number(raw.get("withdrawal_fee")),
+        "source": source,
+    }
+
+
+def fetch_collateral_asset(
+    client: HttpClient,
+    assets_base: str,
+    symbol: str,
+) -> dict[str, Any]:
+    raw = client.get_json(join_url(assets_base, "/v1/info/assets"))
+    if not isinstance(raw, list):
+        raise DataError("collateral-assets endpoint did not return a list")
+    matches = [
+        item
+        for item in raw
+        if isinstance(item, dict) and str(item.get("asset", "")).casefold() == symbol.casefold()
+    ]
+    if len(matches) != 1:
+        raise DataError(f"expected exactly one active {symbol} collateral asset; found {len(matches)}")
+    return normalize_collateral_asset(matches[0], "public_collateral_assets_api")
+
+
+def resolve_collateral_asset(args: argparse.Namespace, client: HttpClient) -> dict[str, Any]:
+    if args.token_address:
+        return normalize_collateral_asset(
+            {
+                "asset": args.collateral_symbol,
+                "address": args.token_address,
+                "decimals": 6 if args.decimals is None else args.decimals,
+            },
+            "explicit_cli_override",
+        )
+    if args.decimals is not None:
+        raise DataError("--decimals requires --token-address")
+    return fetch_collateral_asset(client, args.assets_base, args.collateral_symbol)
+
+
 def normalize_market(raw: dict[str, Any]) -> dict[str, Any]:
     outcomes = parse_jsonish_list(raw.get("outcomes"))
     prices = parse_jsonish_list(raw.get("outcomePrices"))
@@ -297,9 +355,10 @@ def fetch_collateral_balance(
     address: str,
     client: HttpClient,
     rpc_url: str,
-    token_address: str,
-    decimals: int,
+    collateral_asset: dict[str, Any],
 ) -> dict[str, Any]:
+    token_address = str(collateral_asset["token_address"])
+    decimals = int(collateral_asset["decimals"])
     clean_address = address.lower().removeprefix("0x")
     call_data = "0x70a08231" + clean_address.rjust(64, "0")
     response = client.post_json(
@@ -315,12 +374,17 @@ def fetch_collateral_balance(
         raise DataError(f"RPC balance response was invalid: {response}")
     atomic = int(response["result"], 16)
     return {
+        "asset": collateral_asset["asset"],
         "address": address,
         "token_address": token_address,
         "decimals": decimals,
         "atomic_balance": str(atomic),
         "balance": atomic / (10**decimals),
-        "note": "Public on-chain collateral balance; it does not prove CLOB allowance or orderability.",
+        "collateral_source": collateral_asset["source"],
+        "note": (
+            "Public on-chain active-collateral balance. It can exceed authenticated available-to-trade "
+            "cash when private open orders or account constraints reserve funds."
+        ),
     }
 
 
@@ -335,7 +399,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-base", default=DEFAULT_DATA)
     parser.add_argument("--clob-base", default=DEFAULT_CLOB)
     parser.add_argument("--site-base", default=DEFAULT_SITE)
+    parser.add_argument("--assets-base", default=DEFAULT_ASSETS)
     parser.add_argument("--rpc-url", default=DEFAULT_RPC)
+    parser.add_argument("--collateral-symbol", default=DEFAULT_COLLATERAL_SYMBOL)
     parser.add_argument("--timeout", type=float, default=20.0)
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--pretty", action="store_true")
@@ -353,16 +419,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     balance = subparsers.add_parser("balance", help="Read public on-chain collateral balance")
     balance.add_argument("account")
-    balance.add_argument("--token-address", default=DEFAULT_COLLATERAL)
-    balance.add_argument("--decimals", type=int, default=6)
+    balance.add_argument("--token-address", help="Explicit collateral token override for diagnostics")
+    balance.add_argument("--decimals", type=int, help="Decimals for an explicit token override")
+
+    collateral_asset = subparsers.add_parser(
+        "collateral-asset", help="Discover the active public collateral asset"
+    )
 
     account = subparsers.add_parser(
         "account", help="Fetch one canonical account snapshot for portfolio sizing"
     )
     account.add_argument("account")
     account.add_argument("--page-size", type=int, default=500)
-    account.add_argument("--token-address", default=DEFAULT_COLLATERAL)
-    account.add_argument("--decimals", type=int, default=6)
 
     market = subparsers.add_parser("market", help="Fetch one market by numeric id or slug")
     market.add_argument("identifier")
@@ -396,17 +464,23 @@ def main(argv: list[str] | None = None) -> int:
             result = {"account": account, "count": len(positions), "positions": positions}
         elif args.command == "balance":
             account = resolve_account(args.account, client, args.site_base)
+            collateral_asset = resolve_collateral_asset(args, client)
             result = fetch_collateral_balance(
-                account["address"], client, args.rpc_url, args.token_address, args.decimals
+                account["address"], client, args.rpc_url, collateral_asset
             )
+        elif args.command == "collateral-asset":
+            result = fetch_collateral_asset(client, args.assets_base, args.collateral_symbol)
         elif args.command == "account":
             resolved = resolve_account(args.account, client, args.site_base)
             profile = client.get_json(
                 join_url(args.gamma_base, "/public-profile", {"address": resolved["address"]})
             )
             positions = fetch_positions(resolved["address"], client, args.data_base, args.page_size)
+            collateral_asset = fetch_collateral_asset(
+                client, args.assets_base, args.collateral_symbol
+            )
             collateral = fetch_collateral_balance(
-                resolved["address"], client, args.rpc_url, args.token_address, args.decimals
+                resolved["address"], client, args.rpc_url, collateral_asset
             )
             mismatched = sorted(
                 {
@@ -425,9 +499,14 @@ def main(argv: list[str] | None = None) -> int:
                 "collateral": collateral,
                 "sizing_inputs": {
                     "available_cash": collateral["balance"],
-                    "balance_source": "public_onchain_collateral",
+                    "balance_source": "public_onchain_active_collateral",
+                    "collateral_asset": collateral["asset"],
+                    "collateral_token_address": collateral["token_address"],
                     "holdings_liquidation_value": None,
-                    "note": "Compute holdings liquidation value from complete bid VWAP after fees before allocation.",
+                    "note": (
+                        "Compute holdings liquidation value from complete bid VWAP after fees before allocation. "
+                        "Public collateral does not reveal funds reserved by private open orders."
+                    ),
                 },
             }
         elif args.command == "market":

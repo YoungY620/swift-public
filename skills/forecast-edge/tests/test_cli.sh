@@ -34,12 +34,19 @@ DATA=(
   --data-base "$BASE"
   --clob-base "$BASE"
   --site-base "$BASE"
+  --assets-base "$BASE"
   --rpc-url "$BASE/rpc"
 )
 "${DATA[@]}" resolve '@fixture-user' > "$TMP/resolved.json"
 "${DATA[@]}" positions '@fixture-user' > "$TMP/positions.json"
+"${DATA[@]}" collateral-asset > "$TMP/collateral-asset.json"
 "${DATA[@]}" balance '@fixture-user' > "$TMP/balance.json"
 "${DATA[@]}" account '@fixture-user' > "$TMP/account.json"
+if "${DATA[@]}" account '@fixture-user' \
+  --token-address '0x5555555555555555555555555555555555555555' >/dev/null 2>&1; then
+  echo "canonical account snapshots must reject token overrides" >&2
+  exit 1
+fi
 "${DATA[@]}" discover --limit 1 > "$TMP/markets.json"
 "${DATA[@]}" market 540817 > "$TMP/market.json"
 "${DATA[@]}" book yes-token > "$TMP/book.json"
@@ -71,9 +78,14 @@ root = pathlib.Path(sys.argv[1])
 load = lambda name: json.loads((root / name).read_text())
 assert load("resolved.json")["address"] == "0x2222222222222222222222222222222222222222"
 assert load("positions.json")["count"] == 1
+assert load("collateral-asset.json")["asset"] == "pUSD"
+assert load("collateral-asset.json")["token_address"] == "0x4444444444444444444444444444444444444444"
+assert load("balance.json")["asset"] == "pUSD"
 assert load("balance.json")["balance"] == 123.456789
 assert load("account.json")["positions"]["count"] == 1
 assert load("account.json")["sizing_inputs"]["available_cash"] == 123.456789
+assert load("account.json")["sizing_inputs"]["balance_source"] == "public_onchain_active_collateral"
+assert load("account.json")["sizing_inputs"]["collateral_asset"] == "pUSD"
 assert load("markets.json")[0]["outcomes"][0]["token_id"] == "yes-token"
 assert load("market.json")["id"] == "540817"
 assert load("book.json")["book"]["asks"][0]["price"] == 0.51

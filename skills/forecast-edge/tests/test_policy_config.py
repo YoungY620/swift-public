@@ -22,6 +22,12 @@ class PolicyConfigTests(unittest.TestCase):
         config = json.loads((ROOT / "config" / "defaults.json").read_text())
         self.assertEqual(config["report"]["language"], "zh-CN")
 
+    def test_discovers_current_pusd_instead_of_using_legacy_collateral(self) -> None:
+        config = json.loads((ROOT / "config" / "defaults.json").read_text())
+        self.assertEqual(config["data"]["collateral_symbol"], "pUSD")
+        self.assertTrue(config["data"]["discover_collateral_each_scan"])
+        self.assertFalse(config["data"]["allow_fixed_legacy_collateral"])
+
 
 if __name__ == "__main__":
     unittest.main()

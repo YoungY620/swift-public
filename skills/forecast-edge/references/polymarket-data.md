@@ -4,7 +4,11 @@
 
 Use `scripts/polymarket_data.py` for normalized, public, read-only access. It intentionally cannot authenticate, sign, approve collateral, or place orders.
 
-Publicly visible on-chain collateral is an estimate of available funds. It does not prove CLOB allowance, account health, or that an authenticated order would succeed. Label it accordingly.
+Polymarket currently uses `pUSD` as its trading collateral. Resolve the active `pUSD` contract and decimals from the public collateral-assets endpoint on every scan, then read that ERC-20 balance on Polygon. Do not use a fixed legacy stablecoin contract as the account cash source.
+
+The public pUSD balance is the best public cash estimate, but private open orders or authenticated account constraints can make the website's available-to-trade value lower. If the user supplies a verified authenticated value, use the lower of it and the public pUSD balance. Never increase cash above the public balance from an unauthenticated claim.
+
+Fail closed when collateral discovery is missing, duplicated, or malformed. Do not silently fall back to another token and do not interpret that token's zero balance as a real account result.
 
 ## Account inputs
 
@@ -27,7 +31,8 @@ python3 scripts/polymarket_data.py --pretty account '@public-user'
 python3 scripts/polymarket_data.py --pretty profile '@public-user'
 python3 scripts/polymarket_data.py --pretty positions '@public-user'
 
-# Public Polygon collateral balance
+# Discover active pUSD metadata, then read its public Polygon balance
+python3 scripts/polymarket_data.py --pretty collateral-asset
 python3 scripts/polymarket_data.py --pretty balance '@public-user'
 
 # Active candidate feed and one market
@@ -42,19 +47,24 @@ The book command preserves the raw fee response and also returns `fee_rate_bps` 
 
 The discover command supplies markets for Agent screening; it does not decide topic, quality, causal analyzability, or settlement horizon.
 
-Use the `account` command once per scan as the canonical identity, position, and collateral snapshot. Do not assemble sizing inputs from different profile resolutions or fetch times. Verify that every returned position uses the resolved proxy wallet. Compute holdings liquidation value separately from complete live bid books; do not use the API's displayed `currentValue` as the sizing value.
+Use the `account` command once per scan as the canonical identity, position, collateral-metadata, and pUSD-balance snapshot. Do not assemble sizing inputs from different profile resolutions or fetch times. Verify that every returned position uses the resolved proxy wallet and that `collateral.asset` is `pUSD` with `collateral_source: public_collateral_assets_api`. Compute holdings liquidation value separately from complete live bid books; do not use the API's displayed `currentValue` as the sizing value.
 
-If the resolved account differs from the latest report, treat it as an account change and require explicit runtime intent. If the first snapshot returns both zero positions and zero collateral, continue market research but produce no funded BUY or ADD action and prominently identify the resolved public profile in the private report.
+If the resolved account differs from the latest report, treat it as an account change and require explicit runtime intent. If a successfully discovered pUSD snapshot returns both zero positions and zero collateral, continue market research but produce no funded BUY or ADD action and prominently identify the resolved public profile in the private report. A collateral-discovery failure is a mechanical data error, not a zero balance.
+
+An explicit `--token-address` override exists only on the standalone `balance` diagnostic command. The canonical `account` command does not accept it. Never persist a diagnostic token as a new default without verifying current official collateral metadata and updating tests.
 
 ## Data sources
 
 - Gamma API: public profile and market metadata, including description and resolution criteria.
 - Data API: public positions.
 - CLOB API: token order books and fee rate.
-- Polygon JSON-RPC: public collateral-token balance.
+- Public collateral-assets API: active pUSD address and decimals.
+- Polygon JSON-RPC: public pUSD balance.
 - Public Polymarket profile page: username-to-proxy-wallet resolution when no address is embedded.
 
 Use retries for transient failures. The data script uses Python's standard HTTP client first and, when installed, falls back to `curl` for CDN/TLS resets commonly encountered from Linux shells. When a required response remains unavailable, try an alternative public endpoint or the public market page and record what was attempted.
+
+Official references: [pUSD](https://docs.polymarket.com/concepts/pusd) and [contract metadata](https://docs.polymarket.com/resources/contracts).
 
 ## Snapshots
 

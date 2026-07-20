@@ -68,13 +68,15 @@ PY
 "${DATA[@]}" book "$CANDIDATE_TOKEN" > "$TMP/candidate-book.json"
 
 # Validate completeness without printing or preserving the account identifier.
-"$PYTHON_BIN" - "$TMP" "$ACTIVE_BOOKS" <<'PY'
+# Set POLYMARKET_EXPECTED_MIN_COLLATERAL at runtime to catch a wrong-token zero balance.
+"$PYTHON_BIN" - "$TMP" "$ACTIVE_BOOKS" "${POLYMARKET_EXPECTED_MIN_COLLATERAL:-}" <<'PY'
 import json
 import pathlib
 import sys
 
 root = pathlib.Path(sys.argv[1])
 active_books = int(sys.argv[2])
+expected_minimum = sys.argv[3]
 load = lambda name: json.loads((root / name).read_text(encoding="utf-8"))
 snapshot = load("account-snapshot.json")
 account = snapshot["account"]
@@ -85,12 +87,21 @@ candidate_book = load("candidate-book.json")
 assert account["address"].startswith("0x") and len(account["address"]) == 42
 assert isinstance(profile, dict)
 assert isinstance(positions["positions"], list) and positions["count"] == len(positions["positions"])
+assert balance["asset"] == "pUSD"
+assert balance["collateral_source"] == "public_collateral_assets_api"
 assert isinstance(balance["balance"], (int, float)) and balance["balance"] >= 0
 assert snapshot["sizing_inputs"]["available_cash"] == balance["balance"]
+assert snapshot["sizing_inputs"]["collateral_asset"] == "pUSD"
+assert snapshot["sizing_inputs"]["collateral_token_address"] == balance["token_address"]
+if expected_minimum:
+    assert balance["balance"] >= float(expected_minimum), "collateral balance was below runtime expectation"
 assert len(list((root / "holding-markets").glob("*.json"))) == positions["count"]
 assert len(list((root / "holding-books").glob("*.json"))) == active_books
 assert isinstance(candidate_book["book"]["asks"], list)
 assert isinstance(candidate_book["book"]["bids"], list)
 assert isinstance(candidate_book["fee"]["fee_rate"], (int, float))
-print(f"live read-only account test passed: {positions['count']} positions, {active_books} active books")
+print(
+    f"live read-only account test passed: pUSD verified, "
+    f"{positions['count']} positions, {active_books} active books"
+)
 PY

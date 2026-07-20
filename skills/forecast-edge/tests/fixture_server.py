@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
+FIXTURE_PUSD = "0x4444444444444444444444444444444444444444"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -41,6 +42,18 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"proxyWallet": "0x2222222222222222222222222222222222222222", "name": "fixture-user"})
         elif path == "/positions":
             self.send_fixture("positions.json")
+        elif path == "/v1/info/assets":
+            self.send_json(
+                [
+                    {
+                        "asset": "pUSD",
+                        "address": FIXTURE_PUSD,
+                        "decimals": 6,
+                        "collateral_ratio": "1.00",
+                        "withdrawal_fee": "0.000000",
+                    }
+                ]
+            )
         elif path == "/markets":
             self.send_json([json.loads((FIXTURES / "market.json").read_text())])
         elif path in {"/markets/540817", "/markets/slug/sample-event"}:
@@ -57,7 +70,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         length = int(self.headers.get("Content-Length", "0"))
-        json.loads(self.rfile.read(length) or b"{}")
+        request = json.loads(self.rfile.read(length) or b"{}")
+        contract = str(request.get("params", [{}])[0].get("to", "")).lower()
+        if contract != FIXTURE_PUSD:
+            self.send_json({"jsonrpc": "2.0", "id": 1, "error": {"message": "wrong collateral"}})
+            return
         self.send_json({"jsonrpc": "2.0", "id": 1, "result": hex(123_456_789)})
 
 

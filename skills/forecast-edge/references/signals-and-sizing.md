@@ -80,9 +80,11 @@ Keep the Kelly fraction configurable and enabled by default at `0.50`.
 Define conservative bankroll as:
 
 ```text
-publicly visible available collateral
+public pUSD balance from the dynamically discovered active collateral contract
 + current holdings valued at complete executable bid VWAP after sell fees
 ```
+
+If a verified authenticated available-to-trade value is lower than the public pUSD balance, use the lower value as cash. Never substitute a fixed legacy token balance.
 
 Report model value separately. Do not use it to inflate the sizing bankroll.
 
