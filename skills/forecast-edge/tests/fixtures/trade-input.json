@@ -6,6 +6,8 @@
   "fee_rate": 0.04,
   "kelly_fraction": 0.5,
   "minimum_edge_retention": 0.7,
+  "soft_minimum_raw_edge": 0.1,
+  "soft_edge_override": false,
   "min_order_shares": 5,
   "days_to_resolution": 30,
   "reserve": {

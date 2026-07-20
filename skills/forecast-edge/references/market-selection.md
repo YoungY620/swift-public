@@ -41,6 +41,8 @@ After cold start, let exits, settlements, available cash, quality, and reserve p
 
 A candidate must first pass the absolute executable-edge and sizing rules. Then compare its time-adjusted quality with current qualified holdings and the accepted opportunities in the latest two reports.
 
+Normally require raw probability edge strictly above 10pp for `BUY` or `ADD`. Treat 10pp as a soft quality preference, not a hard execution boundary: a smaller raw edge may proceed only with an explicit evidence-backed exception recorded under the rules in `signals-and-sizing.md`. Never lower the hard post-cost edge or 70% edge-retention requirements.
+
 - Prefer candidates above the recent normal quality baseline.
 - Watch rather than buy candidates materially below it.
 - Reject candidates far below it even if their raw price difference is positive.

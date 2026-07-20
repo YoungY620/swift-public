@@ -13,7 +13,7 @@
     "summary"
   ],
   "properties": {
-    "schema_version": { "const": "2.0" },
+    "schema_version": { "const": "2.1" },
     "run": {
       "type": "object",
       "required": ["id", "started_at", "completed_at", "data_cutoff", "account", "previous_report_ids"],
@@ -114,6 +114,10 @@
         "model_value",
         "executable_price",
         "net_edge",
+        "raw_edge",
+        "soft_minimum_raw_edge",
+        "soft_edge_pass",
+        "soft_edge_override_reason",
         "reason"
       ],
       "properties": {
@@ -122,6 +126,10 @@
         "model_value": { "type": "number", "minimum": 0, "maximum": 1 },
         "executable_price": { "type": "number", "minimum": 0, "maximum": 1 },
         "net_edge": { "type": "number", "minimum": 0 },
+        "raw_edge": { "type": "number", "minimum": -1, "maximum": 1 },
+        "soft_minimum_raw_edge": { "const": 0.1 },
+        "soft_edge_pass": { "type": "boolean" },
+        "soft_edge_override_reason": { "type": ["string", "null"] },
         "reason": { "type": "string" }
       }
     },

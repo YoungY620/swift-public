@@ -1,5 +1,5 @@
 {
-  "schema_version": "2.0",
+  "schema_version": "2.1",
   "run": {
     "id": "sample-run",
     "started_at": "2026-07-19T00:00:00Z",
@@ -68,6 +68,10 @@
         "model_value": 0.65,
         "executable_price": 0.51,
         "net_edge": 0.14,
+        "raw_edge": 0.14,
+        "soft_minimum_raw_edge": 0.1,
+        "soft_edge_pass": true,
+        "soft_edge_override_reason": null,
         "reason": "市场仍存在独立入场优势，但当前目标仓位不需要继续加仓。"
       },
       "allocation": {
@@ -127,6 +131,10 @@
         "model_value": 0.7,
         "executable_price": 0.55,
         "net_edge": 0.15,
+        "raw_edge": 0.15,
+        "soft_minimum_raw_edge": 0.1,
+        "soft_edge_pass": true,
+        "soft_edge_override_reason": null,
         "reason": "最小可执行订单保留了超过 70% 的原始优势。"
       },
       "allocation": {

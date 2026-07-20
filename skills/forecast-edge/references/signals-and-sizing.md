@@ -35,12 +35,25 @@ Apply the sell rule to the complete holding. Issue `SELL` immediately when cross
 
 Issue:
 
-- `BUY` for a new position that passes crossing, minimum-size, sizing, reserve, and quality rules.
-- `ADD` only when the buy crossing survives on the incremental order, the post-cost edge retains at least 70% of raw edge, and the half-Kelly target exceeds current cost.
+- `BUY` for a new position that passes crossing, the 10pp soft preference or a documented exception, minimum-size, sizing, reserve, and quality rules.
+- `ADD` only when the buy crossing survives on the incremental order, the 10pp soft preference or a documented exception applies, the post-cost edge retains at least 70% of raw edge, and the half-Kelly target exceeds current cost.
 - `SELL` when the complete executable sell crossing holds.
 - `HOLD` otherwise. If the recalculated target shrinks without a sell crossing, hold rather than performing an ordinary rebalance reduction.
 
 Do not sell an un-crossed losing position to replace it with a better candidate.
+
+## Soft 10pp entry preference
+
+For `BUY` and `ADD`, normally require:
+
+```text
+raw_edge = v - best_ask
+raw_edge > 0.10
+```
+
+This is a soft preference, not a hard execution constraint. An Agent may recommend an entry at `raw_edge <= 0.10` only when the full research supports a specific exception, such as unusually strong primary evidence, unusually short capital lock-up, exceptionally low execution drag, or material independent portfolio value. Record the exception reason explicitly in the trade-math input and private report. Do not use an exception merely to fill a position count or deploy idle cash.
+
+The exception never relaxes the hard requirements that the minimum executable order has positive post-fee and post-slippage edge, retains at least 70% of raw edge, satisfies minimum order size, and receives a positive shared portfolio allocation. The 10pp preference applies only to buying or adding; it does not delay a sell crossing.
 
 ## Market opportunity versus account action
 
@@ -53,6 +66,7 @@ Then calculate the account action with the real bankroll and available cash:
 - Never emit `BUY` or `ADD` with zero recommended cash. Preserve the standalone opportunity in `opportunity`, not in the account action.
 - Never present a nominal, illustrative, or theoretical bankroll as an account recommendation.
 - Keep public market commentary separate from private executable instructions.
+- Pass `soft_minimum_raw_edge: 0.10` to `trade_math.py`. For a below-threshold exception, also pass `soft_edge_override: true` and a non-empty Chinese `soft_edge_override_reason`; otherwise the script returns no BUY or ADD allocation.
 
 ## Edge retention and capacity
 

@@ -27,6 +27,7 @@ class ReportToolTests(unittest.TestCase):
         self.assertIn("是（YES）", markdown)
         self.assertIn("Example Statistics Office", markdown)
         self.assertIn("新增证据影响", markdown)
+        self.assertIn("入场软门槛", markdown)
 
     def test_v2_report_rejects_non_chinese_narrative(self) -> None:
         report = json.loads((FIXTURES / "report.json").read_text())
@@ -90,6 +91,30 @@ class ReportToolTests(unittest.TestCase):
         report["actions"] = report["actions"][1:]
         with self.assertRaisesRegex(report_tool.ReportError, "missing final actions"):
             report_tool.validate_report(report)
+
+    def test_below_ten_point_entry_requires_a_chinese_override_reason(self) -> None:
+        report = json.loads((FIXTURES / "report.json").read_text())
+        opportunity = report["candidates"][0]["opportunity"]
+        opportunity["raw_edge"] = 0.09
+        opportunity["soft_edge_pass"] = False
+        with self.assertRaisesRegex(report_tool.ReportError, "override reason"):
+            report_tool.validate_report(report)
+
+        opportunity["soft_edge_override_reason"] = "一手证据质量极高且结算期限很短。"
+        report_tool.validate_report(report)
+
+    def test_v2_report_without_soft_edge_fields_remains_readable_as_history(self) -> None:
+        report = json.loads((FIXTURES / "report.json").read_text())
+        report["schema_version"] = "2.0"
+        for analysis in report["current_positions"] + report["candidates"]:
+            for field in (
+                "raw_edge",
+                "soft_minimum_raw_edge",
+                "soft_edge_pass",
+                "soft_edge_override_reason",
+            ):
+                del analysis["opportunity"][field]
+        report_tool.validate_report(report)
 
     def test_legacy_v1_report_remains_readable_as_history(self) -> None:
         report = json.loads((FIXTURES / "report.json").read_text())

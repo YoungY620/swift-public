@@ -17,6 +17,7 @@ Estimate final settlement probabilities more accurately than the market, compare
 - Emit an immediate crossing signal. Do not require confirmation across multiple runs.
 - Emit only `BUY`, `ADD`, `HOLD`, or `SELL` as the final action for a researched market.
 - Allow cash to remain idle. Never add a weak candidate merely to reach a position count or deployment target.
+- Normally recommend `BUY` or `ADD` only when the raw probability edge at the executable best ask is strictly greater than 10 percentage points. Treat this as a soft preference: a smaller edge requires an explicit evidence-backed exception, while positive post-cost edge and 70% edge retention remain mandatory.
 - Never modify an archived report.
 - Use only the observed account snapshot for cash, holdings, and bankroll. Never invent a nominal or reference bankroll.
 - Discover the current active Polymarket collateral from official public asset metadata on every scan. Size with its public on-chain balance; never assume a fixed legacy collateral contract.

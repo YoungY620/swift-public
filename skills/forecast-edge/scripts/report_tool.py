@@ -109,7 +109,7 @@ def validate_analysis(raw: Any, path: str, *, current_position: bool, schema_ver
     validate_evidence(analysis["evidence"], f"{path}.evidence", current_position=current_position)
     if current_position and "comparison" not in analysis:
         raise ReportError(f"{path}.comparison is required for current positions; use null on the first run")
-    if schema_version == "2.0":
+    if schema_version in {"2.0", "2.1"}:
         require_chinese_text(model["conclusion"], f"{path}.model.conclusion")
         require_chinese_text(signal["rationale"], f"{path}.signal.rationale")
         for index, evidence in enumerate(analysis["evidence"]):
@@ -129,6 +129,43 @@ def validate_analysis(raw: Any, path: str, *, current_position: bool, schema_ver
         finite_number(opportunity["model_value"], f"{path}.opportunity.model_value")
         finite_number(opportunity["executable_price"], f"{path}.opportunity.executable_price")
         finite_number(opportunity["net_edge"], f"{path}.opportunity.net_edge")
+        if schema_version == "2.1":
+            require_fields(
+                opportunity,
+                {
+                    "raw_edge",
+                    "soft_minimum_raw_edge",
+                    "soft_edge_pass",
+                    "soft_edge_override_reason",
+                },
+                f"{path}.opportunity",
+            )
+            raw_edge = finite_number(
+                opportunity["raw_edge"], f"{path}.opportunity.raw_edge", minimum=-1.0
+            )
+            soft_minimum = finite_number(
+                opportunity["soft_minimum_raw_edge"],
+                f"{path}.opportunity.soft_minimum_raw_edge",
+            )
+            if not approximately_equal(soft_minimum, 0.10):
+                raise ReportError(f"{path}.opportunity.soft_minimum_raw_edge must equal 0.10")
+            soft_edge_pass = opportunity["soft_edge_pass"]
+            if not isinstance(soft_edge_pass, bool):
+                raise ReportError(f"{path}.opportunity.soft_edge_pass must be boolean")
+            expected_soft_pass = raw_edge > soft_minimum + 1e-12
+            if soft_edge_pass != expected_soft_pass:
+                raise ReportError(
+                    f"{path}.opportunity.soft_edge_pass must match raw_edge > soft_minimum_raw_edge"
+                )
+            override_reason = opportunity["soft_edge_override_reason"]
+            if override_reason is not None:
+                require_chinese_text(
+                    override_reason, f"{path}.opportunity.soft_edge_override_reason"
+                )
+            if opportunity["entry_eligible"] and not soft_edge_pass and override_reason is None:
+                raise ReportError(
+                    f"{path}.opportunity requires a soft-edge override reason below or at 10pp"
+                )
         allocation = require_object(analysis["allocation"], f"{path}.allocation")
         require_fields(
             allocation,
@@ -184,8 +221,8 @@ def validate_report(report: Any) -> dict[str, Any]:
         "report",
     )
     schema_version = str(root["schema_version"])
-    if schema_version not in {"1.0", "2.0"}:
-        raise ReportError("report.schema_version must be '1.0' or '2.0'")
+    if schema_version not in {"1.0", "2.0", "2.1"}:
+        raise ReportError("report.schema_version must be '1.0', '2.0', or '2.1'")
     run = require_object(root["run"], "report.run")
     require_fields(
         run,
@@ -197,7 +234,7 @@ def validate_report(report: Any) -> dict[str, Any]:
     require_list(run["previous_report_ids"], "report.run.previous_report_ids")
     portfolio = require_object(root["portfolio"], "report.portfolio")
     portfolio_fields = {"available_collateral", "estimated_bankroll", "reserve_cash"}
-    if schema_version == "2.0":
+    if schema_version in {"2.0", "2.1"}:
         portfolio_fields.update(
             {
                 "holdings_liquidation_value",
@@ -238,7 +275,7 @@ def validate_report(report: Any) -> dict[str, Any]:
             raise ReportError(f"report.actions[{index}].action must be one of {sorted(SIGNALS)}")
     if not isinstance(root["summary"], str) or not root["summary"].strip():
         raise ReportError("report.summary must be a non-empty string")
-    if schema_version == "2.0":
+    if schema_version in {"2.0", "2.1"}:
         require_chinese_text(root["summary"], "report.summary")
         for index, action in enumerate(actions):
             require_chinese_text(action["rationale"], f"report.actions[{index}].rationale")
@@ -445,6 +482,16 @@ def render_analysis(item: dict[str, Any], *, current_position: bool) -> list[str
     ]
     if current_position:
         lines.append(f"- 上轮对比：{render_comparison(item.get('comparison'))}")
+    opportunity = item.get("opportunity")
+    if isinstance(opportunity, dict) and "soft_edge_pass" in opportunity:
+        soft_status = "超过" if opportunity["soft_edge_pass"] else "未超过"
+        soft_line = (
+            f"- 入场软门槛：原始优势 {float(opportunity['raw_edge']) * 100:.2f}pp；"
+            f"{soft_status} 10pp。"
+        )
+        if opportunity.get("soft_edge_override_reason"):
+            soft_line += f"例外理由：{opportunity['soft_edge_override_reason']}"
+        lines.append(soft_line)
     lines.extend(["", "#### 关键证据", ""])
     lines.extend(render_evidence(item["evidence"], current_position=current_position))
     return lines
@@ -463,7 +510,7 @@ def render_report(report: dict[str, Any]) -> str:
         f"- 保守总资金：{portfolio['estimated_bankroll']}",
         f"- 机会储备：{portfolio['reserve_cash']}",
     ]
-    if report.get("schema_version") == "2.0":
+    if report.get("schema_version") in {"2.0", "2.1"}:
         lines.extend(
             [
                 f"- 持仓可变现价值：{portfolio['holdings_liquidation_value']}",

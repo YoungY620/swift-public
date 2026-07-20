@@ -9,7 +9,10 @@
     "fraction": 0.5
   },
   "execution": {
-    "minimum_edge_retention": 0.7
+    "minimum_edge_retention": 0.7,
+    "soft_minimum_raw_edge": 0.1,
+    "soft_minimum_raw_edge_is_hard": false,
+    "require_soft_edge_override_reason": true
   },
   "data": {
     "collateral_symbol": "pUSD",

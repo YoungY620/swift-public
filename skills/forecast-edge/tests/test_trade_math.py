@@ -73,6 +73,34 @@ class TradeMathTests(unittest.TestCase):
         result = trade_math.evaluate_trade(document)
         self.assertAlmostEqual(result["model_value"], 0.65)
 
+    def test_raw_edge_must_normally_be_strictly_greater_than_ten_points(self) -> None:
+        document = sample()
+        document["model_probability"] = 0.60
+        result = trade_math.evaluate_trade(document)
+        self.assertAlmostEqual(result["soft_edge"]["raw_edge"], 0.10)
+        self.assertFalse(result["soft_edge"]["passes"])
+        self.assertFalse(result["opportunity"]["entry_eligible"])
+        self.assertEqual(result["buy"]["suggested_cash"], 0.0)
+        self.assertEqual(result["signal"], "HOLD")
+
+    def test_documented_soft_edge_override_can_allow_a_smaller_entry_edge(self) -> None:
+        document = sample()
+        document["model_probability"] = 0.59
+        document["soft_edge_override"] = True
+        document["soft_edge_override_reason"] = "短期限、高质量一手证据且净优势仍满足执行要求。"
+        result = trade_math.evaluate_trade(document)
+        self.assertFalse(result["soft_edge"]["passes"])
+        self.assertTrue(result["soft_edge"]["override_applied"])
+        self.assertTrue(result["opportunity"]["entry_eligible"])
+        self.assertEqual(result["signal"], "BUY")
+
+    def test_soft_edge_override_requires_an_auditable_reason(self) -> None:
+        document = sample()
+        document["model_probability"] = 0.59
+        document["soft_edge_override"] = True
+        with self.assertRaisesRegex(trade_math.TradeMathError, "override_reason is required"):
+            trade_math.evaluate_trade(document)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -28,7 +28,7 @@ The JSON Schema is [report.schema.json](report.schema.json). The script also per
 
 ## Output language
 
-Write the final `report.md` and all private operation guidance in Simplified Chinese. For schema version `2.0`, the validator requires Chinese narrative content in the portfolio summary, report summary, model conclusions, signal rationales, action rationales, and evidence summaries, conclusions, and credibility assessments.
+Write the final `report.md` and all private operation guidance in Simplified Chinese. For schema version `2.0` and later, the validator requires Chinese narrative content in the portfolio summary, report summary, model conclusions, signal rationales, action rationales, and evidence summaries, conclusions, and credibility assessments.
 
 Keep JSON keys, signal enums, outcome enums, IDs, URLs, exact market questions, source names, publication titles, and necessary verbatim quotations in their original form. Explain any retained foreign-language material in Chinese. Render signal and outcome enums with Chinese labels while preserving their machine values, such as `买入（BUY）` and `否（NO）`.
 
@@ -50,6 +50,7 @@ For current positions and candidates, include:
 - Market ID, question, URL, researched outcome, exact resolution criteria, and end date.
 - Point estimate, held-outcome model value, causal-tree input and calculation result, and conclusion.
 - Book timestamp, best prices, fee rate, VWAP, raw and actual edge, edge retention, and depth capacity.
+- Whether raw edge is strictly above the default 10pp soft entry preference. For any below-threshold entry opportunity, include the explicit exception reason; absence of a reason means no `BUY` or `ADD` recommendation.
 - Half-Kelly result, reserve constraint, suggested shares/cash, and daily expected return.
 - Signal and rationale.
 - Standalone market opportunity, final account action, and portfolio allocation audit.
@@ -75,7 +76,7 @@ Do not create `INCOMPLETE`, `UNKNOWN`, or `REVIEW_REQUIRED` actions. Continue re
 
 ## Portfolio consistency
 
-Use report schema version `2.0` for new runs. Keep older reports readable as history. Validate all of the following before archival:
+Use report schema version `2.1` for new runs. Keep older reports readable as history. Validate all of the following before archival:
 
 - Conservative bankroll equals available collateral plus holdings liquidation value.
 - Deployable cash plus protected reserve equals available collateral.

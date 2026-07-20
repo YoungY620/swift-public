@@ -105,6 +105,8 @@ assert load("book.json")["fee"]["fee_rate"] == 0.04
 assert abs(load("probability.json")["probability"] - 0.56) < 1e-12
 assert load("trade.json")["signal"] == "BUY"
 assert load("trade.json")["opportunity"]["entry_eligible"] is True
+assert load("trade.json")["soft_edge"]["minimum_raw_edge"] == 0.1
+assert load("trade.json")["soft_edge"]["passes"] is True
 assert load("allocation.json")["portfolio"]["allocated_cash"] == 72.5
 assert load("allocation.json")["portfolio"]["new_positions_allocated"] == 2
 assert load("valid.json")["valid"] is True

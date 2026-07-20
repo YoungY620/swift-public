@@ -162,6 +162,18 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
         minimum=0.0,
         maximum=1.0,
     )
+    soft_minimum_raw_edge = number(
+        document.get("soft_minimum_raw_edge", 0.10),
+        "soft_minimum_raw_edge",
+        minimum=0.0,
+        maximum=1.0,
+    )
+    soft_edge_override = document.get("soft_edge_override", False)
+    if not isinstance(soft_edge_override, bool):
+        raise TradeMathError("soft_edge_override must be a boolean")
+    soft_edge_override_reason = str(document.get("soft_edge_override_reason") or "").strip()
+    if soft_edge_override and not soft_edge_override_reason:
+        raise TradeMathError("soft_edge_override_reason is required when soft_edge_override is true")
     min_order_shares = number(document.get("min_order_shares", 0.0), "min_order_shares", minimum=0.0)
     current = document.get("current_position") or {}
     if not isinstance(current, dict):
@@ -179,6 +191,12 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
     normal_cash_budget = available_cash if use_reserve else max(0.0, available_cash - reserve_cash)
 
     capacity = retention_capacity(asks, model_value, fee_rate, minimum_retention)
+    soft_edge_pass = bool(
+        capacity["raw_edge"] is not None
+        and capacity["raw_edge"] > soft_minimum_raw_edge + 1e-12
+    )
+    soft_edge_override_applied = bool(soft_edge_override and not soft_edge_pass)
+    soft_entry_allowed = soft_edge_pass or soft_edge_override
     probe_shares = min_order_shares if min_order_shares > 0 else 1.0
     probe_fill = walk_levels(asks, probe_shares, fee_rate, sell=False)
     probe_actual_edge = (
@@ -192,7 +210,8 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
         else None
     )
     entry_eligible = bool(
-        probe_actual_edge is not None
+        soft_entry_allowed
+        and probe_actual_edge is not None
         and probe_actual_edge > 0
         and probe_retention is not None
         and probe_retention + 1e-9 >= minimum_retention
@@ -209,7 +228,11 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
     fractional_kelly = full_kelly * kelly_fraction
     kelly_target_cash = bankroll * fractional_kelly
     incremental_kelly_cash = max(0.0, kelly_target_cash - current_cost)
-    suggested_cash_cap = min(incremental_kelly_cash, capacity["cash"], normal_cash_budget)
+    suggested_cash_cap = (
+        min(incremental_kelly_cash, capacity["cash"], normal_cash_budget)
+        if soft_entry_allowed
+        else 0.0
+    )
     suggested_shares = shares_for_cash(asks, suggested_cash_cap, fee_rate) if suggested_cash_cap > 0 else 0.0
     buy_fill = walk_levels(asks, suggested_shares, fee_rate, sell=False)
     buy_actual_edge = model_value - buy_fill["all_in_unit"] if buy_fill["all_in_unit"] is not None else None
@@ -219,7 +242,8 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
         else None
     )
     buy_cross = bool(
-        suggested_shares >= min_order_shares
+        soft_entry_allowed
+        and suggested_shares >= min_order_shares
         and buy_actual_edge is not None
         and buy_actual_edge > 0
         and buy_retention is not None
@@ -263,6 +287,15 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
             "actual_edge": probe_actual_edge,
             "edge_retention": probe_retention,
             "fill": probe_fill,
+        },
+        "soft_edge": {
+            "minimum_raw_edge": soft_minimum_raw_edge,
+            "requires_strictly_greater": True,
+            "raw_edge": capacity["raw_edge"],
+            "passes": soft_edge_pass,
+            "override_requested": soft_edge_override,
+            "override_applied": soft_edge_override_applied,
+            "override_reason": soft_edge_override_reason or None,
         },
         "buy": {
             "cross": buy_cross,

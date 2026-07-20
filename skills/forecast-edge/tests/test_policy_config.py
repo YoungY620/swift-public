@@ -31,6 +31,13 @@ class PolicyConfigTests(unittest.TestCase):
         config = json.loads((ROOT / "config" / "defaults.json").read_text())
         self.assertEqual(config["report"]["language"], "zh-CN")
 
+    def test_ten_point_raw_edge_preference_is_soft_and_auditable(self) -> None:
+        config = json.loads((ROOT / "config" / "defaults.json").read_text())
+        execution = config["execution"]
+        self.assertEqual(execution["soft_minimum_raw_edge"], 0.1)
+        self.assertFalse(execution["soft_minimum_raw_edge_is_hard"])
+        self.assertTrue(execution["require_soft_edge_override_reason"])
+
     def test_discovers_current_pusd_instead_of_using_legacy_collateral(self) -> None:
         config = json.loads((ROOT / "config" / "defaults.json").read_text())
         self.assertEqual(config["data"]["collateral_symbol"], "pUSD")
