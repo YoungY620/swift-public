@@ -20,7 +20,7 @@ Estimate final settlement probabilities more accurately than the market, compare
 - Never modify an archived report.
 - Use only the observed account snapshot for cash, holdings, and bankroll. Never invent a nominal or reference bankroll.
 - Discover the current active Polymarket collateral from official public asset metadata on every scan. Size with its public on-chain balance; never assume a fixed legacy collateral contract.
-- Distinguish a market entry opportunity from an executable account action. An unfunded opportunity may remain research-worthy but cannot produce a nonzero account BUY or ADD.
+- Distinguish a market entry opportunity from an executable account action. An unfunded opportunity may remain `entry_eligible`, but its account action must be `HOLD` with zero allocation; never emit a zero-cash `BUY` or `ADD`.
 - Keep market-correlation analysis qualitative. Do not create risk-cluster fields, graphs, identifiers, or persistent state, and do not change a market's probability tree merely to represent portfolio correlation.
 - Prioritize political and economic candidates. Treat culture and markets as secondary domains, and exclude sports and esports markets from new-candidate research.
 - Write the final private report and operation guidance in Simplified Chinese. Preserve machine keys, enums, URLs, proper names, and exact source text when necessary.

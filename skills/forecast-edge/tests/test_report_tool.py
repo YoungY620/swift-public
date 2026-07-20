@@ -58,6 +58,26 @@ class ReportToolTests(unittest.TestCase):
         with self.assertRaisesRegex(report_tool.ReportError, "nominal or theoretical"):
             report_tool.validate_report(report)
 
+    def test_zero_cash_entry_opportunity_cannot_emit_buy(self) -> None:
+        report = json.loads((FIXTURES / "report.json").read_text())
+        report["portfolio"].update(
+            {
+                "available_collateral": 0,
+                "estimated_bankroll": 20,
+                "reserve_cash": 0,
+                "deployable_cash": 0,
+                "allocated_cash": 0,
+                "remaining_cash": 0,
+            }
+        )
+        candidate = report["candidates"][0]
+        candidate["allocation"].update(
+            {"cash_before": 0, "allocated_cash": 0, "cash_after": 0}
+        )
+        report["actions"][1]["recommended_cash"] = 0
+        with self.assertRaisesRegex(report_tool.ReportError, "must be positive"):
+            report_tool.validate_report(report)
+
     def test_rejects_allocation_that_does_not_continue_shared_cash_chain(self) -> None:
         report = json.loads((FIXTURES / "report.json").read_text())
         report["candidates"][0]["allocation"]["cash_before"] = 70

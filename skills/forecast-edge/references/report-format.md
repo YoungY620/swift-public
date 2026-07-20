@@ -83,6 +83,7 @@ Use report schema version `2.0` for new runs. Keep older reports readable as his
 - Every BUY or ADD amount equals its portfolio allocation.
 - All BUY and ADD amounts combined equal portfolio allocated cash and never exceed deployable cash.
 - Zero available cash implies zero funded BUY and ADD actions.
+- A zero-cash entry opportunity must use final account action `HOLD`; zero-amount `BUY` and `ADD` are invalid.
 - Cold-start funded BUY count does not exceed the configured limit.
 - Market opportunities without funding remain distinct from account actions.
 

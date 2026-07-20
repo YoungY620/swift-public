@@ -50,6 +50,7 @@ Then calculate the account action with the real bankroll and available cash:
 
 - An entry opportunity may be `entry_eligible: true` while the account action remains `HOLD` with zero allocation.
 - Emit account `BUY` or `ADD` only after `portfolio_allocate.py` assigns a positive executable amount.
+- Never emit `BUY` or `ADD` with zero recommended cash. Preserve the standalone opportunity in `opportunity`, not in the account action.
 - Never present a nominal, illustrative, or theoretical bankroll as an account recommendation.
 - Keep public market commentary separate from private executable instructions.
 
