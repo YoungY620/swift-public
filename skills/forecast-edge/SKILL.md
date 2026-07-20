@@ -23,6 +23,7 @@ Estimate final settlement probabilities more accurately than the market, compare
 - Distinguish a market entry opportunity from an executable account action. An unfunded opportunity may remain `entry_eligible`, but its account action must be `HOLD` with zero allocation; never emit a zero-cash `BUY` or `ADD`.
 - Keep market-correlation analysis qualitative. Do not create risk-cluster fields, graphs, identifiers, or persistent state, and do not change a market's probability tree merely to represent portfolio correlation.
 - Prioritize political and economic candidates. Treat culture and markets as secondary domains, and exclude sports and esports markets from new-candidate research.
+- Enumerate the complete active-event metadata universe before new-candidate screening. Select events before expanding their child markets, and never describe a truncated API page or deeply researched subset as the global optimum.
 - Write the final private report and operation guidance in Simplified Chinese. Preserve machine keys, enums, URLs, proper names, and exact source text when necessary.
 
 ## Run a full scan
@@ -30,7 +31,7 @@ Estimate final settlement probabilities more accurately than the market, compare
 1. Establish the account input and output directory. Read the latest two archived reports with `scripts/report_tool.py previous` for evidence comparison, recent opportunity quality, and reference-position sizing only.
 2. Create one canonical account snapshot with `scripts/polymarket_data.py account`. Save it unchanged, verify the resolved identity and dynamically discovered active collateral, and derive public collateral cash plus all current positions from it. Read [polymarket-data.md](references/polymarket-data.md).
 3. Fetch complete executable bids for all positions, then calculate holdings liquidation value and conservative bankroll. Treat the public pUSD balance as the public cash estimate; if a verified authenticated available-to-trade value is lower, use the lower value. If cash is zero or unavailable, keep researching but do not invent buying power.
-4. Inspect the current portfolio before expensive candidate research. Discover new markets after excluding current holdings, then build a portfolio-aware research queue using the first pass in [portfolio-management.md](references/portfolio-management.md) and [market-selection.md](references/market-selection.md).
+4. Inspect the current portfolio before expensive candidate research. Run `scripts/polymarket_data.py candidate-events` with the canonical account snapshot to follow Gamma's opaque event keyset cursor until exhaustion and deterministically remove events containing current holdings, sports/esports, duplicates, and events without usable markets. Continue cheap Agent screening through the returned event sequence until about 100 events pass domain, causal-analyzability, horizon, and portfolio checks, or until the sequence is exhausted. Fetch each selected event with `scripts/polymarket_data.py event`, expand its child markets, then rank contracts and build a varied deep-research queue of about ten markets using [portfolio-management.md](references/portfolio-management.md) and [market-selection.md](references/market-selection.md).
 5. Reconstruct and re-research every current market. For every queued candidate, build and repeatedly revise a recursive scenario tree. Read [research-method.md](references/research-method.md) and [evidence-policy.md](references/evidence-policy.md); use `scripts/probability_tree.py` for arithmetic.
 6. Fetch a fresh order book and fee rate for every held or proposed outcome. Use `scripts/trade_math.py` to separate standalone market opportunities from cash-constrained account actions and to calculate half-Kelly and liquidity caps. Read [signals-and-sizing.md](references/signals-and-sizing.md).
 7. Reassess the researched opportunities as one portfolio. Apply the second semantic-diversification pass in [portfolio-management.md](references/portfolio-management.md), remove or demote redundant risks, and rank the retained BUY and ADD opportunities.
@@ -57,6 +58,9 @@ All scripts accept `--help`, print machine-readable JSON to stdout, send diagnos
 ```bash
 python3 scripts/polymarket_data.py --pretty positions 'https://polymarket.com/@account'
 python3 scripts/polymarket_data.py --pretty collateral-asset
+python3 scripts/polymarket_data.py --pretty account 'https://polymarket.com/@account' > account.json
+python3 scripts/polymarket_data.py --pretty candidate-events --account-snapshot account.json > candidate-events.json
+python3 scripts/polymarket_data.py --pretty event EVENT_ID_OR_SLUG
 python3 scripts/probability_tree.py --pretty tree.json
 python3 scripts/trade_math.py --pretty sizing.json
 python3 scripts/portfolio_allocate.py --pretty allocation.json

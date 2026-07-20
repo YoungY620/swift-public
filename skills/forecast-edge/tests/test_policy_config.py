@@ -18,6 +18,15 @@ class PolicyConfigTests(unittest.TestCase):
         self.assertEqual(scan["secondary_themes"], ["culture", "markets"])
         self.assertEqual(scan["excluded_themes"], ["sports", "esports"])
 
+    def test_enumerates_the_active_universe_before_building_a_hundred_candidate_prescreen(self) -> None:
+        config = json.loads((ROOT / "config" / "defaults.json").read_text())
+        scan = config["scan"]
+        self.assertTrue(scan["enumerate_active_event_universe"])
+        self.assertEqual(scan["active_event_page_size"], 100)
+        self.assertEqual(scan["active_event_safety_limit"], 100000)
+        self.assertEqual(scan["prescreen_event_target"], 100)
+        self.assertEqual(scan["candidate_research_soft_limit"], 10)
+
     def test_final_report_language_is_simplified_chinese(self) -> None:
         config = json.loads((ROOT / "config" / "defaults.json").read_text())
         self.assertEqual(config["report"]["language"], "zh-CN")

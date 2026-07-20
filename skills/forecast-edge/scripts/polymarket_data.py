@@ -20,6 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter
+from pathlib import Path
 from typing import Any
 
 
@@ -31,6 +32,41 @@ DEFAULT_SITE = "https://polymarket.com"
 DEFAULT_ASSETS = "https://api.perpetuals.polymarket.com"
 DEFAULT_RPC = "https://polygon-bor-rpc.publicnode.com"
 DEFAULT_COLLATERAL_SYMBOL = "pUSD"
+DEFAULT_EVENT_PAGE_SIZE = 100
+DEFAULT_EVENT_SAFETY_LIMIT = 100_000
+
+SPORTS_METADATA_TERMS = {
+    "sport",
+    "sports",
+    "esport",
+    "esports",
+    "e-sports",
+    "nba",
+    "nfl",
+    "mlb",
+    "nhl",
+    "wnba",
+    "ufc",
+    "mma",
+    "fifa",
+    "soccer",
+    "football",
+    "basketball",
+    "baseball",
+    "hockey",
+    "tennis",
+    "golf",
+    "cricket",
+    "formula 1",
+    "formula-one",
+    "motogp",
+}
+SPORTS_TEXT_RE = re.compile(
+    r"\b(?:nba|nfl|mlb|nhl|wnba|ufc|mma|fifa|esports?|e-sports|"
+    r"premier league|champions league|super bowl|world cup|formula ?1|motogp|"
+    r"league of legends|counter[- ]strike|dota ?2|valorant)\b",
+    re.IGNORECASE,
+)
 
 
 class DataError(RuntimeError):
@@ -174,6 +210,25 @@ def resolve_account(account: str, client: HttpClient, site_base: str) -> dict[st
     }
 
 
+def fetch_public_profile(address: str, client: HttpClient, gamma_base: str) -> dict[str, Any]:
+    url = join_url(gamma_base, "/public-profile", {"address": address})
+    try:
+        profile = client.get_json(url)
+    except DataError as exc:
+        return {
+            "available": False,
+            "source": "gamma_public_profile",
+            "error": str(exc),
+        }
+    if not isinstance(profile, dict):
+        return {
+            "available": False,
+            "source": "gamma_public_profile",
+            "error": "public-profile endpoint did not return an object",
+        }
+    return profile
+
+
 def parse_jsonish_list(value: Any) -> list[Any]:
     if value is None:
         return []
@@ -195,6 +250,22 @@ def optional_number(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def positive_int(value: int, label: str) -> int:
+    if value <= 0:
+        raise DataError(f"{label} must be greater than zero")
+    return value
+
+
+def load_json_object(path: str, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DataError(f"could not read {label} JSON from {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise DataError(f"{label} JSON must contain an object")
+    return value
 
 
 def normalize_collateral_asset(raw: Any, source: str) -> dict[str, Any]:
@@ -283,7 +354,285 @@ def normalize_market(raw: dict[str, Any]) -> dict[str, Any]:
         "volume_24h": optional_number(raw.get("volume24hr")),
         "liquidity": optional_number(raw.get("liquidity")),
         "outcomes": outcome_rows,
+        "url": (
+            f"https://polymarket.com/event/{raw.get('eventSlug') or raw.get('slug')}"
+            if raw.get("eventSlug") or raw.get("slug")
+            else None
+        ),
+    }
+
+
+def normalized_identity_value(value: Any) -> str | None:
+    text = str(value or "").strip().casefold()
+    return text or None
+
+
+def market_identity_keys(raw: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    for prefix, field in (("id", "id"), ("condition", "conditionId"), ("slug", "slug")):
+        value = normalized_identity_value(raw.get(field))
+        if value:
+            keys.add(f"{prefix}:{value}")
+    for token in parse_jsonish_list(raw.get("clobTokenIds")):
+        value = normalized_identity_value(token)
+        if value:
+            keys.add(f"token:{value}")
+    return keys
+
+
+def position_identity_keys(position: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    field_groups = {
+        "id": ("marketId", "market_id"),
+        "condition": ("conditionId", "condition_id"),
+        "slug": ("slug", "marketSlug", "market_slug"),
+        "token": ("asset", "tokenId", "token_id"),
+        "event_id": ("eventId", "event_id"),
+        "event_slug": ("eventSlug", "event_slug"),
+    }
+    for prefix, fields in field_groups.items():
+        for field in fields:
+            value = normalized_identity_value(position.get(field))
+            if value:
+                keys.add(f"{prefix}:{value}")
+    return keys
+
+
+def account_position_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    container = snapshot.get("positions", [])
+    if isinstance(container, dict):
+        container = container.get("positions", [])
+    if not isinstance(container, list):
+        raise DataError("account snapshot positions must contain a list")
+    return [item for item in container if isinstance(item, dict)]
+
+
+def event_identity_keys(raw: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    for prefix, field in (("event_id", "id"), ("event_slug", "slug")):
+        value = normalized_identity_value(raw.get(field))
+        if value:
+            keys.add(f"{prefix}:{value}")
+    return keys
+
+
+def event_primary_key(raw: dict[str, Any]) -> str | None:
+    keys = event_identity_keys(raw)
+    return sorted(keys)[0] if keys else None
+
+
+def flatten_labels(value: Any) -> list[str]:
+    labels: list[str] = []
+    if isinstance(value, str):
+        text = value.strip().casefold()
+        if text:
+            labels.append(text)
+    elif isinstance(value, dict):
+        for key in ("label", "name", "slug", "category", "subcategory"):
+            labels.extend(flatten_labels(value.get(key)))
+        for key in ("tags", "categories"):
+            labels.extend(flatten_labels(value.get(key)))
+    elif isinstance(value, list):
+        for item in value:
+            labels.extend(flatten_labels(item))
+    return labels
+
+
+def is_sports_or_esports_market(raw: dict[str, Any]) -> bool:
+    metadata_labels: list[str] = []
+    for field in ("category", "subcategory", "tags", "events", "series"):
+        metadata_labels.extend(flatten_labels(raw.get(field)))
+    for label in metadata_labels:
+        words = set(re.findall(r"[a-z0-9]+(?:-[a-z0-9]+)?", label))
+        if label in SPORTS_METADATA_TERMS or words.intersection(SPORTS_METADATA_TERMS):
+            return True
+        if SPORTS_TEXT_RE.search(label):
+            return True
+
+    title = " ".join(
+        str(raw.get(field) or "")
+        for field in ("question", "title", "groupItemTitle", "slug")
+    )
+    return SPORTS_TEXT_RE.search(title) is not None
+
+
+def normalize_event(raw: dict[str, Any], *, include_markets: bool = False) -> dict[str, Any]:
+    markets = [item for item in raw.get("markets") or [] if isinstance(item, dict)]
+    tradeable = [item for item in markets if is_tradeable_candidate(item)]
+    tags = sorted(set(flatten_labels(raw.get("tags"))))
+    result: dict[str, Any] = {
+        "id": str(raw.get("id")) if raw.get("id") is not None else None,
+        "title": raw.get("title") or raw.get("question"),
+        "slug": raw.get("slug"),
+        "description": raw.get("description"),
+        "start_date": raw.get("startDate"),
+        "end_date": raw.get("endDate"),
+        "active": raw.get("active"),
+        "closed": raw.get("closed"),
+        "volume": optional_number(raw.get("volume")),
+        "volume_24h": optional_number(raw.get("volume24hr")),
+        "liquidity": optional_number(raw.get("liquidity")),
+        "tags": tags,
+        "market_count": len(markets),
+        "tradeable_market_count": len(tradeable),
+        "market_examples": [
+            str(item.get("question") or item.get("title"))
+            for item in tradeable[:5]
+            if item.get("question") or item.get("title")
+        ],
         "url": f"https://polymarket.com/event/{raw.get('slug')}" if raw.get("slug") else None,
+    }
+    if include_markets:
+        result["markets"] = [
+            normalize_market({**market, "eventSlug": raw.get("slug")})
+            for market in markets
+        ]
+    return result
+
+
+def is_tradeable_candidate(raw: dict[str, Any]) -> bool:
+    if raw.get("active") is False or raw.get("closed") is True:
+        return False
+    if raw.get("acceptingOrders") is False:
+        return False
+    if not str(raw.get("question") or raw.get("title") or "").strip():
+        return False
+    outcomes = parse_jsonish_list(raw.get("outcomes"))
+    tokens = parse_jsonish_list(raw.get("clobTokenIds"))
+    return (
+        bool(outcomes)
+        and len(tokens) >= len(outcomes)
+        and all(str(token or "").strip() for token in tokens[: len(outcomes)])
+    )
+
+
+def fetch_active_event_universe(
+    client: HttpClient,
+    gamma_base: str,
+    *,
+    page_size: int = DEFAULT_EVENT_PAGE_SIZE,
+    safety_limit: int = DEFAULT_EVENT_SAFETY_LIMIT,
+    order: str = "volume24hr",
+    ascending: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    page_size = positive_int(page_size, "page size")
+    safety_limit = positive_int(safety_limit, "event safety limit")
+    events: list[dict[str, Any]] = []
+    seen_page_fingerprints: set[str] = set()
+    seen_cursors: set[str] = set()
+    after_cursor: str | None = None
+    pages = 0
+    expanded_markets = 0
+
+    while True:
+        response = client.get_json(
+            join_url(
+                gamma_base,
+                "/events/keyset",
+                {
+                    "active": "true",
+                    "closed": "false",
+                    "limit": page_size,
+                    "order": order,
+                    "ascending": str(ascending).lower(),
+                    "include_tag": "true",
+                    "after_cursor": after_cursor,
+                },
+            )
+        )
+        if not isinstance(response, dict):
+            raise DataError("events keyset endpoint did not return an object")
+        page = response.get("events") or []
+        if not isinstance(page, list):
+            raise DataError("events keyset response did not contain an event list")
+        pages += 1
+        if not page:
+            break
+
+        fingerprint = json.dumps(page, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if fingerprint in seen_page_fingerprints:
+            raise DataError("events keyset endpoint repeated a page")
+        seen_page_fingerprints.add(fingerprint)
+
+        rows = [item for item in page if isinstance(item, dict)]
+        if len(events) + len(rows) > safety_limit:
+            raise DataError(
+                f"active event enumeration exceeded safety limit {safety_limit}; "
+                "raise the limit only after verifying API pagination"
+            )
+        events.extend(rows)
+        expanded_markets += sum(
+            len(event.get("markets") or [])
+            for event in rows
+            if isinstance(event.get("markets") or [], list)
+        )
+        next_cursor = str(response.get("next_cursor") or "").strip()
+        if not next_cursor:
+            break
+        if next_cursor in seen_cursors or next_cursor == after_cursor:
+            raise DataError("events keyset endpoint repeated a cursor")
+        seen_cursors.add(next_cursor)
+        after_cursor = next_cursor
+
+    return events, {
+        "complete": True,
+        "fetched_events": len(events),
+        "expanded_markets": expanded_markets,
+        "pages_requested": pages,
+        "page_size": page_size,
+        "safety_limit": safety_limit,
+        "order": order,
+        "ascending": ascending,
+    }
+
+
+def build_candidate_events(
+    raw_events: list[dict[str, Any]],
+    account_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    held_keys: set[str] = set()
+    for position in account_position_rows(account_snapshot):
+        held_keys.update(position_identity_keys(position))
+
+    excluded = Counter()
+    candidates: list[dict[str, Any]] = []
+    seen_events: set[str] = set()
+    for raw in raw_events:
+        primary_key = event_primary_key(raw)
+        if primary_key is None:
+            excluded["invalid_identity"] += 1
+            continue
+        if primary_key in seen_events:
+            excluded["duplicate"] += 1
+            continue
+        seen_events.add(primary_key)
+        child_markets = [item for item in raw.get("markets") or [] if isinstance(item, dict)]
+        contains_holding = event_identity_keys(raw).intersection(held_keys) or any(
+            market_identity_keys(market).intersection(held_keys)
+            for market in child_markets
+        )
+        if contains_holding:
+            excluded["current_holding_event"] += 1
+            continue
+        if is_sports_or_esports_market(raw):
+            excluded["sports_or_esports"] += 1
+            continue
+        if not any(is_tradeable_candidate(market) for market in child_markets):
+            excluded["no_tradeable_markets"] += 1
+            continue
+        candidates.append(normalize_event(raw))
+
+    return {
+        "candidate_count": len(candidates),
+        "excluded_count": sum(excluded.values()),
+        "excluded_by_reason": dict(sorted(excluded.items())),
+        "candidates": candidates,
+        "semantic_screen_required": (
+            "Agent must continue through this complete deterministic event sequence until about 100 "
+            "events pass causal analyzability, domain priority, horizon, portfolio, and plausible "
+            "AI-advantage screening, or until events are exhausted. Expand only selected events into "
+            "their child markets, then rank markets for deep research."
+        ),
     }
 
 
@@ -436,12 +785,26 @@ def build_parser() -> argparse.ArgumentParser:
     market.add_argument("identifier")
     market.add_argument("--raw", action="store_true")
 
+    event = subparsers.add_parser("event", help="Fetch one event and expand its child markets")
+    event.add_argument("identifier")
+    event.add_argument("--raw", action="store_true")
+
     discover = subparsers.add_parser("discover", help="Fetch active markets for Agent screening")
     discover.add_argument("--limit", type=int, default=100)
     discover.add_argument("--offset", type=int, default=0)
     discover.add_argument("--order", default="volume24hr")
     discover.add_argument("--ascending", action="store_true")
     discover.add_argument("--raw", action="store_true")
+
+    candidate_events = subparsers.add_parser(
+        "candidate-events",
+        help="Enumerate active events and remove held, sports/esports, duplicate, and unusable events",
+    )
+    candidate_events.add_argument("--account-snapshot", required=True)
+    candidate_events.add_argument("--page-size", type=int, default=DEFAULT_EVENT_PAGE_SIZE)
+    candidate_events.add_argument("--safety-limit", type=int, default=DEFAULT_EVENT_SAFETY_LIMIT)
+    candidate_events.add_argument("--order", default="volume24hr")
+    candidate_events.add_argument("--ascending", action="store_true")
 
     book = subparsers.add_parser("book", help="Fetch a token order book and fee rate")
     book.add_argument("token_id")
@@ -456,7 +819,7 @@ def main(argv: list[str] | None = None) -> int:
             result = resolve_account(args.account, client, args.site_base)
         elif args.command == "profile":
             account = resolve_account(args.account, client, args.site_base)
-            profile = client.get_json(join_url(args.gamma_base, "/public-profile", {"address": account["address"]}))
+            profile = fetch_public_profile(account["address"], client, args.gamma_base)
             result = {"account": account, "profile": profile}
         elif args.command == "positions":
             account = resolve_account(args.account, client, args.site_base)
@@ -472,9 +835,7 @@ def main(argv: list[str] | None = None) -> int:
             result = fetch_collateral_asset(client, args.assets_base, args.collateral_symbol)
         elif args.command == "account":
             resolved = resolve_account(args.account, client, args.site_base)
-            profile = client.get_json(
-                join_url(args.gamma_base, "/public-profile", {"address": resolved["address"]})
-            )
+            profile = fetch_public_profile(resolved["address"], client, args.gamma_base)
             positions = fetch_positions(resolved["address"], client, args.data_base, args.page_size)
             collateral_asset = fetch_collateral_asset(
                 client, args.assets_base, args.collateral_symbol
@@ -515,6 +876,12 @@ def main(argv: list[str] | None = None) -> int:
             if not isinstance(raw, dict):
                 raise DataError("market endpoint did not return an object")
             result = raw if args.raw else normalize_market(raw)
+        elif args.command == "event":
+            path = f"/events/{args.identifier}" if args.identifier.isdigit() else f"/events/slug/{urllib.parse.quote(args.identifier)}"
+            raw = client.get_json(join_url(args.gamma_base, path))
+            if not isinstance(raw, dict):
+                raise DataError("event endpoint did not return an object")
+            result = raw if args.raw else normalize_event(raw, include_markets=True)
         elif args.command == "discover":
             raw = client.get_json(
                 join_url(
@@ -533,6 +900,20 @@ def main(argv: list[str] | None = None) -> int:
             if not isinstance(raw, list):
                 raise DataError("markets endpoint did not return a list")
             result = raw if args.raw else [normalize_market(item) for item in raw if isinstance(item, dict)]
+        elif args.command == "candidate-events":
+            snapshot = load_json_object(args.account_snapshot, "account snapshot")
+            raw_events, scan = fetch_active_event_universe(
+                client,
+                args.gamma_base,
+                page_size=args.page_size,
+                safety_limit=args.safety_limit,
+                order=args.order,
+                ascending=args.ascending,
+            )
+            result = {
+                "scan": scan,
+                **build_candidate_events(raw_events, snapshot),
+            }
         elif args.command == "book":
             raw_book = client.get_json(join_url(args.clob_base, "/book", {"token_id": args.token_id}))
             if not isinstance(raw_book, dict):

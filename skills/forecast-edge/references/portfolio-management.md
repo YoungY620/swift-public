@@ -17,7 +17,7 @@ Never use model value, a displayed last price, a legacy token balance, a nominal
 
 ## Pass 1: build the research queue
 
-Research every current position; never screen one out. Before expensive research of new markets, inspect candidate metadata, resolution criteria, horizon, liquidity, and semantic relationship to the current portfolio.
+Research every current position; never screen one out. Screen new opportunities at the event level first so sibling deadlines, thresholds, and outcomes do not consume independent candidate slots. Select about 100 events matching the domain and AI-advantage preferences, expand their child markets, then inspect contract metadata, resolution criteria, horizon, liquidity, and semantic relationship to the current portfolio before expensive research.
 
 Build a varied research queue. Ask whether a candidate:
 
@@ -28,7 +28,7 @@ Build a varied research queue. Ask whether a candidate:
 - Adds an independent source of expected return.
 - Deserves scarce research capacity based on plausible AI advantage.
 
-Use this as a soft research-priority rule. Do not reject every related market before learning whether it is a hedge, a superior instrument, or an unusually mispriced opportunity. Do not let the research queue fill with superficial variants of one event.
+Use this as a soft research-priority rule. Do not reject every related market before learning whether it is a hedge, a superior instrument, or an unusually mispriced opportunity. Compare sibling contracts inside a selected event before ranking them, and do not let the deep-research queue fill with superficial variants of one event.
 
 ## Pass 2: select researched opportunities
 

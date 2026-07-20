@@ -4,10 +4,15 @@
 
 1. Research every current position first; none may be omitted because it appears unchanged.
 2. Exclude current holdings from new-market discovery.
-3. Pull active Polymarket markets in API order and use the first pass in `portfolio-management.md` to build a varied research queue.
-4. Treat about ten fully researched new markets as a soft operational ceiling. Continue beyond it only when the opportunity set or available parallel capacity clearly justifies doing so.
+3. Use `scripts/polymarket_data.py candidate-events --account-snapshot account.json` to follow the active Gamma event feed's opaque keyset cursor until exhaustion. Require `scan.complete=true`; never use a single API page as the candidate universe.
+4. Let the script remove events containing current holdings, sports/esports, duplicates, and events without mechanically usable markets. Do not apply these exclusions to the separate current-position review.
+5. Continue cheap semantic screening through the complete remaining sequence until about 100 events qualify, or until the sequence is exhausted. Reject events where public information, causal attribution, or exact settlement-rule analysis gives the Agent no plausible advantage. The target is about 100 qualified events after exclusions, not 100 raw API rows or 100 contracts from a few large events.
+6. Fetch each selected event with `scripts/polymarket_data.py event EVENT_ID_OR_SLUG` and expand its child markets. Compare the event's deadlines, thresholds, outcome prices, resolution criteria, and instrument redundancy before ranking individual contracts.
+7. Apply the first pass in `portfolio-management.md` to the expanded contracts and build a varied deep-research queue. Treat about ten fully researched new markets as a soft operational ceiling. Continue beyond it only when the opportunity set or available parallel capacity clearly justifies doing so.
 
-The limit applies to new research, not to re-evaluating current holdings. It limits expensive research, not cheap metadata inspection. There is no maximum research time. Use independent sub-agents when available and useful.
+The limits apply to new research, not to re-evaluating current holdings. Full-event pagination and the roughly 100-event prescreen limit cheap inspection; contract expansion and ranking happen only after event selection; the roughly ten-market limit controls expensive evidence and probability research. There is no maximum research time. Use independent sub-agents when available and useful.
+
+Do not claim that the final set is the theoretical global optimum. Full metadata enumeration prevents first-page sampling bias, but only the deeply researched subset receives evidence-backed probability estimates and executable-edge calculations.
 
 ## Preferred domains
 

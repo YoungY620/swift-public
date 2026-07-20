@@ -7,7 +7,7 @@ import argparse
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -35,7 +35,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         if path == "/@fixture-user":
             self.send_fixture("profile.html", "text/html")
         elif path == "/public-profile":
@@ -54,8 +55,69 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 ]
             )
-        elif path == "/markets":
-            self.send_json([json.loads((FIXTURES / "market.json").read_text())])
+        elif path in {"/events/540817", "/events/slug/sample-event"}:
+            held = json.loads((FIXTURES / "market.json").read_text())
+            self.send_json(
+                {
+                    "id": "540817",
+                    "title": "Sample event",
+                    "slug": "sample-event",
+                    "active": True,
+                    "closed": False,
+                    "markets": [held],
+                }
+            )
+        elif path in {"/markets", "/events/keyset"}:
+            held = json.loads((FIXTURES / "market.json").read_text())
+            sports = {
+                **held,
+                "id": "540818",
+                "question": "Will Team Alpha win the NBA Finals?",
+                "slug": "team-alpha-nba-finals",
+                "conditionId": "0xsports",
+                "category": "Sports",
+                "clobTokenIds": '["sports-yes", "sports-no"]',
+            }
+            politics = {
+                **held,
+                "id": "540819",
+                "question": "Will the Senate pass the budget by September?",
+                "slug": "senate-budget-september",
+                "conditionId": "0xpolitics",
+                "clobTokenIds": '["politics-yes", "politics-no"]',
+            }
+            economics = {
+                **held,
+                "id": "540820",
+                "question": "Will annual inflation fall below three percent?",
+                "slug": "inflation-below-three-percent",
+                "conditionId": "0xeconomics",
+                "clobTokenIds": '["economics-yes", "economics-no"]',
+            }
+            rows = [held, sports, politics, economics]
+            query = parse_qs(parsed.query)
+            limit = int(query.get("limit", [len(rows)])[0])
+            if path == "/events/keyset":
+                offset = int(query.get("after_cursor", [0])[0])
+                page = [
+                    {
+                        "id": f"event-{row['id']}",
+                        "slug": row["slug"],
+                        "category": row.get("category"),
+                        "markets": [row],
+                    }
+                    for row in rows[offset : offset + limit]
+                ]
+                next_offset = offset + limit
+                self.send_json(
+                    {
+                        "events": page,
+                        "next_cursor": str(next_offset) if next_offset < len(rows) else "",
+                    }
+                )
+            else:
+                offset = int(query.get("offset", [0])[0])
+                self.send_json(rows[offset : offset + limit])
         elif path in {"/markets/540817", "/markets/slug/sample-event"}:
             self.send_fixture("market.json")
         elif path == "/book":

@@ -48,7 +48,11 @@ if "${DATA[@]}" account '@fixture-user' \
   exit 1
 fi
 "${DATA[@]}" discover --limit 1 > "$TMP/markets.json"
+"${DATA[@]}" candidate-events \
+  --account-snapshot "$TMP/account.json" --page-size 2 --safety-limit 10 \
+  > "$TMP/candidate-events.json"
 "${DATA[@]}" market 540817 > "$TMP/market.json"
+"${DATA[@]}" event sample-event > "$TMP/event.json"
 "${DATA[@]}" book yes-token > "$TMP/book.json"
 
 # Probability CLI: recursive partition input produces a 0.56 settlement estimate.
@@ -87,7 +91,15 @@ assert load("account.json")["sizing_inputs"]["available_cash"] == 123.456789
 assert load("account.json")["sizing_inputs"]["balance_source"] == "public_onchain_active_collateral"
 assert load("account.json")["sizing_inputs"]["collateral_asset"] == "pUSD"
 assert load("markets.json")[0]["outcomes"][0]["token_id"] == "yes-token"
+universe = load("candidate-events.json")
+assert universe["scan"]["complete"] is True
+assert universe["scan"]["fetched_events"] == 4
+assert universe["scan"]["expanded_markets"] == 4
+assert universe["candidate_count"] == 2
+assert universe["excluded_by_reason"] == {"current_holding_event": 1, "sports_or_esports": 1}
+assert [item["id"] for item in universe["candidates"]] == ["event-540819", "event-540820"]
 assert load("market.json")["id"] == "540817"
+assert load("event.json")["markets"][0]["id"] == "540817"
 assert load("book.json")["book"]["asks"][0]["price"] == 0.51
 assert load("book.json")["fee"]["fee_rate"] == 0.04
 assert abs(load("probability.json")["probability"] - 0.56) < 1e-12
