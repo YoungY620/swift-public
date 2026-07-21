@@ -235,6 +235,14 @@ class PolymarketDataTests(unittest.TestCase):
         market = raw_market(5, "Will the President transfer the nuclear football?")
         self.assertFalse(polymarket_data.is_sports_or_esports_market(market))
 
+    def test_market_url_uses_event_slug_for_multi_market_events(self) -> None:
+        market = raw_market(7, "Will the event happen?")
+        market.update({"slug": "child-market", "eventSlug": "parent-event"})
+        self.assertEqual(
+            polymarket_data.normalize_market(market)["url"],
+            "https://polymarket.com/event/parent-event?tid=7",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

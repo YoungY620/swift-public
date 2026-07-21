@@ -80,6 +80,12 @@ Use retries for transient failures. The data script uses Python's standard HTTP 
 
 Official references: [pUSD](https://docs.polymarket.com/concepts/pusd) and [contract metadata](https://docs.polymarket.com/resources/contracts).
 
+## Market page URLs
+
+Polymarket serves market pages under the event slug. Build multi-market links as `https://polymarket.com/event/<event-slug>?tid=<market-id>`; a market slug may 404 or select the wrong child market.
+
+Before archival and delivery, open every published link and fetch gamma `/markets?id=<market-id>` to confirm the returned market ID and resolution criteria match the researched market. Rebuild and recheck failures; never substitute a homepage or search-result link.
+
 ## Snapshots
 
 Snapshot the exact portfolio, market metadata, order books, fee responses, and balance values used by a completed run. Market links alone cannot reproduce past executable prices.

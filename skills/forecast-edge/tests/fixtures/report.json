@@ -62,6 +62,11 @@
         "action": "HOLD",
         "rationale": "模型价值仍高于价格，但当前持仓已经超过半 Kelly 目标，因此继续持有。"
       },
+      "resolution_review": {
+        "clarity": "PASS",
+        "verification": "PASS",
+        "note": "规则中的事件、主体和截止时间均可直接核对。"
+      },
       "opportunity": {
         "entry_eligible": true,
         "exit_eligible": false,
@@ -124,6 +129,11 @@
       "signal": {
         "action": "BUY",
         "rationale": "计入手续费、滑点、储备资金和半 Kelly 仓位后，仍保留可执行优势。"
+      },
+      "resolution_review": {
+        "clarity": "PASS",
+        "verification": "PASS",
+        "note": "规则未要求额外主观阈值，时间条件可直接核对。"
       },
       "opportunity": {
         "entry_eligible": true,

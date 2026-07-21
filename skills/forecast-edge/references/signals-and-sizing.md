@@ -42,7 +42,7 @@ Issue:
 
 Do not sell an un-crossed losing position to replace it with a better candidate.
 
-## Soft 10pp entry preference
+## Soft 10pp entry preference and 30pp strong signals
 
 For `BUY` and `ADD`, normally require:
 
@@ -54,6 +54,8 @@ raw_edge > 0.10
 This is a soft preference, not a hard execution constraint. An Agent may recommend an entry at `raw_edge <= 0.10` only when the full research supports a specific exception, such as unusually strong primary evidence, unusually short capital lock-up, exceptionally low execution drag, or material independent portfolio value. Record the exception reason explicitly in the trade-math input and private report. Do not use an exception merely to fill a position count or deploy idle cash.
 
 The exception never relaxes the hard requirements that the minimum executable order has positive post-fee and post-slippage edge, retains at least 70% of raw edge, satisfies minimum order size, and receives a positive shared portfolio allocation. The 10pp preference applies only to buying or adding; it does not delay a sell crossing.
+
+Label `raw_edge > 0.30` as a strong signal in private guidance and the public brief. This is presentational only and changes no execution rule.
 
 ## Market opportunity versus account action
 

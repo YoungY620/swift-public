@@ -35,6 +35,7 @@ class PolicyConfigTests(unittest.TestCase):
         config = json.loads((ROOT / "config" / "defaults.json").read_text())
         execution = config["execution"]
         self.assertEqual(execution["soft_minimum_raw_edge"], 0.1)
+        self.assertEqual(execution["strong_minimum_raw_edge"], 0.3)
         self.assertFalse(execution["soft_minimum_raw_edge_is_hard"])
         self.assertTrue(execution["require_soft_edge_override_reason"])
 

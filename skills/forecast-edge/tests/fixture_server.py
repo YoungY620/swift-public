@@ -117,7 +117,14 @@ class Handler(BaseHTTPRequestHandler):
                 )
             else:
                 offset = int(query.get("offset", [0])[0])
-                self.send_json(rows[offset : offset + limit])
+                wanted_id = query.get("id", [None])[0]
+                wanted_slug = query.get("slug", [None])[0]
+                if wanted_id or wanted_slug:
+                    self.send_json(
+                        [row for row in rows if row["id"] == wanted_id or row["slug"] == wanted_slug]
+                    )
+                else:
+                    self.send_json(rows[offset : offset + limit])
         elif path in {"/markets/540817", "/markets/slug/sample-event"}:
             self.send_fixture("market.json")
         elif path == "/book":

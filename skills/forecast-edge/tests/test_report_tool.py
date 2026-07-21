@@ -28,6 +28,7 @@ class ReportToolTests(unittest.TestCase):
         self.assertIn("Example Statistics Office", markdown)
         self.assertIn("新增证据影响", markdown)
         self.assertIn("入场软门槛", markdown)
+        self.assertIn("规则审查", markdown)
 
     def test_v2_report_rejects_non_chinese_narrative(self) -> None:
         report = json.loads((FIXTURES / "report.json").read_text())
@@ -102,6 +103,26 @@ class ReportToolTests(unittest.TestCase):
 
         opportunity["soft_edge_override_reason"] = "一手证据质量极高且结算期限很短。"
         report_tool.validate_report(report)
+
+    def test_candidate_requires_clear_rules(self) -> None:
+        report = json.loads((FIXTURES / "report.json").read_text())
+        report["candidates"][0]["resolution_review"]["clarity"] = "FAIL"
+        with self.assertRaisesRegex(report_tool.ReportError, "clarity must be PASS"):
+            report_tool.validate_report(report)
+
+    def test_buy_requires_rule_verification(self) -> None:
+        report = json.loads((FIXTURES / "report.json").read_text())
+        report["candidates"][0]["resolution_review"]["verification"] = "FAIL"
+        with self.assertRaisesRegex(report_tool.ReportError, "pass clarity and verification"):
+            report_tool.validate_report(report)
+
+    def test_rule_review_notes_cannot_repeat_boilerplate(self) -> None:
+        report = json.loads((FIXTURES / "report.json").read_text())
+        report["candidates"][0]["resolution_review"]["note"] = report["current_positions"][0][
+            "resolution_review"
+        ]["note"]
+        with self.assertRaisesRegex(report_tool.ReportError, "market-specific"):
+            report_tool.validate_report(report)
 
     def test_v2_report_without_soft_edge_fields_remains_readable_as_history(self) -> None:
         report = json.loads((FIXTURES / "report.json").read_text())

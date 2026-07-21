@@ -15,6 +15,14 @@ Estimate the probability that the researched outcome will settle at `1` under th
 7. Stop decomposing a node when further detail would not materially improve its estimate or evidence already supports a direct estimate. Do not split merely to create depth.
 8. Compute the root with `scripts/probability_tree.py` and retain the input tree plus its audit output in the report data.
 
+Before finalizing the probability or action, independently verify the rule interpretation against the complete raw criteria:
+
+- Check every actor, scope, date, window, exclusion, source, and conflict clause.
+- Check that `such as`/`including` examples were not made exhaustive and that no threshold was invented.
+- For interval rules, identify exactly what the end date modifies; never require completion by the end date when the criteria constrain only the start or latest qualifying event.
+- Test an edge case for timing and for an unlisted but potentially qualifying action.
+- Resolve any omission, contradiction, or self-invented certainty by rebuilding the interpretation and tree; do not issue a signal until it passes.
+
 Use maximum depth `64` only as runaway-recursion protection. It is deliberately high and is not a target.
 
 ## Supported calculation nodes

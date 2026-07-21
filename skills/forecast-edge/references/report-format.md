@@ -48,6 +48,7 @@ Keep JSON keys, signal enums, outcome enums, IDs, URLs, exact market questions, 
 For current positions and candidates, include:
 
 - Market ID, question, URL, researched outcome, exact resolution criteria, and end date.
+- `resolution_review`：`clarity`、`verification`（`PASS`/`FAIL`）及简短 `note`；候选必须两项均为 `PASS`，`BUY`/`ADD` 也必须两项均为 `PASS`。
 - Point estimate, held-outcome model value, causal-tree input and calculation result, and conclusion.
 - Book timestamp, best prices, fee rate, VWAP, raw and actual edge, edge retention, and depth capacity.
 - Whether raw edge is strictly above the default 10pp soft entry preference. For any below-threshold entry opportunity, include the explicit exception reason; absence of a reason means no `BUY` or `ADD` recommendation.
@@ -90,3 +91,5 @@ Use report schema version `2.1` for new runs. Keep older reports readable as his
 - Market opportunities without funding remain distinct from account actions.
 
 Reject inconsistent or non-Chinese narrative reports. Do not archive them with explanatory labels such as “theoretical” or “nominal.” Include a concise private Simplified-Chinese portfolio-diversification conclusion, but no formal risk-cluster structure.
+
+Before archival and delivery, verify every published market URL opens and that gamma market ID and resolution criteria match the researched market. A `PASS` review note must be market-specific; repeated boilerplate is invalid.

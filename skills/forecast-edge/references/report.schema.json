@@ -196,7 +196,7 @@
     },
     "baseAnalysis": {
       "type": "object",
-      "required": ["market", "model", "evidence", "signal", "opportunity", "allocation"],
+      "required": ["market", "model", "evidence", "signal", "resolution_review", "opportunity", "allocation"],
       "properties": {
         "market": { "$ref": "#/$defs/market" },
         "model": { "$ref": "#/$defs/model" },
@@ -206,11 +206,21 @@
           "items": { "$ref": "#/$defs/evidence" }
         },
         "signal": { "$ref": "#/$defs/signal" },
+        "resolution_review": { "$ref": "#/$defs/resolutionReview" },
         "opportunity": { "$ref": "#/$defs/opportunity" },
         "allocation": { "$ref": "#/$defs/allocation" },
         "market_data": { "type": "object" },
         "sizing": { "type": "object" },
         "quality": { "type": "object" }
+      }
+    },
+    "resolutionReview": {
+      "type": "object",
+      "required": ["clarity", "verification", "note"],
+      "properties": {
+        "clarity": { "enum": ["PASS", "FAIL"] },
+        "verification": { "enum": ["PASS", "FAIL"] },
+        "note": { "type": "string", "minLength": 1 }
       }
     },
     "currentAnalysis": {

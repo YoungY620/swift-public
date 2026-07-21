@@ -7,8 +7,12 @@
 3. Use `scripts/polymarket_data.py candidate-events --account-snapshot account.json` to follow the active Gamma event feed's opaque keyset cursor until exhaustion. Require `scan.complete=true`; never use a single API page as the candidate universe.
 4. Let the script remove events containing current holdings, sports/esports, duplicates, and events without mechanically usable markets. Do not apply these exclusions to the separate current-position review.
 5. Continue cheap semantic screening through the complete remaining sequence until about 100 events qualify, or until the sequence is exhausted. Reject events where public information, causal attribution, or exact settlement-rule analysis gives the Agent no plausible advantage. The target is about 100 qualified events after exclusions, not 100 raw API rows or 100 contracts from a few large events.
-6. Fetch each selected event with `scripts/polymarket_data.py event EVENT_ID_OR_SLUG` and expand its child markets. Compare the event's deadlines, thresholds, outcome prices, resolution criteria, and instrument redundancy before ranking individual contracts.
-7. Apply the first pass in `portfolio-management.md` to the expanded contracts and build a varied deep-research queue. Treat about ten fully researched new markets as a soft operational ceiling. Continue beyond it only when the opportunity set or available parallel capacity clearly justifies doing so.
+6. Fetch each selected event with `scripts/polymarket_data.py event EVENT_ID_OR_SLUG` and expand its child markets. Apply the resolution-clarity gate below, then compare deadlines, thresholds, prices, criteria, and instrument redundancy before ranking contracts.
+7. Apply the first pass in `portfolio-management.md` to the passing contracts and build a varied deep-research queue. Treat about ten fully researched new markets as a soft operational ceiling. Continue beyond it only when the opportunity set or available parallel capacity clearly justifies doing so.
+
+## Resolution-clarity gate
+
+For a new market, require complete criteria, explicit outcome/scope/actors/time, defined exclusions and sources, and no unresolved contradiction or material subjective standard. Reject it when the Agent must invent a threshold, treat examples as exhaustive, or infer whether a time window may cross the end date. Record the short rejection reason; do not research, rank, size, or trade a failed market.
 
 The limits apply to new research, not to re-evaluating current holdings. Full-event pagination and the roughly 100-event prescreen limit cheap inspection; contract expansion and ranking happen only after event selection; the roughly ten-market limit controls expensive evidence and probability research. There is no maximum research time. Use independent sub-agents when available and useful.
 

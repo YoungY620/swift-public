@@ -354,12 +354,23 @@ def normalize_market(raw: dict[str, Any]) -> dict[str, Any]:
         "volume_24h": optional_number(raw.get("volume24hr")),
         "liquidity": optional_number(raw.get("liquidity")),
         "outcomes": outcome_rows,
-        "url": (
-            f"https://polymarket.com/event/{raw.get('eventSlug') or raw.get('slug')}"
-            if raw.get("eventSlug") or raw.get("slug")
-            else None
-        ),
+        "url": market_url(raw),
     }
+
+
+def market_url(raw: dict[str, Any]) -> str | None:
+    """Build a public market page from its event slug and child-market id."""
+    market_id = str(raw.get("id")) if raw.get("id") is not None else None
+    event_slug = raw.get("eventSlug")
+    if not event_slug:
+        events = raw.get("events")
+        if isinstance(events, list) and events and isinstance(events[0], dict):
+            event_slug = events[0].get("slug")
+    slug = event_slug or raw.get("slug")
+    if not slug:
+        return None
+    url = f"https://polymarket.com/event/{slug}"
+    return f"{url}?tid={market_id}" if event_slug and market_id and event_slug != raw.get("slug") else url
 
 
 def normalized_identity_value(value: Any) -> str | None:
@@ -871,8 +882,10 @@ def main(argv: list[str] | None = None) -> int:
                 },
             }
         elif args.command == "market":
-            path = f"/markets/{args.identifier}" if args.identifier.isdigit() else f"/markets/slug/{urllib.parse.quote(args.identifier)}"
-            raw = client.get_json(join_url(args.gamma_base, path))
+            param = {"id": args.identifier} if args.identifier.isdigit() else {"slug": args.identifier}
+            raw = client.get_json(join_url(args.gamma_base, "/markets", param))
+            if isinstance(raw, list):
+                raw = raw[0] if raw and isinstance(raw[0], dict) else None
             if not isinstance(raw, dict):
                 raise DataError("market endpoint did not return an object")
             result = raw if args.raw else normalize_market(raw)

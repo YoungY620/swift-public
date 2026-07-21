@@ -16,6 +16,8 @@ from typing import Any
 SIGNALS = {"BUY", "ADD", "HOLD", "SELL"}
 SIGNAL_LABELS = {"BUY": "买入", "ADD": "加仓", "HOLD": "持有", "SELL": "卖出"}
 OUTCOME_LABELS = {"YES": "是", "NO": "否"}
+REVIEW_STATUSES = {"PASS", "FAIL"}
+REVIEW_LABELS = {"PASS": "通过", "FAIL": "未通过"}
 CHINESE_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 EVIDENCE_FIELDS = {
     "source_name",
@@ -95,6 +97,21 @@ def validate_evidence(evidence: Any, path: str, *, current_position: bool) -> No
                 )
 
 
+def validate_resolution_review(raw: Any, path: str, *, current_position: bool, action: str) -> None:
+    review = require_object(raw, path)
+    require_fields(review, {"clarity", "verification", "note"}, path)
+    for field in ("clarity", "verification"):
+        if review[field] not in REVIEW_STATUSES:
+            raise ReportError(f"{path}.{field} must be PASS or FAIL")
+    require_chinese_text(review["note"], f"{path}.note")
+    if not current_position and review["clarity"] != "PASS":
+        raise ReportError(f"{path}.clarity must be PASS for candidates")
+    if action in {"BUY", "ADD"} and (
+        review["clarity"] != "PASS" or review["verification"] != "PASS"
+    ):
+        raise ReportError(f"{path} must pass clarity and verification before BUY or ADD")
+
+
 def validate_analysis(raw: Any, path: str, *, current_position: bool, schema_version: str) -> None:
     analysis = require_object(raw, path)
     require_fields(analysis, {"market", "model", "evidence", "signal"}, path)
@@ -106,6 +123,14 @@ def validate_analysis(raw: Any, path: str, *, current_position: bool, schema_ver
     require_fields(signal, {"action", "rationale"}, f"{path}.signal")
     if signal["action"] not in SIGNALS:
         raise ReportError(f"{path}.signal.action must be one of {sorted(SIGNALS)}")
+    if schema_version == "2.1":
+        require_fields(analysis, {"resolution_review"}, path)
+        validate_resolution_review(
+            analysis["resolution_review"],
+            f"{path}.resolution_review",
+            current_position=current_position,
+            action=signal["action"],
+        )
     validate_evidence(analysis["evidence"], f"{path}.evidence", current_position=current_position)
     if current_position and "comparison" not in analysis:
         raise ReportError(f"{path}.comparison is required for current positions; use null on the first run")
@@ -263,6 +288,10 @@ def validate_report(report: Any) -> dict[str, Any]:
             current_position=False,
             schema_version=schema_version,
         )
+    if schema_version == "2.1":
+        notes = [item["resolution_review"]["note"].strip() for item in current + candidates]
+        if len(notes) != len(set(notes)):
+            raise ReportError("resolution review notes must be market-specific, not repeated boilerplate")
     actions = require_list(root["actions"], "report.actions")
     for index, raw in enumerate(actions):
         action = require_object(raw, f"report.actions[{index}]")
@@ -480,6 +509,13 @@ def render_analysis(item: dict[str, Any], *, current_position: bool) -> list[str
         f"- 行动理由：{signal['rationale']}",
         f"- 结算标准（原文）：{market['resolution_criteria']}",
     ]
+    review = item.get("resolution_review")
+    if isinstance(review, dict):
+        lines.append(
+            f"- 规则审查：清晰度 {REVIEW_LABELS.get(review.get('clarity'), review.get('clarity'))}；"
+            f"理解验证 {REVIEW_LABELS.get(review.get('verification'), review.get('verification'))}；"
+            f"{review.get('note', '')}"
+        )
     if current_position:
         lines.append(f"- 上轮对比：{render_comparison(item.get('comparison'))}")
     opportunity = item.get("opportunity")
