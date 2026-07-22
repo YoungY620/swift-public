@@ -47,6 +47,11 @@ class SiteContractTests(unittest.TestCase):
         self.assertIn("@media (max-width: 520px)", css)
         self.assertIn("prefers-reduced-motion", css)
 
+    def test_static_assets_are_cache_busted(self) -> None:
+        html = (ROOT / "site" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("styles.css?v=", html)
+        self.assertIn("app.js?v=", html)
+
 
 if __name__ == "__main__":
     unittest.main()

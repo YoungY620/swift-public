@@ -460,8 +460,9 @@ button:focus-visible {
 }
 
 .support-tablist {
-  display: flex;
-  gap: 56px;
+  display: grid;
+  grid-template-columns: max-content max-content;
+  column-gap: clamp(88px, 9vw, 132px);
   padding: 0 30px;
   border-bottom: 1px solid var(--line);
   background: rgba(243, 247, 249, 0.52);
@@ -471,7 +472,7 @@ button:focus-visible {
   position: relative;
   display: inline-flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 12px;
   min-height: 52px;
   padding: 0;
   border: 0;
@@ -990,8 +991,12 @@ footer p {
   }
 
   .support-tablist {
-    gap: 34px;
+    column-gap: 48px;
     padding-inline: 20px;
+  }
+
+  .support-tab {
+    gap: 8px;
   }
 
   .probability-tree {
