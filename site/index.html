@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Forecast Edge 每日预测市场公开研究信号">
+    <meta name="color-scheme" content="light">
+    <title>Forecast Edge｜预测市场研究信号</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="masthead">
+      <a class="brand" href="./" aria-label="Forecast Edge 首页">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>FORECAST <b>/</b> EDGE</span>
+      </a>
+      <p class="edition">LONG-HORIZON PROBABILITY DESK</p>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="brief-title">
+        <div class="hero-copy">
+          <p class="eyebrow">公开研究信号 · POLYMARKET</p>
+          <h1 id="brief-title">正在读取最新信号</h1>
+          <p class="hero-note">只展示本轮需要执行的买入、加仓与卖出动作。价格均对应所示 YES / NO 方向。</p>
+        </div>
+        <div class="as-of-panel">
+          <span>数据截止</span>
+          <time id="as-of">—</time>
+          <label for="brief-select">历史简报</label>
+          <select id="brief-select" disabled aria-label="选择历史简报">
+            <option>最新</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="ledger-head" aria-label="简报概览">
+        <div class="count-group">
+          <p><strong id="action-count">—</strong><span>项公开动作</span></p>
+          <p><strong id="buy-count">—</strong><span>买入 / 加仓</span></p>
+          <p><strong id="sell-count">—</strong><span>卖出</span></p>
+        </div>
+        <div class="filters" role="group" aria-label="筛选动作">
+          <button class="filter is-active" type="button" data-filter="ALL">全部</button>
+          <button class="filter" type="button" data-filter="ENTRY">买入</button>
+          <button class="filter" type="button" data-filter="SELL">卖出</button>
+        </div>
+      </section>
+
+      <section id="status" class="status" role="status">正在加载数据…</section>
+      <section id="actions" class="action-list" aria-live="polite"></section>
+    </main>
+
+    <template id="action-template">
+      <article class="action-card">
+        <div class="action-lead">
+          <span class="action-badge"></span>
+          <span class="confidence"></span>
+          <h2 class="market-name"></h2>
+          <p class="reason"></p>
+          <a class="market-link" target="_blank" rel="noopener noreferrer">
+            查看 Polymarket 盘口 <span aria-hidden="true">↗</span>
+          </a>
+        </div>
+
+        <div class="pricing">
+          <div class="price-numbers">
+            <p><span>当前可执行价</span><strong class="current-price"></strong></p>
+            <p><span>Agent 合理价格</span><strong class="fair-price"></strong></p>
+            <p class="gap-cell"><span>价格差距</span><strong class="price-gap"></strong></p>
+          </div>
+          <div class="probability-rail" aria-label="当前价格与 Agent 合理价格对比">
+            <div class="rail-line"></div>
+            <div class="rail-span"></div>
+            <div class="marker market-marker"><i></i><span>市场</span></div>
+            <div class="marker agent-marker"><i></i><span>Agent</span></div>
+            <span class="rail-min">0</span>
+            <span class="rail-max">100</span>
+          </div>
+        </div>
+
+        <details class="evidence-panel">
+          <summary><span class="evidence-count"></span><b>查看支撑信息</b></summary>
+          <ol class="evidence-list"></ol>
+        </details>
+      </article>
+    </template>
+
+    <footer>
+      <p>概率估算不保证结果。本页不执行订单，也不披露账户与资金信息。</p>
+      <p class="protocol">PUBLIC BRIEF PROTOCOL · 1.1</p>
+    </footer>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>

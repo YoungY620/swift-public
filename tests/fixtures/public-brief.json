@@ -1,0 +1,78 @@
+{
+  "schema_version": "1.1",
+  "brief_id": "example-brief",
+  "generated_at": "2026-07-22T02:05:00Z",
+  "as_of": "2026-07-22T02:00:00Z",
+  "title": "预测市场研究信号",
+  "actions": [
+    {
+      "market_id": "example-market",
+      "market_name": "示例事件会发生吗？",
+      "action": "BUY",
+      "outcome": "YES",
+      "polymarket_url": "https://polymarket.com/event/example-market",
+      "link_verified_at": "2026-07-22T02:01:00Z",
+      "fair_price": 0.67,
+      "current_price": 0.52,
+      "price_gap": 0.15,
+      "confidence": "HIGH",
+      "reason": "公开资料支持的最终结算概率明显高于当前可执行价格。",
+      "evidence": [
+        {
+          "id": "evidence-policy",
+          "source_url": "https://example.org/policy",
+          "source_title": "示例政策来源",
+          "source_content": "与政策落地情景直接相关的核心事实摘要。",
+          "probability_impact": "支持政策落地后事件发生概率较高。"
+        },
+        {
+          "id": "evidence-base-rate",
+          "source_url": "https://example.org/base-rate",
+          "source_title": "示例基准率来源",
+          "source_content": "与政策未落地情景相关的历史基准率摘要。",
+          "probability_impact": "支持未落地情景下仍存在一定发生概率。"
+        }
+      ],
+      "probability_tree": {
+        "root": {
+          "id": "root-event",
+          "type": "partition",
+          "label": "目标事件最终结算为 YES",
+          "description": "按政策是否落地划分互斥且完备的两种情景。",
+          "probability": 0.67,
+          "evidence_refs": [],
+          "branches": [
+            {
+              "id": "branch-policy",
+              "label": "政策落地",
+              "weight": 0.6,
+              "evidence_refs": ["evidence-policy"],
+              "child": {
+                "id": "yes-given-policy",
+                "type": "estimate",
+                "label": "政策落地条件下事件发生",
+                "description": "根据政策来源对条件概率进行点估计。",
+                "probability": 0.8,
+                "evidence_refs": ["evidence-policy"]
+              }
+            },
+            {
+              "id": "branch-no-policy",
+              "label": "政策未落地",
+              "weight": 0.4,
+              "evidence_refs": ["evidence-policy"],
+              "child": {
+                "id": "yes-given-no-policy",
+                "type": "estimate",
+                "label": "政策未落地条件下事件发生",
+                "description": "使用相关历史基准率进行点估计。",
+                "probability": 0.475,
+                "evidence_refs": ["evidence-base-rate"]
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

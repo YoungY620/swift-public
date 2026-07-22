@@ -1,6 +1,7 @@
 .DS_Store
 .env
 .env.*
+automation/forecast-edge.env
 *.py[cod]
 __pycache__/
 .pytest_cache/
