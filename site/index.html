@@ -81,7 +81,22 @@
 
         <details class="evidence-panel">
           <summary><span class="evidence-count"></span><b>查看支撑信息</b></summary>
-          <ol class="evidence-list"></ol>
+          <div class="support-tabs">
+            <div class="support-tablist" role="tablist" aria-label="支撑信息视图">
+              <button class="support-tab is-active" type="button" role="tab" aria-selected="true" data-support-tab="evidence">
+                <span>证据列表</span><small class="support-evidence-count"></small>
+              </button>
+              <button class="support-tab" type="button" role="tab" aria-selected="false" tabindex="-1" data-support-tab="tree">
+                <span>概率关系</span><small>可重算</small>
+              </button>
+            </div>
+            <section class="support-panel evidence-view is-active" role="tabpanel" data-support-panel="evidence">
+              <ol class="evidence-list"></ol>
+            </section>
+            <section class="support-panel tree-view" role="tabpanel" data-support-panel="tree" hidden>
+              <div class="probability-tree"></div>
+            </section>
+          </div>
         </details>
       </article>
     </template>

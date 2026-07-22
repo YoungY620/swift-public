@@ -74,7 +74,7 @@ python3 scripts/publish_public_brief.py \
   path/to/public-brief.json --site-data site/data
 ```
 
-将 `site/data/` 的公开文件提交到启用了 Pages 的 GitHub 仓库后，[Pages workflow](.github/workflows/pages.yml) 会先验证数据，再部署 `site/`。协议 `1.1` 会随操作保存可重新计算的贝叶斯/全概率树，网页暂不绘制。启用步骤见 [GitHub Pages 文档](docs/github-pages.md)，字段语义见 [公共简报协议](docs/public-brief-protocol.md)。
+将 `site/data/` 的公开文件提交到启用了 Pages 的 GitHub 仓库后，[Pages workflow](.github/workflows/pages.yml) 会先验证数据，再部署 `site/`。协议 `1.1` 会随操作保存可重新计算的贝叶斯/全概率树；网页在“支撑信息”的“概率关系”页签中递归绘制，并可从节点跳转到对应证据。启用步骤见 [GitHub Pages 文档](docs/github-pages.md)，字段语义见 [公共简报协议](docs/public-brief-protocol.md)。
 
 ## 仓库结构
 
