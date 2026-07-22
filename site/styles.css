@@ -461,7 +461,7 @@ button:focus-visible {
 
 .support-tablist {
   display: flex;
-  gap: 28px;
+  gap: 56px;
   padding: 0 30px;
   border-bottom: 1px solid var(--line);
   background: rgba(243, 247, 249, 0.52);
@@ -594,6 +594,28 @@ button:focus-visible {
   gap: 11px;
 }
 
+.tree-node-identity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.tree-node-path,
+.tree-branch-path {
+  color: var(--cyan);
+  font-family: var(--data);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.tree-node-path {
+  padding-right: 6px;
+  border-right: 1px solid rgba(13, 142, 152, 0.28);
+}
+
 .tree-node-type {
   padding: 4px 6px;
   border: 1px solid var(--line);
@@ -717,6 +739,12 @@ button:focus-visible {
 
 .tree-branch-meta > strong {
   font-size: 11px;
+}
+
+.tree-branch-path {
+  padding: 2px 6px;
+  border: 1px solid rgba(13, 142, 152, 0.26);
+  background: rgba(13, 142, 152, 0.06);
 }
 
 .tree-branch-meta > data {
@@ -962,7 +990,7 @@ footer p {
   }
 
   .support-tablist {
-    gap: 22px;
+    gap: 34px;
     padding-inline: 20px;
   }
 

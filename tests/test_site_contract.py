@@ -30,6 +30,17 @@ class SiteContractTests(unittest.TestCase):
         self.assertIn("makeEvidenceRefs", javascript)
         self.assertIn("ArrowRight", javascript)
 
+    def test_probability_tree_assigns_hierarchical_paths(self) -> None:
+        javascript = (ROOT / "site" / "app.js").read_text(encoding="utf-8")
+        css = (ROOT / "site" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn('path = "1"', javascript)
+        self.assertIn("branchPath", javascript)
+        self.assertIn("branchIndex + 1", javascript)
+        self.assertIn("updateIndex + 2", javascript)
+        self.assertIn('0, "1"', javascript)
+        self.assertIn("tree-node-path", css)
+        self.assertIn("tree-branch-path", css)
+
     def test_responsive_and_reduced_motion_rules_remain(self) -> None:
         css = (ROOT / "site" / "styles.css").read_text(encoding="utf-8")
         self.assertIn("tree-view", css)

@@ -159,18 +159,25 @@ function makeEvidenceRefs(refs, evidenceMap, onEvidence) {
   return group;
 }
 
-function makeProbabilityNode(node, evidenceMap, onEvidence, depth = 0) {
+function makeProbabilityNode(node, evidenceMap, onEvidence, depth = 0, path = "1") {
   const group = document.createElement("div");
   group.className = "tree-group";
   group.dataset.depth = String(depth);
+  group.dataset.path = path;
 
   const card = document.createElement("article");
   card.className = `tree-node is-${node.type}`;
   const head = document.createElement("div");
   head.className = "tree-node-head";
+  const identity = document.createElement("div");
+  identity.className = "tree-node-identity";
+  const nodePath = document.createElement("span");
+  nodePath.className = "tree-node-path";
+  nodePath.textContent = `节点 ${path}`;
   const type = document.createElement("span");
   type.className = "tree-node-type";
   type.textContent = treeLabels[node.type] || node.type;
+  identity.append(nodePath, type);
   const label = document.createElement("strong");
   label.className = "tree-node-label";
   label.textContent = node.label;
@@ -178,7 +185,7 @@ function makeProbabilityNode(node, evidenceMap, onEvidence, depth = 0) {
   probability.className = "tree-node-probability";
   probability.value = String(node.probability);
   probability.textContent = percent(node.probability);
-  head.append(type, label, probability);
+  head.append(identity, label, probability);
 
   const description = document.createElement("p");
   description.className = "tree-node-description";
@@ -194,42 +201,48 @@ function makeProbabilityNode(node, evidenceMap, onEvidence, depth = 0) {
   if (node.type === "partition") {
     const children = document.createElement("div");
     children.className = "tree-children";
-    node.branches.forEach((branch) => {
+    node.branches.forEach((branch, branchIndex) => {
+      const branchPath = `${path}.${branchIndex + 1}`;
       const row = document.createElement("section");
       row.className = "tree-branch";
       const meta = document.createElement("div");
       meta.className = "tree-branch-meta";
+      const branchNumber = document.createElement("span");
+      branchNumber.className = "tree-branch-path";
+      branchNumber.textContent = `分支 ${branchPath}`;
       const branchLabel = document.createElement("strong");
       branchLabel.textContent = branch.label;
       const weight = document.createElement("data");
       weight.value = String(branch.weight);
       weight.textContent = `权重 ${percent(branch.weight)}`;
-      meta.append(branchLabel, weight);
+      meta.append(branchNumber, branchLabel, weight);
       const branchRefs = makeEvidenceRefs(branch.evidence_refs, evidenceMap, onEvidence);
       if (branchRefs) meta.append(branchRefs);
-      row.append(meta, makeProbabilityNode(branch.child, evidenceMap, onEvidence, depth + 1));
+      row.append(meta, makeProbabilityNode(branch.child, evidenceMap, onEvidence, depth + 1, branchPath));
       children.append(row);
     });
     group.append(children);
   }
 
   if (node.type === "complement") {
+    const childPath = `${path}.1`;
     const child = document.createElement("div");
     child.className = "tree-unary";
     const relation = document.createElement("span");
     relation.className = "tree-relation";
-    relation.textContent = "补集来源 · 1 − P";
-    child.append(relation, makeProbabilityNode(node.child, evidenceMap, onEvidence, depth + 1));
+    relation.textContent = `补集 ${childPath} · 1 − P`;
+    child.append(relation, makeProbabilityNode(node.child, evidenceMap, onEvidence, depth + 1, childPath));
     group.append(child);
   }
 
   if (node.type === "bayes_update") {
+    const priorPath = `${path}.1`;
     const sequence = document.createElement("div");
     sequence.className = "tree-bayes-sequence";
     const priorLabel = document.createElement("span");
     priorLabel.className = "tree-relation";
-    priorLabel.textContent = "先验模型";
-    sequence.append(priorLabel, makeProbabilityNode(node.prior, evidenceMap, onEvidence, depth + 1));
+    priorLabel.textContent = `先验 ${priorPath}`;
+    sequence.append(priorLabel, makeProbabilityNode(node.prior, evidenceMap, onEvidence, depth + 1, priorPath));
     const updates = document.createElement("div");
     updates.className = "tree-updates";
     node.updates.forEach((update, updateIndex) => {
@@ -238,7 +251,8 @@ function makeProbabilityNode(node, evidenceMap, onEvidence, depth = 0) {
       const updateHead = document.createElement("div");
       updateHead.className = "tree-update-head";
       const order = document.createElement("span");
-      order.textContent = `更新 ${String(updateIndex + 1).padStart(2, "0")}`;
+      order.className = "tree-update-path";
+      order.textContent = `更新 ${path}.${updateIndex + 2}`;
       const updateLabel = document.createElement("strong");
       updateLabel.textContent = update.label;
       const posterior = document.createElement("data");
@@ -274,7 +288,7 @@ function makeProbabilityTree(action, evidenceMap, onEvidence) {
   check.className = "tree-check";
   check.textContent = "ROOT = FAIR PRICE";
   overview.append(copy, check);
-  fragment.append(overview, makeProbabilityNode(action.probability_tree.root, evidenceMap, onEvidence));
+  fragment.append(overview, makeProbabilityNode(action.probability_tree.root, evidenceMap, onEvidence, 0, "1"));
   return fragment;
 }
 
