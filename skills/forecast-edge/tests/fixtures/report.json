@@ -1,5 +1,5 @@
 {
-  "schema_version": "2.1",
+  "schema_version": "3.0",
   "run": {
     "id": "sample-run",
     "started_at": "2026-07-19T00:00:00Z",
@@ -23,6 +23,23 @@
     "new_position_limit": 2,
     "diversification_summary": "新增候选具有独立的因果驱动因素，且没有增加现有持仓的集中度。"
   },
+  "discovery_audit": {
+    "pagination_completed": true,
+    "fetched_events": 120,
+    "excluded_counts": {
+      "sports": 20,
+      "current_holdings": 1
+    },
+    "semantically_qualified_events": 40,
+    "selected_events": 10,
+    "tier_attempts": {
+      "30pp": 2,
+      "20pp": 3,
+      "gt10pp": 5
+    },
+    "operation_needs_satisfied": true,
+    "summary": "候选发现完成全量分页，并按优势层级完成深度研究。"
+  },
   "current_positions": [
     {
       "market": {
@@ -33,13 +50,44 @@
         "resolution_criteria": "Resolves Yes if the documented event happens by the deadline.",
         "end_date": "2026-08-31T00:00:00Z"
       },
+      "resolution_review": {
+        "status": "PASS",
+        "criteria_text": "Resolves Yes if the documented event happens by the deadline.",
+        "yes_condition": "若记录所述事件在截止时间前发生则结算为 YES。",
+        "no_condition": "若截止时间前没有发生该事件则结算为 NO。",
+        "deadline": "2026-08-31T00:00:00Z",
+        "timezone": "UTC",
+        "resolution_source": "Example Statistics Office",
+        "edge_cases": [],
+        "reason": "结算条件客观且不存在需要主观补充的歧义。",
+        "evidence_ids": ["current-e1"]
+      },
       "model": {
-        "probability": 0.65,
+        "yes_probability": 0.65,
         "model_value": 0.65,
-        "conclusion": "现有证据支持该市场最终结算为 YES。"
+        "conclusion": "现有证据支持该市场最终结算为 YES。",
+        "tree": {
+          "root": {
+            "id": "current-root",
+            "label": "市场最终结算为 YES",
+            "reason": "官方数据支持当前点估计。",
+            "probability": 0.65,
+            "evidence_ids": ["current-e1"],
+            "children": []
+          }
+        },
+        "calculation": {
+          "engine_version": "3.0",
+          "tree_sha256": "d8b73910b34387685b0bab8aaf058527d3c46a1ecbe0aac8ce553ccb74f2ac4e",
+          "root_probability": 0.65,
+          "node_count": 1,
+          "deepest_level": 1
+        }
       },
       "evidence": [
         {
+          "id": "current-e1",
+          "roles": ["PROBABILITY", "RESOLUTION"],
           "source_name": "Example Statistics Office",
           "source_type": "government",
           "title": "Current sample series",
@@ -58,14 +106,14 @@
           }
         }
       ],
-      "signal": {
-        "action": "HOLD",
-        "rationale": "模型价值仍高于价格，但当前持仓已经超过半 Kelly 目标，因此继续持有。"
+      "position": {
+        "held": true,
+        "shares": 20,
+        "cost_cash": 10
       },
-      "resolution_review": {
-        "clarity": "PASS",
-        "verification": "PASS",
-        "note": "规则中的事件、主体和截止时间均可直接核对。"
+      "signal": {
+        "action": "MAINTAIN",
+        "rationale": "模型价值仍高于价格，但当前持仓不需要继续增加，因此维持现状。"
       },
       "opportunity": {
         "entry_eligible": true,
@@ -74,10 +122,10 @@
         "executable_price": 0.51,
         "net_edge": 0.14,
         "raw_edge": 0.14,
-        "soft_minimum_raw_edge": 0.1,
-        "soft_edge_pass": true,
-        "soft_edge_override_reason": null,
-        "reason": "市场仍存在独立入场优势，但当前目标仓位不需要继续加仓。"
+        "minimum_raw_edge": 0.1,
+        "fee_rate": 0,
+        "book_timestamp": "2026-07-19T00:20:00Z",
+        "reason": "市场仍存在独立入场优势，但当前仓位不需要继续加仓。"
       },
       "allocation": {
         "priority": null,
@@ -107,13 +155,44 @@
         "resolution_criteria": "Resolves Yes under the stated public criterion.",
         "end_date": "2026-09-15T00:00:00Z"
       },
+      "resolution_review": {
+        "status": "PASS",
+        "criteria_text": "Resolves Yes under the stated public criterion.",
+        "yes_condition": "若公开标准规定的事件发生则结算为 YES。",
+        "no_condition": "若公开标准规定的事件未发生则结算为 NO。",
+        "deadline": "2026-09-15T00:00:00Z",
+        "timezone": "UTC",
+        "resolution_source": "Example University",
+        "edge_cases": [],
+        "reason": "标准具有明确的公开判定来源和时间边界。",
+        "evidence_ids": ["candidate-e1"]
+      },
       "model": {
-        "probability": 0.7,
+        "yes_probability": 0.7,
         "model_value": 0.7,
-        "conclusion": "证据支持模型价值高于当前可执行卖价。"
+        "conclusion": "证据支持模型价值高于当前可执行价格。",
+        "tree": {
+          "root": {
+            "id": "candidate-root",
+            "label": "市场最终结算为 YES",
+            "reason": "学术基准率支持候选点估计。",
+            "probability": 0.7,
+            "evidence_ids": ["candidate-e1"],
+            "children": []
+          }
+        },
+        "calculation": {
+          "engine_version": "3.0",
+          "tree_sha256": "2d0fa1f14f5783de864bf2c880fdc50db6f089b0ba6e8ff05ac54b93f375961b",
+          "root_probability": 0.7,
+          "node_count": 1,
+          "deepest_level": 1
+        }
       },
       "evidence": [
         {
+          "id": "candidate-e1",
+          "roles": ["PROBABILITY", "RESOLUTION"],
           "source_name": "Example University",
           "source_type": "academic",
           "title": "A relevant base-rate study",
@@ -126,26 +205,26 @@
           "credibility": "这是采用可比样本、经过同行评审的公开研究。"
         }
       ],
+      "position": {
+        "held": false,
+        "shares": 0,
+        "cost_cash": 0
+      },
       "signal": {
         "action": "BUY",
         "rationale": "计入手续费、滑点、储备资金和半 Kelly 仓位后，仍保留可执行优势。"
-      },
-      "resolution_review": {
-        "clarity": "PASS",
-        "verification": "PASS",
-        "note": "规则未要求额外主观阈值，时间条件可直接核对。"
       },
       "opportunity": {
         "entry_eligible": true,
         "exit_eligible": false,
         "model_value": 0.7,
-        "executable_price": 0.55,
-        "net_edge": 0.15,
-        "raw_edge": 0.15,
-        "soft_minimum_raw_edge": 0.1,
-        "soft_edge_pass": true,
-        "soft_edge_override_reason": null,
-        "reason": "最小可执行订单保留了超过 70% 的原始优势。"
+        "executable_price": 0.5,
+        "net_edge": 0.2,
+        "raw_edge": 0.2,
+        "minimum_raw_edge": 0.1,
+        "fee_rate": 0,
+        "book_timestamp": "2026-07-19T00:20:00Z",
+        "reason": "完整建议订单在扣除执行成本后仍保留明显概率优势。"
       },
       "allocation": {
         "priority": 1,
@@ -156,18 +235,21 @@
         "cash_before": 80,
         "allocated_cash": 25,
         "cash_after": 55,
-        "reason": "从真实可部署现金中进行分配。"
+        "reason": "从真实可部署现金中进行本轮增量分配。"
       }
     }
   ],
   "actions": [
     {
-      "action": "HOLD",
+      "action": "MAINTAIN",
       "market_id": "540817",
-      "market_question": "Will the sample event resolve Yes?",
+      "market_question": "Will a sample event resolve Yes?",
       "outcome": "YES",
       "recommended_cash": 0,
-      "rationale": "当前持仓尚未出现卖出交叉，也不需要新增资金，因此继续持有。"
+      "recommended_shares": 0,
+      "rationale": "当前持仓尚未出现卖出交叉，也不需要新增资金，因此维持现状。",
+      "public_reason": "当前无需执行公开操作。",
+      "execution": null
     },
     {
       "action": "BUY",
@@ -175,8 +257,31 @@
       "market_question": "Will another sample event resolve Yes?",
       "outcome": "YES",
       "recommended_cash": 25,
-      "rationale": "该候选通过了可执行优势和相对质量规则，可以买入。"
+      "recommended_shares": 50,
+      "rationale": "该候选通过可执行优势和组合分配规则，建议本轮买入。",
+      "public_reason": "公开证据支持的 YES 概率明显高于当前可执行价格。",
+      "execution": {
+        "shares": 50,
+        "cash_amount": 25,
+        "cash_direction": "PAY",
+        "best_price": 0.5,
+        "vwap": 0.5,
+        "effective_unit_price": 0.5,
+        "gross_cash": 25,
+        "fee_cash": 0,
+        "slippage": 0,
+        "net_edge": 0.2,
+        "book_timestamp": "2026-07-19T00:20:00Z",
+        "fills": [
+          {
+            "price": 0.5,
+            "shares": 50,
+            "fee_cash": 0
+          }
+        ],
+        "source_snapshot_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
     }
   ],
-  "summary": "继续持有现有仓位，并根据证据支持买入一个新的候选市场。"
+  "summary": "继续维持现有仓位，并根据证据支持买入一个新的候选市场。"
 }

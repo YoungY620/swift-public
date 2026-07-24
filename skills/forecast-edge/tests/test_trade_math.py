@@ -39,7 +39,7 @@ class TradeMathTests(unittest.TestCase):
         document["reserve"] = {"reference_position_costs": [], "target_positions": 2.5}
         result = trade_math.evaluate_trade(document)
         self.assertTrue(result["opportunity"]["entry_eligible"])
-        self.assertEqual(result["signal"], "HOLD")
+        self.assertEqual(result["signal"], "MAINTAIN")
         self.assertEqual(result["buy"]["suggested_cash"], 0)
 
     def test_existing_position_adds_only_above_current_half_kelly_target(self) -> None:
@@ -57,13 +57,13 @@ class TradeMathTests(unittest.TestCase):
         self.assertEqual(result["signal"], "SELL")
         self.assertTrue(result["sell"]["fill"]["fully_filled"])
 
-    def test_smaller_target_without_sell_cross_holds_instead_of_rebalancing(self) -> None:
+    def test_existing_position_maintains_shares_without_a_sell_cross(self) -> None:
         document = sample()
         document["model_probability"] = 0.55
         document["current_position"] = {"shares": 300, "cost": 200}
         document["book"]["bids"] = [{"price": 0.40, "size": 500}]
         result = trade_math.evaluate_trade(document)
-        self.assertEqual(result["signal"], "HOLD")
+        self.assertEqual(result["signal"], "MAINTAIN")
         self.assertEqual(result["buy"]["suggested_shares"], 0.0)
 
     def test_no_side_is_valued_as_one_minus_yes_probability(self) -> None:
@@ -81,7 +81,7 @@ class TradeMathTests(unittest.TestCase):
         self.assertFalse(result["soft_edge"]["passes"])
         self.assertFalse(result["opportunity"]["entry_eligible"])
         self.assertEqual(result["buy"]["suggested_cash"], 0.0)
-        self.assertEqual(result["signal"], "HOLD")
+        self.assertEqual(result["signal"], "MAINTAIN")
 
     def test_documented_soft_edge_override_can_allow_a_smaller_entry_edge(self) -> None:
         document = sample()

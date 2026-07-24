@@ -265,7 +265,7 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
         signal = "ADD" if current_shares > 0 else "BUY"
         recommended_target_cash = current_cost + buy_fill["cash"]
     else:
-        signal = "HOLD"
+        signal = "MAINTAIN"
         recommended_target_cash = current_cost
 
     days = document.get("days_to_resolution")

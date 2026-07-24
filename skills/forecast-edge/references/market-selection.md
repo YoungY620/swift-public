@@ -8,15 +8,28 @@
 4. Let the script remove events containing current holdings, sports/esports, duplicates, and events without mechanically usable markets. Do not apply these exclusions to the separate current-position review.
 5. Continue cheap semantic screening through the complete remaining sequence until about 100 events qualify, or until the sequence is exhausted. Reject events where public information, causal attribution, or exact settlement-rule analysis gives the Agent no plausible advantage. The target is about 100 qualified events after exclusions, not 100 raw API rows or 100 contracts from a few large events.
 6. Fetch each selected event with `scripts/polymarket_data.py event EVENT_ID_OR_SLUG` and expand its child markets. Apply the resolution-clarity gate below, then compare deadlines, thresholds, prices, criteria, and instrument redundancy before ranking contracts.
-7. Apply the first pass in `portfolio-management.md` to the passing contracts and build a varied deep-research queue. Treat about ten fully researched new markets as a soft operational ceiling. Continue beyond it only when the opportunity set or available parallel capacity clearly justifies doing so.
+7. Apply the first pass in `portfolio-management.md` to the passing contracts and build a varied deep-research queue. Follow the descending raw-edge search below and treat about ten distinct fully researched markets per tier as the attempt threshold. Continue beyond a tier's threshold only when a small amount of additional research is likely to satisfy the operation needs.
 
 ## Resolution-clarity gate
 
 For a new market, require complete criteria, explicit outcome/scope/actors/time, defined exclusions and sources, and no unresolved contradiction or material subjective standard. Reject it when the Agent must invent a threshold, treat examples as exhaustive, or infer whether a time window may cross the end date. Record the short rejection reason; do not research, rank, size, or trade a failed market.
 
-The limits apply to new research, not to re-evaluating current holdings. Full-event pagination and the roughly 100-event prescreen limit cheap inspection; contract expansion and ranking happen only after event selection; the roughly ten-market limit controls expensive evidence and probability research. There is no maximum research time. Use independent sub-agents when available and useful.
+The limits apply to new research, not to re-evaluating current holdings. Full-event pagination and the roughly 100-event prescreen limit cheap inspection; contract expansion and ranking happen only after event selection; the roughly ten-market-per-tier limit controls expensive evidence and probability research. There is no maximum research time. Use independent sub-agents when available and useful.
 
 Do not claim that the final set is the theoretical global optimum. Full metadata enumeration prevents first-page sampling bias, but only the deeply researched subset receives evidence-backed probability estimates and executable-edge calculations.
+
+## Descending raw-edge search
+
+Treat the operation needs as the number and size of funded `BUY` and `ADD` actions permitted by actual cash, reserve, cold-start cadence, portfolio quality, diversification, and execution constraints. Never invent a target position count merely to declare the needs unmet.
+
+1. Start with the `raw_edge >= 0.30` tier. Prefer contracts whose initial causal thesis and executable ask make a 30pp edge plausible. Defer lower-tier opportunities even if they already clear the 10pp hard floor.
+2. Do not relax the first tier until both thresholds are met: semantically screen about 100 qualified events or exhaust the eligible event sequence, and deeply research about ten distinct plausible 30pp markets or exhaust that tier's plausible candidates. Count a completed deep research attempt even when its final estimate misses 30pp.
+3. If operation needs remain unmet, open the `raw_edge >= 0.20` tier and deeply research about ten distinct plausible 20pp markets or exhaust that tier. Reuse completed research; assign each market to the tier targeted when research began and never count it twice.
+4. If operation needs still remain unmet, open the final `raw_edge > 0.10` tier and research the best remaining candidates up to the same attempt threshold or pool exhaustion.
+5. Stop relaxing at `raw_edge > 0.10`. If no retained opportunity also passes crossing, post-cost edge, 70% edge retention, minimum size, cash, reserve, and portfolio review, recommend no `BUY` or `ADD` for the cycle and leave the relevant exposure unchanged.
+
+Treat 30pp and 20pp as search-priority tiers, not independent guarantees of an action. Confirm the tier only after full probability research against the fresh executable best ask.
+Stop the staged search as soon as the operation needs are satisfied; do not open a lower tier merely to produce more recommendations.
 
 ## Preferred domains
 
@@ -45,7 +58,7 @@ After cold start, let exits, settlements, available cash, quality, and reserve p
 
 A candidate must first pass the absolute executable-edge and sizing rules. Then compare its time-adjusted quality with current qualified holdings and the accepted opportunities in the latest two reports.
 
-Normally require raw probability edge strictly above 10pp for `BUY` or `ADD`. Treat 10pp as a soft quality preference, not a hard execution boundary: a smaller raw edge may proceed only with an explicit evidence-backed exception recorded under the rules in `signals-and-sizing.md`. Never lower the hard post-cost edge or 70% edge-retention requirements.
+Require raw probability edge strictly above 10pp for every `BUY` or `ADD`. Treat 10pp as a hard execution boundary with no evidence, horizon, liquidity, diversification, or portfolio-quality exception. Never lower the post-cost edge or 70% edge-retention requirements either.
 
 - Prefer candidates above the recent normal quality baseline.
 - Watch rather than buy candidates materially below it.

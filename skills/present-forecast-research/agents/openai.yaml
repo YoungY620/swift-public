@@ -1,0 +1,4 @@
+interface:
+  display_name: "Present Forecast Research"
+  short_description: "Validate and present forecast research reports"
+  default_prompt: "Use $present-forecast-research to validate and present this forecast-edge report."

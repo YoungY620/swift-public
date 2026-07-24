@@ -2,7 +2,7 @@
 
 ## Objective
 
-Estimate the probability that the researched outcome will settle at `1` under the market's exact resolution criteria. Model final settlement, even when the position may be sold before settlement.
+Estimate the probability that the market will settle `YES` under its exact resolution criteria. Every probability tree uses `P(market settles YES)` as its root, regardless of whether the researched trading outcome is `YES` or `NO`. Derive a `NO` model value as `1 - P(YES)`.
 
 ## Recursive procedure
 
@@ -13,7 +13,7 @@ Estimate the probability that the researched outcome will settle at `1` under th
 5. Recursively decompose a child when available evidence cannot yet support a defensible estimate.
 6. Search while modeling. When research reveals a credible empirical or theoretical framework, restructure or replace the earlier tree.
 7. Stop decomposing a node when further detail would not materially improve its estimate or evidence already supports a direct estimate. Do not split merely to create depth.
-8. Compute the root with `scripts/probability_tree.py` and retain the input tree plus its audit output in the report data.
+8. Compute the root with `scripts/probability_tree.py`. Embed that exact tree, its canonical SHA-256, and its calculation summary in `report.json`.
 
 Before finalizing the probability or action, independently verify the rule interpretation against the complete raw criteria:
 
@@ -25,14 +25,18 @@ Before finalizing the probability or action, independently verify the rule inter
 
 Use maximum depth `64` only as runaway-recursion protection. It is deliberately high and is not a target.
 
-## Supported calculation nodes
+## One recursive tree shape
 
-- `estimate`: a directly supported point estimate.
-- `partition`: a weighted total-probability decomposition whose branch weights sum to one.
-- `bayes_update`: a prior updated by one or more evidence likelihood ratios.
-- `complement`: one minus a child probability.
+Use one recursive weighted conditional-probability tree. Every node contains `id`, `label`, `reason`, `probability`, `evidence_ids`, and `children`.
 
-The Agent determines the structure and numbers. The script validates ranges, branch sums, duplicate identifiers, recursion depth, and arithmetic.
+- `children: []` is a directly supported leaf estimate and must reference evidence.
+- A non-leaf has at least two mutually exclusive and collectively exhaustive branches.
+- Every branch contains `id`, `label`, `weight`, `weight_reason`, `evidence_ids`, and `node`.
+- Branch weights sum to one.
+- A non-leaf probability equals `sum(weight * child probability)`.
+- Further decomposition replaces a leaf with another node using the same shape.
+
+Do not reuse the previous report's probability as a prior and do not store `bayes_update` or `complement` node types. Rebuild the complete tree on every run. Use Decimal arithmetic with 12 fractional places and `ROUND_HALF_EVEN`; every recorded non-leaf probability must equal the recomputed value exactly at that precision.
 
 ## Information that is genuinely uninformative
 
@@ -50,7 +54,7 @@ Never convert “I have not searched enough” into `0.5`. Continue searching fi
 Recalculate the final settlement probability rather than reacting to the market price alone.
 
 - If a dramatic event changes short-term sentiment but not the relevant long-run causal path, keep the long-run node estimates and document why.
-- If it changes a causal factor, update that node and propagate the change to the root.
+- If it changes a causal factor, rebuild the affected current-run branch and propagate the change to the root.
 - Compare the new model value with the current executable book. A lower model probability does not itself require selling; the sell crossing rule decides.
 
 ## Portfolio correlation

@@ -32,13 +32,16 @@ A leader with a careful record of speaking for an institution may deserve substa
 
 Record every key evidence item with:
 
-1. `source_name` and `source_type`.
-2. `title` and direct `url`.
-3. `published_at` and `retrieved_at`.
-4. A concise factual `summary` of the source content.
-5. The research `conclusion` drawn from it.
-6. The exact causal `factor_id` whose probability it informs.
-7. A `credibility` explanation specific to this use.
+1. A report-local unique `id` and one or more `roles`: `PROBABILITY` or `RESOLUTION`.
+2. `source_name` and `source_type`.
+3. `title` and direct `url`.
+4. `published_at` and `retrieved_at`.
+5. A concise factual `summary` of the source content.
+6. The research `conclusion` drawn from it.
+7. The exact causal `factor_id` whose probability it informs.
+8. A `credibility` explanation specific to this use.
+
+Every probability leaf and branch weight references evidence IDs. Every `PROBABILITY` evidence record must be referenced by the probability tree. Every `RESOLUTION` evidence record must be referenced by `resolution_review`. Unknown and unused required references invalidate the entire report. A structural aggregate node may use an empty evidence list because its descendants carry the evidence.
 
 For a current position, also record `new_since_previous`. When true, state the affected factor, the child-probability change, and the propagated final-probability change.
 

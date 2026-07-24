@@ -28,7 +28,7 @@ The JSON Schema is [report.schema.json](report.schema.json). The script also per
 
 ## Output language
 
-Write the final `report.md` and all private operation guidance in Simplified Chinese. For schema version `2.0` and later, the validator requires Chinese narrative content in the portfolio summary, report summary, model conclusions, signal rationales, action rationales, and evidence summaries, conclusions, and credibility assessments.
+Write the final `report.md` and all private operation guidance in Simplified Chinese. For schema version `3.0`, the validator requires Chinese narrative content in the portfolio summary, discovery summary, resolution review, model conclusions, signal rationales, action rationales, public reasons, and evidence summaries, conclusions, and credibility assessments.
 
 Keep JSON keys, signal enums, outcome enums, IDs, URLs, exact market questions, source names, publication titles, and necessary verbatim quotations in their original form. Explain any retained foreign-language material in Chinese. Render signal and outcome enums with Chinese labels while preserving their machine values, such as `买入（BUY）` and `否（NO）`.
 
@@ -37,22 +37,23 @@ Keep JSON keys, signal enums, outcome enums, IDs, URLs, exact market questions, 
 - Run identity, timestamps, account input, resolved address, data cutoff, and previous report IDs.
 - Effective available pUSD cash, conservative bankroll, and reserve cash. Preserve the discovered asset symbol, token address, and raw public balance in the unchanged account snapshot; record any lower authenticated available-to-trade cap separately with its runtime provenance.
 - Holdings liquidation value, deployable cash, allocated cash, remaining cash, cold-start state, and new-position limit.
-- Candidate-discovery audit: whether event keyset pagination completed, fetched/excluded event counts by reason, the number of semantically qualified events, the number of selected events expanded into child markets, and the final deep-research market count. Keep the exact candidate-event and selected-event JSON as immutable snapshots.
+- Candidate-discovery audit: whether event keyset pagination completed, fetched/excluded event counts by reason, the number of semantically qualified events, the number of selected events expanded into child markets, deep-research attempt counts for the 30pp, 20pp, and greater-than-10pp tiers, each tier-relaxation reason, and whether the operation needs were satisfied. Keep the exact candidate-event and selected-event JSON as immutable snapshots.
 - Every current position with complete new research.
-- Fully researched new candidates, including rejected and held candidates when useful for the opportunity baseline.
-- A consolidated list of `BUY`, `ADD`, `HOLD`, and `SELL` actions.
+- Fully researched new candidates, including rejected and unfunded `MAINTAIN` candidates when useful for the opportunity baseline.
+- A consolidated list of `BUY`, `ADD`, `MAINTAIN`, and `SELL` actions. Interpret `MAINTAIN` using the account snapshot: it means retaining current shares for an existing position and remaining uninvested for an unheld market.
 - A concise Simplified-Chinese portfolio-level summary.
 
 ## Market research fields
 
 For current positions and candidates, include:
 
-- Market ID, question, URL, researched outcome, exact resolution criteria, and end date.
-- `resolution_review`：`clarity`、`verification`（`PASS`/`FAIL`）及简短 `note`；候选必须两项均为 `PASS`，`BUY`/`ADD` 也必须两项均为 `PASS`。
-- Point estimate, held-outcome model value, causal-tree input and calculation result, and conclusion.
-- Book timestamp, best prices, fee rate, VWAP, raw and actual edge, edge retention, and depth capacity.
-- Whether raw edge is strictly above the default 10pp soft entry preference. For any below-threshold entry opportunity, include the explicit exception reason; absence of a reason means no `BUY` or `ADD` recommendation.
-- Half-Kelly result, reserve constraint, suggested shares/cash, and daily expected return.
+- Market ID, question, verified event URL, researched outcome, exact resolution criteria, and end date.
+- A `PASS` resolution review with explicit YES/NO conditions, deadline, source, edge cases, reason, and evidence IDs.
+- Market YES point estimate, held-outcome model value, the complete recursive weighted tree, canonical tree hash, calculation result, and conclusion.
+- Real position shares and cost for current holdings; zero position fields for candidates.
+- Book timestamp, best price, fee rate, VWAP, raw and actual edge, edge retention, and depth capacity.
+- Whether raw edge is strictly above the hard 10pp entry floor and which 30pp, 20pp, or greater-than-10pp search tier produced the candidate. Never report a below-threshold entry opportunity as eligible. Keep the legacy `soft_edge_override_reason` machine field null.
+- Half-Kelly result, reserve constraint, incremental suggested shares/cash, and daily expected return. Never encode a target total as the action delta.
 - Signal and rationale.
 - Standalone market opportunity, final account action, and portfolio allocation audit.
 - Complete key-evidence records defined in `evidence-policy.md`.
@@ -73,11 +74,11 @@ An immediate crossing signal never waits for the comparison or a second confirmi
 
 ## No incomplete signal
 
-Do not create `INCOMPLETE`, `UNKNOWN`, or `REVIEW_REQUIRED` actions. Continue research, use defensible base rates or neutral leaves, and finish the model. A mechanical inability to retrieve an executable book produces `HOLD` for a current position or exclusion of a candidate, together with an explicit data-failure note.
+Do not create `INCOMPLETE`, `UNKNOWN`, or `REVIEW_REQUIRED` actions. Continue research, use defensible base rates or neutral leaves, and finish the model. A mechanical inability to retrieve an executable book produces `MAINTAIN` for a current position or exclusion of a candidate, together with an explicit data-failure note.
 
 ## Portfolio consistency
 
-Use report schema version `2.1` for new runs. Keep older reports readable as history. Validate all of the following before archival:
+Use report schema version `3.0` for new runs. Older versions may remain readable as archived history, but downstream presentation rejects them. Validate all of the following before archival:
 
 - Conservative bankroll equals available collateral plus holdings liquidation value.
 - Deployable cash plus protected reserve equals available collateral.
@@ -86,9 +87,14 @@ Use report schema version `2.1` for new runs. Keep older reports readable as his
 - Every BUY or ADD amount equals its portfolio allocation.
 - All BUY and ADD amounts combined equal portfolio allocated cash and never exceed deployable cash.
 - Zero available cash implies zero funded BUY and ADD actions.
-- A zero-cash entry opportunity must use final account action `HOLD`; zero-amount `BUY` and `ADD` are invalid.
+- A zero-cash entry opportunity must use final account action `MAINTAIN`; zero-amount `BUY` and `ADD` are invalid.
 - Cold-start funded BUY count does not exceed the configured limit.
 - Market opportunities without funding remain distinct from account actions.
+- Every analysis includes a valid probability tree and calculation hash.
+- The tree root equals `yes_probability`; `NO` model value equals `1 - yes_probability`.
+- Every action carries both incremental shares and incremental cash. `MAINTAIN` carries zero deltas and null execution.
+- BUY/ADD cash is the all-in payment; SELL cash is the post-fee receipt.
+- Embedded fill levels reproduce shares, gross cash, fee, VWAP, effective unit price, slippage, and net edge at 12-decimal precision.
 
 Reject inconsistent or non-Chinese narrative reports. Do not archive them with explanatory labels such as “theoretical” or “nominal.” Include a concise private Simplified-Chinese portfolio-diversification conclusion, but no formal risk-cluster structure.
 

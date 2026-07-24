@@ -1,25 +1,39 @@
 {
   "root": {
     "id": "final-event",
-    "type": "partition",
-    "label": "Final settlement",
-    "branches": [
+    "label": "市场最终结算为 YES",
+    "reason": "按照政策是否通过划分互斥且完备情景。",
+    "probability": 0.56,
+    "evidence_ids": [],
+    "children": [
       {
-        "label": "Policy adopted",
+        "id": "policy-adopted",
+        "label": "政策通过",
         "weight": 0.6,
-        "child": {
+        "weight_reason": "官方票数支持政策通过为主要情景。",
+        "evidence_ids": ["evidence-policy"],
+        "node": {
           "id": "yes-given-adoption",
-          "type": "estimate",
-          "probability": 0.8
+          "label": "政策通过时市场结算为 YES",
+          "reason": "该条件下结算标准大概率满足。",
+          "probability": 0.8,
+          "evidence_ids": ["evidence-policy"],
+          "children": []
         }
       },
       {
-        "label": "Policy not adopted",
+        "id": "policy-not-adopted",
+        "label": "政策未通过",
         "weight": 0.4,
-        "child": {
+        "weight_reason": "保留政策未通过的互补情景。",
+        "evidence_ids": ["evidence-base-rate"],
+        "node": {
           "id": "yes-given-no-adoption",
-          "type": "estimate",
-          "probability": 0.2
+          "label": "政策未通过时市场结算为 YES",
+          "reason": "历史基准率仍支持小概率满足结算标准。",
+          "probability": 0.2,
+          "evidence_ids": ["evidence-base-rate"],
+          "children": []
         }
       }
     ]

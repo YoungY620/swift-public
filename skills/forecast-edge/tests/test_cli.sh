@@ -102,7 +102,7 @@ assert load("market.json")["id"] == "540817"
 assert load("event.json")["markets"][0]["id"] == "540817"
 assert load("book.json")["book"]["asks"][0]["price"] == 0.51
 assert load("book.json")["fee"]["fee_rate"] == 0.04
-assert abs(load("probability.json")["probability"] - 0.56) < 1e-12
+assert abs(float(load("probability.json")["root_probability"]) - 0.56) < 1e-12
 assert load("trade.json")["signal"] == "BUY"
 assert load("trade.json")["opportunity"]["entry_eligible"] is True
 assert load("trade.json")["soft_edge"]["minimum_raw_edge"] == 0.1

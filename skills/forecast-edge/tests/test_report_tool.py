@@ -1,7 +1,8 @@
-"""Executable report-contract and immutable-archive examples."""
+"""Executable examples for the v3 immutable report contract."""
 
 from __future__ import annotations
 
+import copy
 import json
 import sys
 import tempfile
@@ -11,161 +12,152 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+import probability_tree  # noqa: E402
 import report_tool  # noqa: E402
 
 
-FIXTURES = Path(__file__).parent / "fixtures"
+FIXTURE = Path(__file__).parent / "fixtures" / "report.json"
+
+
+def load_report() -> dict:
+    return json.loads(FIXTURE.read_text(encoding="utf-8"))
 
 
 class ReportToolTests(unittest.TestCase):
-    def test_valid_report_renders_actions_and_evidence(self) -> None:
-        report = report_tool.read_report(FIXTURES / "report.json")
+    def test_valid_v3_report_renders_actions_and_evidence(self) -> None:
+        report = report_tool.validate_report(load_report())
         markdown = report_tool.render_report(report)
-        self.assertIn("## 行动", markdown)
         self.assertIn("买入（BUY）", markdown)
-        self.assertIn("持有（HOLD）", markdown)
-        self.assertIn("是（YES）", markdown)
+        self.assertIn("维持现状（MAINTAIN）", markdown)
+        self.assertIn("本轮份额", markdown)
+        self.assertIn("市场 YES 概率", markdown)
+        self.assertIn("结算审查：PASS", markdown)
         self.assertIn("Example Statistics Office", markdown)
-        self.assertIn("新增证据影响", markdown)
-        self.assertIn("入场软门槛", markdown)
-        self.assertIn("规则审查", markdown)
 
-    def test_v2_report_rejects_non_chinese_narrative(self) -> None:
-        report = json.loads((FIXTURES / "report.json").read_text())
-        report["summary"] = "Hold one position and buy one candidate."
+    def test_v3_report_rejects_non_chinese_narrative(self) -> None:
+        report = load_report()
+        report["summary"] = "Maintain one position and buy one candidate."
         with self.assertRaisesRegex(report_tool.ReportError, "Simplified-Chinese"):
             report_tool.validate_report(report)
 
     def test_current_position_requires_previous_comparison_field(self) -> None:
-        report = json.loads((FIXTURES / "report.json").read_text())
+        report = load_report()
         del report["current_positions"][0]["comparison"]
         with self.assertRaisesRegex(report_tool.ReportError, "comparison"):
             report_tool.validate_report(report)
 
-    def test_rejects_portfolio_bankroll_mismatch(self) -> None:
-        report = json.loads((FIXTURES / "report.json").read_text())
-        report["portfolio"]["estimated_bankroll"] = 1000
-        with self.assertRaisesRegex(report_tool.ReportError, "bankroll must equal"):
+    def test_embedded_tree_is_recomputed(self) -> None:
+        report = load_report()
+        report["candidates"][0]["model"]["tree"]["root"]["probability"] = 0.71
+        with self.assertRaisesRegex(report_tool.ReportError, "yes_probability"):
             report_tool.validate_report(report)
 
-    def test_rejects_action_amount_different_from_portfolio_allocation(self) -> None:
-        report = json.loads((FIXTURES / "report.json").read_text())
-        report["actions"][1]["recommended_cash"] = 70
-        with self.assertRaisesRegex(report_tool.ReportError, "differs from portfolio allocation"):
+    def test_tree_hash_binds_calculation_to_recorded_tree(self) -> None:
+        report = load_report()
+        report["candidates"][0]["model"]["calculation"]["tree_sha256"] = "0" * 64
+        with self.assertRaisesRegex(report_tool.ReportError, "tree_sha256"):
             report_tool.validate_report(report)
 
-    def test_rejects_nominal_funded_action(self) -> None:
-        report = json.loads((FIXTURES / "report.json").read_text())
-        report["actions"][1]["rationale"] = "理论金额来自 reference bankroll。"
-        with self.assertRaisesRegex(report_tool.ReportError, "nominal or theoretical"):
+    def test_unknown_tree_evidence_is_rejected(self) -> None:
+        report = load_report()
+        report["candidates"][0]["model"]["tree"]["root"]["evidence_ids"] = ["missing"]
+        with self.assertRaisesRegex(report_tool.ReportError, "unknown evidence"):
             report_tool.validate_report(report)
 
-    def test_zero_cash_entry_opportunity_cannot_emit_buy(self) -> None:
-        report = json.loads((FIXTURES / "report.json").read_text())
-        report["portfolio"].update(
-            {
-                "available_collateral": 0,
-                "estimated_bankroll": 20,
-                "reserve_cash": 0,
-                "deployable_cash": 0,
-                "allocated_cash": 0,
-                "remaining_cash": 0,
-            }
-        )
-        candidate = report["candidates"][0]
-        candidate["allocation"].update(
-            {"cash_before": 0, "allocated_cash": 0, "cash_after": 0}
-        )
-        report["actions"][1]["recommended_cash"] = 0
-        with self.assertRaisesRegex(report_tool.ReportError, "must be positive"):
+    def test_unreferenced_probability_evidence_is_rejected(self) -> None:
+        report = load_report()
+        extra = copy.deepcopy(report["candidates"][0]["evidence"][0])
+        extra["id"] = "unused-probability"
+        extra["roles"] = ["PROBABILITY"]
+        report["candidates"][0]["evidence"].append(extra)
+        with self.assertRaisesRegex(report_tool.ReportError, "not referenced by the tree"):
+            report_tool.validate_report(report)
+
+    def test_resolution_review_must_pass(self) -> None:
+        report = load_report()
+        report["candidates"][0]["resolution_review"]["status"] = "FAIL"
+        with self.assertRaisesRegex(report_tool.ReportError, "must be PASS"):
+            report_tool.validate_report(report)
+
+    def test_resolution_review_requires_specific_complete_reasoning(self) -> None:
+        report = load_report()
+        report["candidates"][0]["resolution_review"]["resolution_source"] = ""
+        with self.assertRaisesRegex(report_tool.ReportError, "resolution_source"):
+            report_tool.validate_report(report)
+
+        report = load_report()
+        report["candidates"][0]["resolution_review"]["reason"] = report[
+            "current_positions"
+        ][0]["resolution_review"]["reason"]
+        with self.assertRaisesRegex(report_tool.ReportError, "market-specific"):
+            report_tool.validate_report(report)
+
+    def test_resolution_review_is_bound_to_the_market_criteria(self) -> None:
+        report = load_report()
+        report["candidates"][0]["resolution_review"]["criteria_text"] = "Different criteria"
+        with self.assertRaisesRegex(report_tool.ReportError, "differs"):
+            report_tool.validate_report(report)
+
+    def test_execution_fill_values_are_recomputed(self) -> None:
+        report = load_report()
+        report["actions"][1]["execution"]["vwap"] = 0.51
+        with self.assertRaisesRegex(report_tool.ReportError, "vwap"):
+            report_tool.validate_report(report)
+
+    def test_action_delta_must_match_execution(self) -> None:
+        report = load_report()
+        report["actions"][1]["recommended_cash"] = 24
+        with self.assertRaisesRegex(report_tool.ReportError, "recommended_cash"):
+            report_tool.validate_report(report)
+
+    def test_hard_ten_point_entry_floor_has_no_override(self) -> None:
+        report = load_report()
+        report["candidates"][0]["opportunity"]["raw_edge"] = 0.1
+        with self.assertRaisesRegex(report_tool.ReportError, "above 10pp"):
             report_tool.validate_report(report)
 
     def test_rejects_allocation_that_does_not_continue_shared_cash_chain(self) -> None:
-        report = json.loads((FIXTURES / "report.json").read_text())
+        report = load_report()
         report["candidates"][0]["allocation"]["cash_before"] = 70
         report["candidates"][0]["allocation"]["cash_after"] = 45
         with self.assertRaisesRegex(report_tool.ReportError, "shared cash chain"):
             report_tool.validate_report(report)
 
-    def test_requires_a_final_action_for_every_analyzed_market(self) -> None:
-        report = json.loads((FIXTURES / "report.json").read_text())
+    def test_rejects_nominal_funded_action(self) -> None:
+        report = load_report()
+        report["actions"][1]["rationale"] = "建议使用理论金额执行本轮买入。"
+        with self.assertRaisesRegex(report_tool.ReportError, "nominal or theoretical"):
+            report_tool.validate_report(report)
+
+    def test_requires_final_action_for_every_analysis(self) -> None:
+        report = load_report()
         report["actions"] = report["actions"][1:]
         with self.assertRaisesRegex(report_tool.ReportError, "missing final actions"):
             report_tool.validate_report(report)
 
-    def test_below_ten_point_entry_requires_a_chinese_override_reason(self) -> None:
-        report = json.loads((FIXTURES / "report.json").read_text())
-        opportunity = report["candidates"][0]["opportunity"]
-        opportunity["raw_edge"] = 0.09
-        opportunity["soft_edge_pass"] = False
-        with self.assertRaisesRegex(report_tool.ReportError, "override reason"):
+    def test_model_value_is_yes_probability_complement_for_no(self) -> None:
+        report = load_report()
+        analysis = report["candidates"][0]
+        analysis["market"]["outcome"] = "NO"
+        analysis["model"]["model_value"] = 0.3
+        analysis["opportunity"]["model_value"] = 0.3
+        report["actions"][1]["outcome"] = "NO"
+        execution = report["actions"][1]["execution"]
+        execution["net_edge"] = -0.2
+        analysis["opportunity"]["net_edge"] = -0.2
+        with self.assertRaisesRegex(report_tool.ReportError, "net_edge"):
             report_tool.validate_report(report)
-
-        opportunity["soft_edge_override_reason"] = "一手证据质量极高且结算期限很短。"
-        report_tool.validate_report(report)
-
-    def test_candidate_requires_clear_rules(self) -> None:
-        report = json.loads((FIXTURES / "report.json").read_text())
-        report["candidates"][0]["resolution_review"]["clarity"] = "FAIL"
-        with self.assertRaisesRegex(report_tool.ReportError, "clarity must be PASS"):
-            report_tool.validate_report(report)
-
-    def test_buy_requires_rule_verification(self) -> None:
-        report = json.loads((FIXTURES / "report.json").read_text())
-        report["candidates"][0]["resolution_review"]["verification"] = "FAIL"
-        with self.assertRaisesRegex(report_tool.ReportError, "pass clarity and verification"):
-            report_tool.validate_report(report)
-
-    def test_rule_review_notes_cannot_repeat_boilerplate(self) -> None:
-        report = json.loads((FIXTURES / "report.json").read_text())
-        report["candidates"][0]["resolution_review"]["note"] = report["current_positions"][0][
-            "resolution_review"
-        ]["note"]
-        with self.assertRaisesRegex(report_tool.ReportError, "market-specific"):
-            report_tool.validate_report(report)
-
-    def test_v2_report_without_soft_edge_fields_remains_readable_as_history(self) -> None:
-        report = json.loads((FIXTURES / "report.json").read_text())
-        report["schema_version"] = "2.0"
-        for analysis in report["current_positions"] + report["candidates"]:
-            for field in (
-                "raw_edge",
-                "soft_minimum_raw_edge",
-                "soft_edge_pass",
-                "soft_edge_override_reason",
-            ):
-                del analysis["opportunity"][field]
-        report_tool.validate_report(report)
-
-    def test_legacy_v1_report_remains_readable_as_history(self) -> None:
-        report = json.loads((FIXTURES / "report.json").read_text())
-        report["schema_version"] = "1.0"
-        for field in [
-            "holdings_liquidation_value",
-            "deployable_cash",
-            "allocated_cash",
-            "remaining_cash",
-            "cold_start",
-            "new_position_limit",
-            "diversification_summary",
-        ]:
-            del report["portfolio"][field]
-        for analysis in report["current_positions"] + report["candidates"]:
-            del analysis["opportunity"]
-            del analysis["allocation"]
-        report_tool.validate_report(report)
 
     def test_archive_is_immutable_and_previous_finds_it(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            destination = report_tool.archive_report(FIXTURES / "report.json", root, [FIXTURES / "book.json"])
-            self.assertTrue((destination / "report.json").is_file())
-            self.assertTrue((destination / "report.md").is_file())
-            self.assertTrue((destination / "snapshots" / "book.json").is_file())
+            output_root = Path(temporary)
+            first = report_tool.archive_report(FIXTURE, output_root, [])
+            self.assertTrue((first / "report.json").is_file())
+            self.assertTrue((first / "report.md").is_file())
             with self.assertRaisesRegex(report_tool.ReportError, "refusing to modify"):
-                report_tool.archive_report(FIXTURES / "report.json", root, [])
-            recent = report_tool.previous_reports(root, 2)
-            self.assertEqual(recent[0]["run_id"], "sample-run")
+                report_tool.archive_report(FIXTURE, output_root, [])
+            previous = report_tool.previous_reports(output_root, 2)
+            self.assertEqual(previous[0]["run_id"], "sample-run")
 
 
 if __name__ == "__main__":

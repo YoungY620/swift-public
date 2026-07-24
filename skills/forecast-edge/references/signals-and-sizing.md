@@ -35,25 +35,25 @@ Apply the sell rule to the complete holding. Issue `SELL` immediately when cross
 
 Issue:
 
-- `BUY` for a new position that passes crossing, the 10pp soft preference or a documented exception, minimum-size, sizing, reserve, and quality rules.
-- `ADD` only when the buy crossing survives on the incremental order, the 10pp soft preference or a documented exception applies, the post-cost edge retains at least 70% of raw edge, and the half-Kelly target exceeds current cost.
+- `BUY` for a new position that passes crossing, the hard `raw_edge > 0.10` floor, minimum-size, sizing, reserve, and quality rules.
+- `ADD` only when the buy crossing survives on the incremental order, the hard `raw_edge > 0.10` floor, the post-cost edge retains at least 70% of raw edge, and the half-Kelly target exceeds current cost.
 - `SELL` when the complete executable sell crossing holds.
-- `HOLD` otherwise. If the recalculated target shrinks without a sell crossing, hold rather than performing an ordinary rebalance reduction.
+- `MAINTAIN` otherwise. This means preserving the account's current exposure: retain the current shares when already positioned, or remain uninvested when no position exists. If the recalculated target shrinks without a sell crossing, retain the position rather than performing an ordinary rebalance reduction.
 
 Do not sell an un-crossed losing position to replace it with a better candidate.
 
-## Soft 10pp entry preference and 30pp strong signals
+## Hard 10pp entry floor and 30pp strong signals
 
-For `BUY` and `ADD`, normally require:
+For every `BUY` and `ADD`, require:
 
 ```text
 raw_edge = v - best_ask
 raw_edge > 0.10
 ```
 
-This is a soft preference, not a hard execution constraint. An Agent may recommend an entry at `raw_edge <= 0.10` only when the full research supports a specific exception, such as unusually strong primary evidence, unusually short capital lock-up, exceptionally low execution drag, or material independent portfolio value. Record the exception reason explicitly in the trade-math input and private report. Do not use an exception merely to fill a position count or deploy idle cash.
+This is a hard prompt-level execution constraint. Never recommend an entry at `raw_edge <= 0.10`; strong primary evidence, short capital lock-up, low execution drag, diversification value, idle cash, or any other consideration cannot override it.
 
-The exception never relaxes the hard requirements that the minimum executable order has positive post-fee and post-slippage edge, retains at least 70% of raw edge, satisfies minimum order size, and receives a positive shared portfolio allocation. The 10pp preference applies only to buying or adding; it does not delay a sell crossing.
+The minimum executable order must also have positive post-fee and post-slippage edge, retain at least 70% of raw edge, satisfy minimum order size, and receive a positive shared portfolio allocation. The 10pp hard floor applies only to buying or adding; it does not delay a sell crossing.
 
 Label `raw_edge > 0.30` as a strong signal in private guidance and the public brief. This is presentational only and changes no execution rule.
 
@@ -63,12 +63,12 @@ Calculate an entry opportunity at the minimum executable order independently of 
 
 Then calculate the account action with the real bankroll and available cash:
 
-- An entry opportunity may be `entry_eligible: true` while the account action remains `HOLD` with zero allocation.
+- An entry opportunity may be `entry_eligible: true` while the account action remains `MAINTAIN` with zero allocation, meaning the account stays uninvested in that market.
 - Emit account `BUY` or `ADD` only after `portfolio_allocate.py` assigns a positive executable amount.
 - Never emit `BUY` or `ADD` with zero recommended cash. Preserve the standalone opportunity in `opportunity`, not in the account action.
 - Never present a nominal, illustrative, or theoretical bankroll as an account recommendation.
 - Keep public market commentary separate from private executable instructions.
-- Pass `soft_minimum_raw_edge: 0.10` to `trade_math.py`. For a below-threshold exception, also pass `soft_edge_override: true` and a non-empty Chinese `soft_edge_override_reason`; otherwise the script returns no BUY or ADD allocation.
+- Pass the legacy machine field `soft_minimum_raw_edge: 0.10` to `trade_math.py`, but enforce it as hard policy in the Agent instructions. Always keep `soft_edge_override: false` and `soft_edge_override_reason` empty or null. Discard any below-threshold entry result regardless of what a legacy script field permits.
 
 ## Edge retention and capacity
 
