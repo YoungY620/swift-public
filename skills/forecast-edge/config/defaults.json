@@ -31,7 +31,8 @@
     "active_event_page_size": 100,
     "active_event_safety_limit": 100000,
     "prescreen_event_target": 100,
-    "candidate_research_soft_limit": 10,
+    "candidate_research_attempt_threshold_per_tier": 10,
+    "min_novel_deep_research_events": 10,
     "cold_start_new_positions_min": 1,
     "cold_start_new_positions_max": 2,
     "primary_themes": [

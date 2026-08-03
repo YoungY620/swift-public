@@ -25,7 +25,7 @@ class PolicyConfigTests(unittest.TestCase):
         self.assertEqual(scan["active_event_page_size"], 100)
         self.assertEqual(scan["active_event_safety_limit"], 100000)
         self.assertEqual(scan["prescreen_event_target"], 100)
-        self.assertEqual(scan["candidate_research_soft_limit"], 10)
+        self.assertEqual(scan["candidate_research_attempt_threshold_per_tier"], 10)
 
     def test_final_report_language_is_simplified_chinese(self) -> None:
         config = json.loads((ROOT / "config" / "defaults.json").read_text())

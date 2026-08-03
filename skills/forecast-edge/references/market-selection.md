@@ -7,8 +7,14 @@
 3. Use `scripts/polymarket_data.py candidate-events --account-snapshot account.json` to follow the active Gamma event feed's opaque keyset cursor until exhaustion. Require `scan.complete=true`; never use a single API page as the candidate universe.
 4. Let the script remove events containing current holdings, sports/esports, duplicates, and events without mechanically usable markets. Do not apply these exclusions to the separate current-position review.
 5. Continue cheap semantic screening through the complete remaining sequence until about 100 events qualify, or until the sequence is exhausted. Reject events where public information, causal attribution, or exact settlement-rule analysis gives the Agent no plausible advantage. The target is about 100 qualified events after exclusions, not 100 raw API rows or 100 contracts from a few large events.
-6. Fetch each selected event with `scripts/polymarket_data.py event EVENT_ID_OR_SLUG` and expand its child markets. Apply the resolution-clarity gate below, then compare deadlines, thresholds, prices, criteria, and instrument redundancy before ranking contracts.
-7. Apply the first pass in `portfolio-management.md` to the passing contracts and build a varied deep-research queue. Follow the descending raw-edge search below and treat about ten distinct fully researched markets per tier as the attempt threshold. Continue beyond a tier's threshold only when a small amount of additional research is likely to satisfy the operation needs.
+6. Derive the already-researched market and event set with `scripts/previously_researched.py REPORTS_DIR` from the archived reports. Fetch each selected event with `scripts/polymarket_data.py event EVENT_ID_OR_SLUG` and expand its child markets. Apply the resolution-clarity gate below, then compare deadlines, thresholds, prices, criteria, and instrument redundancy before ranking contracts.
+7. Apply the first pass in `portfolio-management.md` to the passing contracts and build a varied deep-research queue. Follow the descending raw-edge search below and treat about ten distinct fully researched markets per tier as the attempt threshold. Continue beyond a tier's threshold only when a small amount of additional research is likely to satisfy the operation needs. Independently of the tier stop rules, satisfy the novel-event research quota below.
+
+## Novel-event research quota
+
+Within the deep-research effort, include at least ten eligible events absent from the `scripts/previously_researched.py` set (no researched market id and no researched event slug). The quota targets events never deeply researched in any archived run; current holdings never count toward it even if a previous run omitted them. Count a novel event researched in any tier toward the quota, and prefer novel eligible events when choosing among otherwise comparable contracts within a tier.
+
+The quota is an independent exploration obligation: it does not create operation needs, does not relax the descending-tier stop rules for account actions, and earns recommendations only through the standard gates. If the staged search satisfies operation needs before ten novel events have been researched, continue researching novel eligible events from the open tier's pool until the quota is met. Relax the quota only when fewer than ten novel eligible events exist in the complete qualified sequence, and record the shortfall and the reason in the report's discovery note. Never relax the resolution-clarity gate, the liquidity prescreen, or any research standard to fill the quota, and never claim an event is novel without checking the script output. The 10pp raw-edge entry preference is unchanged.
 
 ## Resolution-clarity gate
 
@@ -52,7 +58,7 @@ Use the time-adjusted quality calculation from `signals-and-sizing.md` to compar
 
 At cold start, add only one or two selected markets per run. The purpose is to spend capital gradually while learning the available opportunity set, not to divide the bankroll equally.
 
-After cold start, let exits, settlements, available cash, quality, and reserve policy determine whether to add positions. Do not force a new entry every run.
+After cold start, let exits, settlements, available cash, quality, and reserve policy determine whether to add positions. Do not force a new entry every run. This cadence governs purchases only; it never reduces the novel-event research quota above, which earns research rather than recommendations.
 
 ## Quality and idle cash
 

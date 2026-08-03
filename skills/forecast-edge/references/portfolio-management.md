@@ -19,6 +19,8 @@ Never use model value, a displayed last price, a legacy token balance, a nominal
 
 Research every current position; never screen one out. Screen new opportunities at the event level first so sibling deadlines, thresholds, and outcomes do not consume independent candidate slots. Select about 100 events matching the domain and AI-advantage preferences, expand their child markets, then inspect contract metadata, resolution criteria, horizon, liquidity, and semantic relationship to the current portfolio before expensive research.
 
+Reserve at least ten deep-research slots across the descending tiers for eligible events absent from the previously-researched set, per the novel-event research quota in [market-selection.md](market-selection.md). The thesis-repetition checks below apply to exploration slots as well; they shape which novel events enter first but never reduce the quota.
+
 Build a varied research queue. Ask whether a candidate:
 
 - Repeats the same real-world thesis, actor, institution, or causal driver.
