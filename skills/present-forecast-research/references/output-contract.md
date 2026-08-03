@@ -34,7 +34,7 @@ Use directory mode `0700`, private file mode `0600`, and public file mode `0644`
 
 ## Content
 
-The private brief includes every current holding and every BUY, ADD, or SELL candidate. It omits unheld `MAINTAIN` candidates and full evidence trees.
+The private brief includes every current holding and every BUY, ADD, TRIM, or SELL candidate. It omits unheld `MAINTAIN` candidates and full evidence trees.
 
 The research report includes every current holding, every deeply researched candidate, resolution review, probability tree, evidence, execution calculation, portfolio conclusion, and discovery audit.
 

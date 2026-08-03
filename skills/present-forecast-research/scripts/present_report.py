@@ -33,6 +33,7 @@ ACTION_LABELS = {
     "BUY": "买入",
     "ADD": "加仓",
     "MAINTAIN": "维持现状",
+    "TRIM": "减仓",
     "SELL": "卖出",
 }
 POST_MARKERS = {
@@ -403,7 +404,7 @@ def build_public_signals(
     analyses = analysis_map(report)
     actions: list[dict[str, Any]] = []
     for action in report["actions"]:
-        if action["action"] == "MAINTAIN":
+        if action["action"] in {"MAINTAIN", "TRIM"}:
             continue
         item = analyses[str(action["market_id"])]
         review = item["resolution_review"]

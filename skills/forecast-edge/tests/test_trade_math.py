@@ -1,4 +1,4 @@
-"""Executable examples for fees, VWAP crossings, half Kelly, reserve, and actions."""
+"""Executable examples for fees, VWAP crossings, fractional Kelly, reserve, and actions."""
 
 from __future__ import annotations
 
@@ -24,13 +24,91 @@ class TradeMathTests(unittest.TestCase):
     def test_fee_formula_is_applied_per_filled_price(self) -> None:
         self.assertAlmostEqual(trade_math.fee_per_share(0.5, 0.04), 0.01)
 
-    def test_new_position_uses_half_kelly_and_preserves_edge(self) -> None:
+    def test_new_position_uses_fractional_kelly_and_preserves_edge(self) -> None:
         result = trade_math.evaluate_trade(sample())
         self.assertEqual(result["signal"], "BUY")
-        self.assertAlmostEqual(result["kelly"]["configured_fraction"], 0.5)
+        self.assertAlmostEqual(result["kelly"]["configured_fraction"], 0.25)
         self.assertGreaterEqual(result["buy"]["edge_retention"], 0.7)
         self.assertLessEqual(result["buy"]["suggested_cash"], result["orderbook_capacity"]["cash"] + 1e-8)
         self.assertEqual(result["cash"]["reserve"], 100.0)  # median(30,40,50) * 2.5
+
+    def test_kelly_fraction_defaults_to_one_quarter(self) -> None:
+        document = sample()
+        del document["kelly_fraction"]
+        result = trade_math.evaluate_trade(document)
+        self.assertAlmostEqual(result["kelly"]["configured_fraction"], 0.25)
+
+    def test_position_cap_limits_new_entry_cash(self) -> None:
+        result = trade_math.evaluate_trade(sample())
+        self.assertEqual(result["position_cap"]["max_fraction"], 0.05)
+        self.assertEqual(result["position_cap"]["total_cap_cash"], 50.0)
+        self.assertEqual(result["position_cap"]["remaining_cap_cash"], 50.0)
+        # The 5% position cap binds below the fractional-Kelly target of ~71.43.
+        self.assertAlmostEqual(result["buy"]["suggested_cash"], 50.0)
+        self.assertAlmostEqual(result["buy"]["suggested_shares"], 50.0 / 0.51)
+
+    def test_position_cap_yields_to_kelly_when_relaxed(self) -> None:
+        document = sample()
+        document["max_position_fraction"] = 1.0
+        result = trade_math.evaluate_trade(document)
+        self.assertEqual(result["position_cap"]["remaining_cap_cash"], 1000.0)
+        self.assertAlmostEqual(result["buy"]["suggested_cash"], 1000 * 0.25 * (0.14 / 0.49))
+        self.assertEqual(result["signal"], "BUY")
+
+    def test_position_cap_already_exhausted_blocks_entry(self) -> None:
+        document = sample()
+        document["current_position"] = {"shares": 100, "cost": 50}
+        result = trade_math.evaluate_trade(document)
+        self.assertEqual(result["position_cap"]["remaining_cap_cash"], 0.0)
+        self.assertEqual(result["buy"]["suggested_cash"], 0.0)
+        self.assertEqual(result["signal"], "MAINTAIN")
+
+    def test_trim_fires_when_position_share_drifts_above_threshold(self) -> None:
+        document = sample()
+        document["current_position"] = {"shares": 400, "cost": 200}
+        document["book"]["bids"] = [{"price": 0.60, "size": 1000}]
+        result = trade_math.evaluate_trade(document)
+        self.assertEqual(result["signal"], "TRIM")
+        self.assertEqual(result["recommended_target_cash"], 200)
+        trim = result["trim"]
+        self.assertTrue(trim["trigger"])
+        self.assertAlmostEqual(trim["share"], 0.23616)
+        self.assertAlmostEqual(trim["target_fraction"], 0.036376953125, places=12)
+        self.assertAlmostEqual(trim["threshold"], 0.15)
+        self.assertAlmostEqual(trim["trim_cash"], 86.16)
+        self.assertAlmostEqual(trim["trim_shares"], 86.16 / 0.5904)
+        self.assertTrue(trim["fill"]["fully_filled"])
+
+    def test_trim_stays_off_below_threshold(self) -> None:
+        document = sample()
+        document["current_position"] = {"shares": 20, "cost": 10}
+        document["book"]["bids"] = [{"price": 0.60, "size": 1000}]
+        result = trade_math.evaluate_trade(document)
+        self.assertFalse(result["trim"]["trigger"])
+        self.assertEqual(result["trim"]["trim_shares"], 0.0)
+        self.assertAlmostEqual(result["trim"]["share"], 0.011808)
+        self.assertEqual(result["signal"], "ADD")
+
+    def test_trim_skips_dust_below_minimum_order_size(self) -> None:
+        document = sample()
+        document["current_position"] = {"shares": 255.76, "cost": 130}
+        document["book"]["bids"] = [{"price": 0.60, "size": 1000}]
+        result = trade_math.evaluate_trade(document)
+        trim = result["trim"]
+        self.assertGreater(trim["share"], trim["threshold"])
+        self.assertFalse(trim["trigger"])
+        self.assertEqual(trim["trim_shares"], 0.0)
+        self.assertEqual(trim["trim_cash"], 0.0)
+        self.assertEqual(result["signal"], "MAINTAIN")
+
+    def test_sell_crossing_takes_priority_over_trim(self) -> None:
+        document = sample()
+        document["model_probability"] = 0.50
+        document["current_position"] = {"shares": 400, "cost": 200}
+        document["book"]["bids"] = [{"price": 0.60, "size": 1000}]
+        result = trade_math.evaluate_trade(document)
+        self.assertEqual(result["signal"], "SELL")
+        self.assertFalse(result["trim"]["trigger"])
 
     def test_zero_cash_preserves_market_opportunity_but_not_account_buy(self) -> None:
         document = sample()
@@ -42,7 +120,7 @@ class TradeMathTests(unittest.TestCase):
         self.assertEqual(result["signal"], "MAINTAIN")
         self.assertEqual(result["buy"]["suggested_cash"], 0)
 
-    def test_existing_position_adds_only_above_current_half_kelly_target(self) -> None:
+    def test_existing_position_adds_only_above_current_fractional_kelly_target(self) -> None:
         document = sample()
         document["current_position"] = {"shares": 20, "cost": 10}
         result = trade_math.evaluate_trade(document)

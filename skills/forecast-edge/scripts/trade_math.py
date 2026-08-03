@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compute deterministic Polymarket edge, order-book capacity, and half-Kelly sizing."""
+"""Compute deterministic Polymarket edge, order-book capacity, and fractional-Kelly sizing."""
 
 from __future__ import annotations
 
@@ -117,16 +117,19 @@ def retention_capacity(
     }
 
 
-def shares_for_cash(asks: list[dict[str, float]], cash: float, fee_rate: float) -> float:
+def shares_for_cash(
+    levels: list[dict[str, float]], cash: float, fee_rate: float, *, sell: bool = False
+) -> float:
     remaining = cash
     shares = 0.0
-    for level in asks:
-        unit_cost = level["price"] + fee_per_share(level["price"], fee_rate)
-        if unit_cost <= 0:
+    for level in levels:
+        level_fee = fee_per_share(level["price"], fee_rate)
+        unit_cash = level["price"] - level_fee if sell else level["price"] + level_fee
+        if unit_cash <= 0:
             continue
-        take = min(level["size"], remaining / unit_cost)
+        take = min(level["size"], remaining / unit_cash)
         shares += take
-        remaining -= take * unit_cost
+        remaining -= take * unit_cash
         if take < level["size"] or remaining <= 1e-9:
             break
     return shares
@@ -155,7 +158,22 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
     bankroll = number(document.get("bankroll"), "bankroll", minimum=0.0)
     available_cash = number(document.get("available_cash"), "available_cash", minimum=0.0)
     fee_rate = number(document.get("fee_rate", 0.0), "fee_rate", minimum=0.0)
-    kelly_fraction = number(document.get("kelly_fraction", 0.5), "kelly_fraction", minimum=0.0, maximum=1.0)
+    kelly_fraction = number(document.get("kelly_fraction", 0.25), "kelly_fraction", minimum=0.0, maximum=1.0)
+    max_position_fraction = number(
+        document.get("max_position_fraction", 0.05),
+        "max_position_fraction",
+        minimum=0.0,
+        maximum=1.0,
+    )
+    trim_band_multiplier = number(
+        document.get("trim_band_multiplier", 2.0), "trim_band_multiplier", minimum=0.0
+    )
+    trim_ceiling_fraction = number(
+        document.get("trim_ceiling_fraction", 0.15),
+        "trim_ceiling_fraction",
+        minimum=0.0,
+        maximum=1.0,
+    )
     minimum_retention = number(
         document.get("minimum_edge_retention", 0.7),
         "minimum_edge_retention",
@@ -228,8 +246,9 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
     fractional_kelly = full_kelly * kelly_fraction
     kelly_target_cash = bankroll * fractional_kelly
     incremental_kelly_cash = max(0.0, kelly_target_cash - current_cost)
+    position_cap_cash = max(0.0, max_position_fraction * bankroll - current_cost)
     suggested_cash_cap = (
-        min(incremental_kelly_cash, capacity["cash"], normal_cash_budget)
+        min(incremental_kelly_cash, capacity["cash"], normal_cash_budget, position_cap_cash)
         if soft_entry_allowed
         else 0.0
     )
@@ -258,9 +277,38 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
         and sell_fill["net_unit"] > model_value
     )
 
+    trim_trigger = False
+    trim_share = 0.0
+    trim_target_fraction = 0.0
+    trim_threshold = 0.0
+    trim_shares = 0.0
+    trim_cash = 0.0
+    trim_fill = None
+    if current_shares > 0 and bids and not sell_cross:
+        best_bid_net = bids[0]["price"] - fee_per_share(bids[0]["price"], fee_rate)
+        if best_bid_net < 1.0:
+            trim_target_fraction = kelly_fraction * max(
+                0.0, (model_value - best_bid_net) / (1.0 - best_bid_net)
+            )
+        liquidation_value = sell_fill["cash"]
+        trim_share = liquidation_value / bankroll if bankroll > 0 else 0.0
+        trim_threshold = max(trim_band_multiplier * trim_target_fraction, trim_ceiling_fraction)
+        if trim_share > trim_threshold:
+            trim_cash = (trim_share - trim_threshold) * bankroll
+            trim_shares = min(shares_for_cash(bids, trim_cash, fee_rate, sell=True), current_shares)
+            if trim_shares >= probe_shares:
+                trim_trigger = True
+                trim_fill = walk_levels(bids, trim_shares, fee_rate, sell=True)
+            else:
+                trim_shares = 0.0
+                trim_cash = 0.0
+
     if sell_cross:
         signal = "SELL"
         recommended_target_cash = 0.0
+    elif trim_trigger:
+        signal = "TRIM"
+        recommended_target_cash = current_cost
     elif buy_cross:
         signal = "ADD" if current_shares > 0 else "BUY"
         recommended_target_cash = current_cost + buy_fill["cash"]
@@ -320,6 +368,20 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
             "fractional_fraction": fractional_kelly,
             "target_cash": kelly_target_cash,
             "incremental_cash": incremental_kelly_cash,
+        },
+        "position_cap": {
+            "max_fraction": max_position_fraction,
+            "total_cap_cash": max_position_fraction * bankroll,
+            "remaining_cap_cash": position_cap_cash,
+        },
+        "trim": {
+            "trigger": trim_trigger,
+            "share": trim_share,
+            "target_fraction": trim_target_fraction,
+            "threshold": trim_threshold,
+            "trim_shares": trim_shares,
+            "trim_cash": trim_cash,
+            "fill": trim_fill,
         },
         "orderbook_capacity": capacity,
         "cash": {

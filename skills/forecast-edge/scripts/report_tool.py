@@ -17,12 +17,13 @@ import probability_tree
 
 
 LEGACY_SIGNALS = {"BUY", "ADD", "HOLD", "SELL"}
-CURRENT_SIGNALS = {"BUY", "ADD", "MAINTAIN", "SELL"}
+CURRENT_SIGNALS = {"BUY", "ADD", "MAINTAIN", "TRIM", "SELL"}
 SIGNAL_LABELS = {
     "BUY": "买入",
     "ADD": "加仓",
     "HOLD": "持有",
     "MAINTAIN": "维持现状",
+    "TRIM": "减仓",
     "SELL": "卖出",
 }
 MODERN_SCHEMA_VERSIONS = {"2.0", "2.1", "2.2", "3.0"}
@@ -489,7 +490,7 @@ def validate_v3_execution(
     net_edge = probability_tree.quantize(
         model_value - effective if expected_direction == "PAY" else effective - model_value
     )
-    if net_edge < 0:
+    if net_edge < 0 and action_name != "TRIM":
         raise ReportError(f"{path}.execution.net_edge must be positive for an action")
     comparisons = {
         "shares": fill_shares,
@@ -856,7 +857,7 @@ def validate_portfolio_consistency(root: dict[str, Any]) -> None:
             raise ReportError(f"action question for market {market_id} differs from the analysis")
         if market_id in current_market_ids and action["action"] == "BUY":
             raise ReportError(f"current position {market_id} cannot use BUY; use ADD")
-        if market_id in candidate_market_ids and action["action"] in {"ADD", "SELL"}:
+        if market_id in candidate_market_ids and action["action"] in {"ADD", "SELL", "TRIM"}:
             raise ReportError(f"new candidate {market_id} cannot use {action['action']}")
         if schema_version == "3.0":
             validate_v3_execution(action, analysis, f"report.actions[{index}]")
@@ -889,9 +890,11 @@ def validate_portfolio_consistency(root: dict[str, Any]) -> None:
         elif action["action"] == "MAINTAIN" or schema_version != "3.0":
             if amount > 1e-9 or allocated_for_market > 1e-9:
                 raise ReportError(f"non-entry action for market {market_id} must allocate zero cash")
-        elif action["action"] == "SELL":
+        elif action["action"] in {"SELL", "TRIM"}:
             if amount <= 0 or allocated_for_market > 1e-9:
-                raise ReportError(f"SELL action for market {market_id} must return cash without allocation")
+                raise ReportError(
+                    f"{action['action']} action for market {market_id} must return cash without allocation"
+                )
     if not approximately_equal(funded_total, allocated):
         raise ReportError("sum of funded BUY and ADD actions must equal portfolio allocated cash")
     if available <= 1e-9 and funded_total > 1e-9:

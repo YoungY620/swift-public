@@ -40,7 +40,7 @@ Keep JSON keys, signal enums, outcome enums, IDs, URLs, exact market questions, 
 - Candidate-discovery audit: whether event keyset pagination completed, fetched/excluded event counts by reason, the number of semantically qualified events, the number of selected events expanded into child markets, deep-research attempt counts for the 30pp, 20pp, and greater-than-10pp tiers, each tier-relaxation reason, and whether the operation needs were satisfied. Keep the exact candidate-event and selected-event JSON as immutable snapshots.
 - Every current position with complete new research.
 - Fully researched new candidates, including rejected and unfunded `MAINTAIN` candidates when useful for the opportunity baseline.
-- A consolidated list of `BUY`, `ADD`, `MAINTAIN`, and `SELL` actions. Interpret `MAINTAIN` using the account snapshot: it means retaining current shares for an existing position and remaining uninvested for an unheld market.
+- A consolidated list of `BUY`, `ADD`, `MAINTAIN`, `TRIM`, and `SELL` actions. Interpret `MAINTAIN` using the account snapshot: it means retaining current shares for an existing position and remaining uninvested for an unheld market.
 - A concise Simplified-Chinese portfolio-level summary.
 
 ## Market research fields
@@ -53,7 +53,7 @@ For current positions and candidates, include:
 - Real position shares and cost for current holdings; zero position fields for candidates.
 - Book timestamp, best price, fee rate, VWAP, raw and actual edge, edge retention, and depth capacity.
 - Whether raw edge is strictly above the hard 10pp entry floor and which 30pp, 20pp, or greater-than-10pp search tier produced the candidate. Never report a below-threshold entry opportunity as eligible. Keep the legacy `soft_edge_override_reason` machine field null.
-- Half-Kelly result, reserve constraint, incremental suggested shares/cash, and daily expected return. Never encode a target total as the action delta.
+- Fractional-Kelly result, reserve constraint, incremental suggested shares/cash, and daily expected return. Never encode a target total as the action delta.
 - Signal and rationale.
 - Standalone market opportunity, final account action, and portfolio allocation audit.
 - Complete key-evidence records defined in `evidence-policy.md`.
@@ -93,7 +93,7 @@ Use report schema version `3.0` for new runs. Older versions may remain readable
 - Every analysis includes a valid probability tree and calculation hash.
 - The tree root equals `yes_probability`; `NO` model value equals `1 - yes_probability`.
 - Every action carries both incremental shares and incremental cash. `MAINTAIN` carries zero deltas and null execution.
-- BUY/ADD cash is the all-in payment; SELL cash is the post-fee receipt.
+- BUY/ADD cash is the all-in payment; SELL and TRIM cash is the post-fee receipt.
 - Embedded fill levels reproduce shares, gross cash, fee, VWAP, effective unit price, slippage, and net edge at 12-decimal precision.
 
 Reject inconsistent or non-Chinese narrative reports. Do not archive them with explanatory labels such as “theoretical” or “nominal.” Include a concise private Simplified-Chinese portfolio-diversification conclusion, but no formal risk-cluster structure.

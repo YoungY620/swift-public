@@ -68,7 +68,7 @@ Require raw probability edge strictly above 10pp for every `BUY` or `ADD`. Treat
 
 ## Diversification without a risk structure
 
-Do not require a fixed number of holdings. Half-Kelly sizing, order-book capacity, opportunity quality, and available cash determine the number naturally.
+Do not require a fixed number of holdings. Fractional-Kelly sizing, order-book capacity, opportunity quality, and available cash determine the number naturally.
 
 Apply the qualitative process in `portfolio-management.md` both while building the research queue and during final selection. Do not count highly related contracts as independent diversification:
 

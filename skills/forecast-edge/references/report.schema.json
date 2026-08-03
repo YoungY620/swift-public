@@ -281,7 +281,7 @@
       "additionalProperties": false,
       "required": ["action", "rationale"],
       "properties": {
-        "action": { "enum": ["BUY", "ADD", "MAINTAIN", "SELL"] },
+        "action": { "enum": ["BUY", "ADD", "MAINTAIN", "TRIM", "SELL"] },
         "rationale": { "type": "string", "minLength": 1 }
       }
     },
@@ -440,7 +440,7 @@
         "execution"
       ],
       "properties": {
-        "action": { "enum": ["BUY", "ADD", "MAINTAIN", "SELL"] },
+        "action": { "enum": ["BUY", "ADD", "MAINTAIN", "TRIM", "SELL"] },
         "market_id": { "type": "string", "minLength": 1 },
         "market_question": { "type": "string", "minLength": 1 },
         "outcome": { "enum": ["YES", "NO"] },

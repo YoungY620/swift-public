@@ -29,7 +29,7 @@ Recompute rather than trust stored summaries:
 - require resolution evidence to be referenced by the resolution review;
 - require fill levels to reproduce every execution number.
 
-`MAINTAIN` uses zero shares, zero cash, and null execution. BUY/ADD use all-in payment cash; SELL uses post-fee receipt cash. All values are current-run deltas.
+`MAINTAIN` uses zero shares, zero cash, and null execution. BUY/ADD use all-in payment cash; SELL and TRIM use post-fee receipt cash. TRIM is a partial reduction of a held position: it never increases exposure and never fully exits. All values are current-run deltas.
 
 ## Failure
 

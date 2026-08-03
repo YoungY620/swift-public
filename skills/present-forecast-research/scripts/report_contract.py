@@ -15,7 +15,7 @@ from typing import Any
 SCALE = Decimal("0.000000000001")
 ONE = Decimal("1.000000000000")
 MAX_DEPTH = 64
-SIGNALS = {"BUY", "ADD", "MAINTAIN", "SELL"}
+SIGNALS = {"BUY", "ADD", "MAINTAIN", "TRIM", "SELL"}
 PUBLIC_SIGNALS = {"BUY", "ADD", "SELL"}
 CHINESE_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 ADDRESS_RE = re.compile(r"0x[a-fA-F0-9]{40}")
@@ -248,7 +248,7 @@ def validate_execution(action: dict[str, Any], analysis: dict[str, Any], path: s
     slippage = q(vwap - best if direction == "PAY" else best - vwap)
     model_value = probability(analysis["model"]["model_value"], f"{path}.model_value")
     edge = q(model_value - effective if direction == "PAY" else effective - model_value)
-    if slippage < 0 or edge < 0:
+    if slippage < 0 or (edge < 0 and name != "TRIM"):
         raise PresentationContractError(f"{path}.execution has negative slippage or net edge")
     for field, expected in {
         "shares": shares,

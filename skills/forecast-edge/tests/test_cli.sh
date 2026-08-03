@@ -58,7 +58,7 @@ fi
 # Probability CLI: recursive partition input produces a 0.56 settlement estimate.
 "$PYTHON_BIN" "$ROOT/scripts/probability_tree.py" "$FIXTURES/probability-tree.json" > "$TMP/probability.json"
 
-# Sizing CLI: this fixture has a valid BUY after fees, slippage, reserve, and half Kelly.
+# Sizing CLI: this fixture has a valid BUY after fees, slippage, reserve, fractional Kelly, and the 5% position cap.
 "$PYTHON_BIN" "$ROOT/scripts/trade_math.py" "$FIXTURES/trade-input.json" > "$TMP/trade.json"
 
 # Portfolio CLI: all opportunities share one real cash budget and protected reserve.

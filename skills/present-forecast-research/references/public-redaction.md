@@ -22,7 +22,7 @@ Build public output from an allowlist. Never copy the source report and delete k
 - allocation priorities, Kelly cash, or portfolio caps
 - previous-report account comparisons
 - local paths, emails, environment details, stack traces, or internal error text
-- `MAINTAIN`
+- `MAINTAIN` and `TRIM`
 - confidence labels
 
 Use `public-signals.schema.json` version `2.0` with `additionalProperties: false`. Reject unknown versions. Scan serialized output for wallet addresses, emails, local paths, and Polymarket profile links before writing public files.

@@ -36,8 +36,9 @@ Apply the sell rule to the complete holding. Issue `SELL` immediately when cross
 Issue:
 
 - `BUY` for a new position that passes crossing, the hard `raw_edge > 0.10` floor, minimum-size, sizing, reserve, and quality rules.
-- `ADD` only when the buy crossing survives on the incremental order, the hard `raw_edge > 0.10` floor, the post-cost edge retains at least 70% of raw edge, and the half-Kelly target exceeds current cost.
+- `ADD` only when the buy crossing survives on the incremental order, the hard `raw_edge > 0.10` floor, the post-cost edge retains at least 70% of raw edge, and the fractional-Kelly target exceeds current cost.
 - `SELL` when the complete executable sell crossing holds.
+- `TRIM` when a held position's liquidation share of bankroll drifts above its threshold; see the drift-trim rules below. A `SELL` crossing always takes priority over `TRIM`.
 - `MAINTAIN` otherwise. This means preserving the account's current exposure: retain the current shares when already positioned, or remain uninvested when no position exists. If the recalculated target shrinks without a sell crossing, retain the position rather than performing an ordinary rebalance reduction.
 
 Do not sell an un-crossed losing position to replace it with a better candidate.
@@ -82,17 +83,17 @@ edge_retention(q) = actual_edge(q) / raw_edge
 
 Require `actual_edge(q) > 0` and `edge_retention(q) >= 0.70`. Fees and slippage together may consume at most 30% of the original price edge. Calculate the largest order-book quantity satisfying both conditions rather than using a fixed dollar cap.
 
-## Half-Kelly target
+## Fractional-Kelly target
 
 At fixed all-in unit cost `c`:
 
 ```text
 full_Kelly = max(0, (v - c) / (1 - c))
-configured_Kelly = 0.50 × full_Kelly
+configured_Kelly = 0.25 × full_Kelly
 Kelly_target_cash = conservative_bankroll × configured_Kelly
 ```
 
-Keep the Kelly fraction configurable and enabled by default at `0.50`.
+Keep the Kelly fraction configurable and enabled by default at `0.25`.
 
 Define conservative bankroll as:
 
@@ -109,15 +110,48 @@ The standalone incremental position cap is bounded by:
 
 ```text
 min(
-  incremental half-Kelly target,
+  incremental fractional-Kelly target,
   order-book capacity retaining at least 70% of raw edge after fees and slippage,
-  cash available after the opportunity reserve
+  cash available after the opportunity reserve,
+  remaining per-market position cap
 )
 ```
+
+A single market's total cost (existing cost plus new entry) never exceeds 5% of bankroll by default. Keep the fraction configurable via `max_position_fraction`; the remaining cap is `max(0, max_position_fraction × bankroll - current_cost)`.
 
 Respect token minimum order size. If the computed position is smaller, do not place or recommend the order.
 
 After calculating standalone caps for all retained opportunities, send them together in one `portfolio_allocate.py` request. Its sequential allocation, not independently repeated per-market cash budgets, determines tentative BUY and ADD amounts. A failed post-allocation portfolio review may revise the shared input and rerun it; retain only the accepted result.
+
+## Drift trim
+
+A held position can grow past its intended share of bankroll when its price rises. Measure the position at its complete executable exit value and trim the drift without waiting for a sell crossing:
+
+```text
+best_bid_net = best_bid - sell_fee_per_share(best_bid)
+t = kelly_fraction × max(0, (v - best_bid_net) / (1 - best_bid_net))
+share = liquidation_value(all held shares at bid VWAP after sell fees) / bankroll
+T = max(trim_band_multiplier × t, trim_ceiling_fraction)
+```
+
+Defaults: `trim_band_multiplier = 2.0`, `trim_ceiling_fraction = 0.15`.
+
+- Signal priority is `SELL` > `TRIM` > `ADD`/`BUY` > `MAINTAIN`: an executable sell crossing always fires first, and a trim suppresses any incremental buy on the same market this run.
+- Issue `TRIM` only when `share > T`. Trim back to the threshold `T`, not to `t` and not to zero: sell the quantity whose post-fee bid-side proceeds equal `(share - T) × bankroll`.
+- Skip a trim whose computed quantity is below the token minimum order size; do not round a dust trim up.
+- `TRIM` never increases exposure and never liquidates the position; only `SELL` exits completely. When `TRIM` fires, `recommended_target_cash` keeps its existing semantics and remains the current position cost.
+
+## Drawdown circuit breaker
+
+On every full scan, derive the historical peak bankroll from archived reports (`scripts/report_tool.py previous`) and compute:
+
+```text
+drawdown = 1 - current_bankroll / peak_bankroll
+```
+
+- At `drawdown >= 0.20`, pass `kelly_fraction: 0.125` (half of the default) explicitly to every sizing call this run, and open no new `BUY`; `ADD` on existing positions remains allowed at the reduced fraction.
+- At `drawdown >= 0.33`, allow no `BUY` and no `ADD` this run; only `MAINTAIN`, `TRIM`, and `SELL`.
+- Record the peak bankroll, the current drawdown, and the breaker state in the report's run or portfolio narrative fields.
 
 ## Opportunity reserve
 

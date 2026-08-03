@@ -4,7 +4,7 @@
   "bankroll": 1000,
   "available_cash": 500,
   "fee_rate": 0.04,
-  "kelly_fraction": 0.5,
+  "kelly_fraction": 0.25,
   "minimum_edge_retention": 0.7,
   "soft_minimum_raw_edge": 0.1,
   "soft_edge_override": false,
