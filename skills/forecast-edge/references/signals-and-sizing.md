@@ -56,7 +56,7 @@ This is a hard prompt-level execution constraint. Never recommend an entry at `r
 
 The minimum executable order must also have positive post-fee and post-slippage edge, retain at least 70% of raw edge, satisfy minimum order size, and receive a positive shared portfolio allocation. The 10pp hard floor applies only to buying or adding; it does not delay a sell crossing.
 
-Label `raw_edge > 0.30` as a strong signal in private guidance and the public brief. This is presentational only and changes no execution rule.
+Label `raw_edge > 0.30` as a strong signal in private guidance and the public brief. This is presentational only and changes no execution rule. Every `BUY` or `ADD` must carry the market-divergence diagnosis from [research-method.md](research-method.md); a missing or unconvincing diagnosis demotes the candidate regardless of raw edge.
 
 ## Market opportunity versus account action
 

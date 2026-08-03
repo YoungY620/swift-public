@@ -7,6 +7,8 @@ Use free public information by default, including:
 - Government records, statistics, court filings, legislation, regulator releases, and official transcripts.
 - Primary company disclosures, technical documentation, schedules, filings, and direct operational data.
 - Reputable local and international reporting.
+- Settlement precedent: past resolutions of the same market series, UMA Optimistic Oracle proposal and dispute records, and official platform clarifications.
+- Public forecasting aggregates: multi-model or community probabilities published on platforms such as Prophet Arena, Metaculus, or Manifold, used only as cross-checks per [research-method.md](research-method.md).
 - Public academic papers, working papers, research databases, books, and established theoretical frameworks.
 - Ordinary web search results that lead to verifiable primary or credible secondary sources.
 

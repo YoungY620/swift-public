@@ -23,6 +23,33 @@ Before finalizing the probability or action, independently verify the rule inter
 - Test an edge case for timing and for an unlisted but potentially qualifying action.
 - Resolve any omission, contradiction, or self-invented certainty by rebuilding the interpretation and tree; do not issue a signal until it passes.
 
+## Resolution precedent
+
+Before finalizing a market whose criteria leave material interpretation room (de facto versus official status, time-window edges, qualifying-actor boundaries) or that belongs to a recurring series, research settlement precedent:
+
+1. Past resolutions of the same market series, especially edge-case outcomes.
+2. UMA Optimistic Oracle proposals and dispute votes on this market or similar wording (vote.uma.xyz, on-chain OO records).
+3. Official platform clarifications and market-comment announcements.
+
+UMA dispute history skews toward literal criteria readings, but "spirit of the market" reversals exist; model material interpretation risk as scenario branches in the tree, never as a silent assumption. Record precedent as `RESOLUTION` evidence referenced by `resolution_review`.
+
+## Market-divergence diagnosis
+
+For any candidate entering `BUY`/`ADD` evaluation, explain why the executable price deviates from the model probability before trusting the edge:
+
+1. Identify the mechanism moving the price: surface reading of criteria, narrative momentum, liquidity neglect, favorite-longshot bias, stale information, or settlement-interpretation premium.
+2. Classify it: probability-neutral noise (does not touch the tree), missing-information risk (the market may know something; re-verify the evidence before proceeding), or settlement-interpretation risk (belongs in the tree's branches).
+3. A large divergence with no credible mechanism is model risk, not a signal: revisit the research instead of sizing up.
+
+Record the diagnosis in the model conclusion.
+
+## Public-forecast cross-check
+
+After completing the independent estimate, cross-check it against public forecasting aggregates when the same or a near-equivalent question exists there (multi-model consensus on Prophet Arena, Metaculus community prediction, Manifold). Complete the tree first; never anchor on or copy an aggregate.
+
+- Divergence beyond 10pp against the aggregate requires re-verifying the evidence or documenting the concrete reason the aggregate is wrong; record the comparison in the conclusion.
+- Treat aggregates as weak evidence, never as standalone probability sources: they cover different venues and may be stale, thin, or gameable.
+
 Use maximum depth `64` only as runaway-recursion protection. It is deliberately high and is not a target.
 
 ## One recursive tree shape
