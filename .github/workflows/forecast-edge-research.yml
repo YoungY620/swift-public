@@ -64,7 +64,11 @@ jobs:
   research:
     needs: schedule-gate
     if: ${{ needs.schedule-gate.outputs.should-run == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - macOS
+      - ARM64
+      - forecast-edge
     timeout-minutes: 350
     permissions:
       actions: read
@@ -121,6 +125,16 @@ jobs:
             echo "::error::FEISHU_CHAT_ID must be a chat_id beginning with oc_"
             exit 1
           fi
+          if (( BASH_VERSINFO[0] < 4 )); then
+            echo "::error::The research runner must expose Bash 4 or newer"
+            exit 1
+          fi
+          for required_tool in gh jq npm python3 sha256sum tar timeout; do
+            if ! command -v "$required_tool" >/dev/null; then
+              echo "::error::The research runner is missing required tool: $required_tool"
+              exit 1
+            fi
+          done
           if [[ -z "$POLYMARKET_ACCOUNT" ]]; then
             echo "::error::Required repository variable POLYMARKET_ACCOUNT is not configured"
             exit 1

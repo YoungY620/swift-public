@@ -30,6 +30,20 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("git push", self.workflow)
         self.assertNotIn("git checkout -b", self.workflow)
 
+    def test_research_job_is_pinned_to_the_dedicated_self_hosted_runner(self) -> None:
+        self.assertIn("runs-on: ubuntu-latest", self.workflow)
+        self.assertIn(
+            "runs-on:\n"
+            "      - self-hosted\n"
+            "      - macOS\n"
+            "      - ARM64\n"
+            "      - forecast-edge",
+            self.workflow,
+        )
+        validate = self.step("Validate workflow configuration")
+        self.assertIn("BASH_VERSINFO[0] < 4", validate)
+        self.assertIn("gh jq npm python3 sha256sum tar timeout", validate)
+
     def test_each_release_contains_one_report_and_restores_a_rolling_window(self) -> None:
         restore = self.step("Restore recent research Releases")
         package = self.step("Build current-iteration research Release")
