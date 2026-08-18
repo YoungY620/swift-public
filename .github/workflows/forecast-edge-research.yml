@@ -145,6 +145,45 @@ jobs:
             echo "KIMI_CODE_HOME=$RUNNER_TEMP/kimi-code-home"
           } >> "$GITHUB_ENV"
 
+      - name: Probe Polymarket runner trade availability
+        id: polymarket-readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          geoblock=$(curl --fail --silent --show-error --max-time 20 \
+            https://polymarket.com/api/geoblock)
+          if ! jq -e '.blocked | type == "boolean"' <<< "$geoblock" >/dev/null; then
+            echo "::error::Polymarket geoblock response does not contain a boolean blocked field"
+            exit 1
+          fi
+          blocked=$(jq -r '.blocked' <<< "$geoblock")
+          country=$(jq -r '.country // "unknown"' <<< "$geoblock")
+          region=$(jq -r '.region // ""' <<< "$geoblock")
+
+          clob_health=$(curl --fail --silent --show-error --max-time 20 \
+            https://clob.polymarket.com/)
+          if ! jq -e 'select(. == "OK")' <<< "$clob_health" >/dev/null; then
+            echo "::error::Polymarket CLOB health endpoint did not return OK"
+            exit 1
+          fi
+
+          echo "blocked=$blocked" >> "$GITHUB_OUTPUT"
+          echo "country=$country" >> "$GITHUB_OUTPUT"
+          echo "region=$region" >> "$GITHUB_OUTPUT"
+          {
+            echo '### Polymarket runner trade-availability probe'
+            echo "- Official geoblock result: \`blocked=$blocked\`"
+            echo "- Detected country/region: \`$country${region:+/$region}\`"
+            echo '- Public CLOB health: `OK`'
+            echo '- Scope: read-only network probe; no authentication, signing, allowance check, or order submission'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$blocked" == "true" ]]; then
+            echo "::warning::Polymarket reports this runner location as blocked for order placement; research may continue, but this runner must not be used for trading"
+          else
+            echo "::notice::This runner passed the public geoblock probe; that is necessary but not sufficient proof that an authenticated order can execute"
+          fi
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:

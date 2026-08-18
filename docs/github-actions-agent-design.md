@@ -133,6 +133,18 @@ GitHub Release 继承仓库可见性。private repository 中的 Release 受仓�
 
 第一阶段不配置任何 Polymarket 交易凭据、钱包私钥、签名 Secret、VPN Secret 或 Kalshi Secret；这些只可能属于未来独立的第二阶段执行 Workflow。
 
+## Polymarket Runner 可交易性探针
+
+研究 job 在安装 Agent 前执行一个无凭据、无状态修改的网络探针：
+
+1. 调用官方 [`GET https://polymarket.com/api/geoblock`](https://docs.polymarket.com/api-reference/geoblock)，读取本次 Runner 出口 IP 对应的 `blocked`、country 和 region；
+2. 调用 `https://clob.polymarket.com/`，要求公开 CLOB health 返回 `OK`；
+3. 把结果写入该 Run 的 Step Summary。`blocked=true` 产生 warning，但不阻止只读研究继续运行。
+
+该探针只能回答“本次 Runner 的公开网络和地域前置条件是否通过”。`blocked=false` 是下单的必要条件，不代表账户认证、签名、余额、allowance、价格或订单提交一定成功；GitHub-hosted Runner 的出口位置也可能在下一轮改变。第一阶段不得为了证明可交易而注入钱包凭据或提交测试订单。
+
+真正的端到端交易验证应留给未来独立的手动执行 Workflow：先在实际执行 Runner 上重复 geoblock，再做 authenticated read-only 账户、余额和 allowance 检查。任何创建后立即取消的订单仍然是真实订单，存在成交可能，必须另行获得明确授权并经过受保护的 GitHub Environment，而不能作为普通健康检查。
+
 ## JSONL 交易意图契约
 
 ### 统一 envelope

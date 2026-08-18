@@ -60,6 +60,15 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("MANIFEST", upload)
         self.assertNotIn("path: |", upload)
 
+    def test_polymarket_trade_probe_is_read_only(self) -> None:
+        probe = self.step("Probe Polymarket runner trade availability")
+        self.assertIn("https://polymarket.com/api/geoblock", probe)
+        self.assertIn("https://clob.polymarket.com/", probe)
+        self.assertIn("read-only network probe", probe)
+        self.assertNotIn("KIMI_CODE_API_KEY", probe)
+        self.assertNotIn("private key", probe.lower())
+        self.assertNotIn("post-order", probe.lower())
+
     def test_release_permission_and_public_disclosure_gate_are_explicit(self) -> None:
         self.assertIn("contents: write", self.workflow)
         self.assertIn("ALLOW_PUBLIC_RESEARCH_RELEASES", self.workflow)
