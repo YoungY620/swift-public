@@ -1,0 +1,548 @@
+name: Forecast Edge scheduled research
+
+on:
+  schedule:
+    # Repository variables cannot be interpolated into cron. Trigger hourly at
+    # a non-peak minute, then let schedule-gate enforce the configured N hours.
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+jobs:
+  schedule-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.gate.outputs.should-run }}
+      interval-hours: ${{ steps.gate.outputs.interval-hours }}
+    steps:
+      - name: Validate interval and select iteration
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INTERVAL_HOURS: ${{ vars.FORECAST_EDGE_INTERVAL_HOURS || '12' }}
+          ANCHOR_UTC_HOUR: ${{ vars.FORECAST_EDGE_ANCHOR_UTC_HOUR || '2' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$INTERVAL_HOURS" =~ ^[0-9]+$ ]]; then
+            echo "::error::FORECAST_EDGE_INTERVAL_HOURS must be an integer greater than or equal to 6"
+            exit 1
+          fi
+          if [[ ! "$ANCHOR_UTC_HOUR" =~ ^[0-9]+$ ]]; then
+            echo "::error::FORECAST_EDGE_ANCHOR_UTC_HOUR must be an integer from 0 through 23"
+            exit 1
+          fi
+          interval=$((10#$INTERVAL_HOURS))
+          anchor=$((10#$ANCHOR_UTC_HOUR))
+          if (( interval < 6 )); then
+            echo "::error::FORECAST_EDGE_INTERVAL_HOURS must be an integer greater than or equal to 6"
+            exit 1
+          fi
+          if (( anchor > 23 )); then
+            echo "::error::FORECAST_EDGE_ANCHOR_UTC_HOUR must be an integer from 0 through 23"
+            exit 1
+          fi
+
+          should_run=false
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            should_run=true
+          else
+            epoch_hour=$(( $(date -u +%s) / 3600 ))
+            if (( (epoch_hour - anchor) % interval == 0 )); then
+              should_run=true
+            fi
+          fi
+
+          echo "should-run=$should_run" >> "$GITHUB_OUTPUT"
+          echo "interval-hours=$interval" >> "$GITHUB_OUTPUT"
+          echo "### Schedule gate" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Event: \`$EVENT_NAME\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Interval: \`$interval\` hours" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Start iteration: \`$should_run\`" >> "$GITHUB_STEP_SUMMARY"
+
+  research:
+    needs: schedule-gate
+    if: ${{ needs.schedule-gate.outputs.should-run == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    concurrency:
+      group: forecast-edge-research-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      ENABLED_PREDICTION_MARKETS: ${{ vars.ENABLED_PREDICTION_MARKETS || 'polymarket' }}
+      POLYMARKET_ACCOUNT: ${{ vars.POLYMARKET_ACCOUNT }}
+      REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+      ALLOW_PUBLIC_TRADE_INTENTS: ${{ vars.ALLOW_PUBLIC_TRADE_INTENTS || 'false' }}
+      KIMI_CODE_VERSION: ${{ vars.KIMI_CODE_VERSION || '0.37.0' }}
+      KIMI_MODEL_NAME: ${{ vars.KIMI_MODEL_NAME || 'kimi-for-coding' }}
+      KIMI_MODEL_PROVIDER_TYPE: kimi
+      KIMI_DISABLE_TELEMETRY: "1"
+      RUNTIME_DIR: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}
+      REPORTS_DIR: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/reports
+      ACCOUNT_SNAPSHOT_PATH: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/polymarket-account.json
+      TRADE_INTENTS_PATH: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/trade-intents.jsonl
+      TRADE_INTENT_SCHEMA_PATH: ${{ github.workspace }}/schemas/trade-intent.schema.json
+      ORIGINAL_PROMPT_PATH: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/prompt.md
+      REPAIR_PROMPT_PATH: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/repair-prompt.md
+      VALIDATION_ERRORS_PATH: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/validation-errors.txt
+      VALIDATION_SUMMARY_PATH: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/validation-summary.json
+      REPORT_VALIDATION_PATH: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/report-validation.json
+      BASELINE_REPORTS_PATH: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/baseline-reports.txt
+      CURRENT_REPORT_PATH_FILE: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/current-report-path.txt
+      MANIFEST_PATH: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/manifest.json
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate workflow configuration
+        env:
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$KIMI_MODEL_API_KEY" ]]; then
+            echo "::error::Required Actions secret KIMI_CODE_API_KEY is not configured"
+            exit 1
+          fi
+          if [[ -z "$POLYMARKET_ACCOUNT" ]]; then
+            echo "::error::Required repository variable POLYMARKET_ACCOUNT is not configured"
+            exit 1
+          fi
+          if [[ "$ENABLED_PREDICTION_MARKETS" != "polymarket" ]]; then
+            echo "::error::v1 supports exactly ENABLED_PREDICTION_MARKETS=polymarket"
+            exit 1
+          fi
+          if [[ "$REPOSITORY_PRIVATE" != "true" && "$ALLOW_PUBLIC_TRADE_INTENTS" != "true" ]]; then
+            echo "::error::Public repositories expose trade-intent artifacts; set ALLOW_PUBLIC_TRADE_INTENTS=true only after accepting that disclosure"
+            exit 1
+          fi
+          mkdir -p "$RUNTIME_DIR" "$REPORTS_DIR"
+          echo "KIMI_CODE_HOME=$RUNNER_TEMP/kimi-code-home" >> "$GITHUB_ENV"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Restore npm download cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-kimi-code-${{ env.KIMI_CODE_VERSION }}
+          restore-keys: |
+            ${{ runner.os }}-npm-kimi-code-
+
+      - name: Install pinned Kimi Code CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global "@moonshot-ai/kimi-code@$KIMI_CODE_VERSION"
+          kimi --version
+
+      - name: Install JSON Schema validator
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check \
+            --requirement automation/requirements-github-actions.txt
+
+      - name: Restore recent private report history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$REPORTS_DIR/reports"
+          if [[ "$REPOSITORY_PRIVATE" == "true" ]]; then
+            mapfile -t previous_runs < <(
+              gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=forecast-edge-private-report&per_page=100" \
+                --jq 'reduce [.artifacts[] | select(.expired == false) | .workflow_run.id][] as $id ([]; if index($id) then . else . + [$id] end) | .[0:2][]'
+            )
+            for run_id in "${previous_runs[@]}"; do
+              gh run download "$run_id" \
+                --name forecast-edge-private-report \
+                --dir "$REPORTS_DIR/reports"
+            done
+          fi
+          find "$REPORTS_DIR/reports" -type f -name report.json | sort > "$BASELINE_REPORTS_PATH"
+
+      - name: Capture trusted Polymarket account snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 skills/forecast-edge/scripts/polymarket_data.py \
+            --pretty account "$POLYMARKET_ACCOUNT" > "$ACCOUNT_SNAPSHOT_PATH"
+
+      - name: Render initial and repair prompts
+        shell: bash
+        run: |
+          set -euo pipefail
+          render_prompt() {
+            local source=$1
+            local text
+            text=$(<"$source")
+            text=${text//'{{ACCOUNT_PROFILE}}'/$POLYMARKET_ACCOUNT}
+            text=${text//'{{OUTPUT_ROOT}}'/$REPORTS_DIR}
+            text=${text//'{{REPOSITORY_ROOT}}'/$GITHUB_WORKSPACE}
+            text=${text//'{{PUBLIC_BRIEF_PATH}}'/DISABLED}
+            text=${text//'{{ENABLED_PREDICTION_MARKETS}}'/$ENABLED_PREDICTION_MARKETS}
+            text=${text//'{{ACCOUNT_SNAPSHOT_PATH}}'/$ACCOUNT_SNAPSHOT_PATH}
+            text=${text//'{{TRADE_INTENTS_PATH}}'/$TRADE_INTENTS_PATH}
+            text=${text//'{{TRADE_INTENT_SCHEMA_PATH}}'/$TRADE_INTENT_SCHEMA_PATH}
+            text=${text//'{{ORIGINAL_PROMPT_PATH}}'/$ORIGINAL_PROMPT_PATH}
+            text=${text//'{{VALIDATION_ERRORS_PATH}}'/$VALIDATION_ERRORS_PATH}
+            printf '%s\n' "$text"
+          }
+
+          render_prompt automation/prompts/scheduled-scan.zh-CN.md > "$ORIGINAL_PROMPT_PATH"
+          printf '\n' >> "$ORIGINAL_PROMPT_PATH"
+          render_prompt automation/prompts/trade-intents.zh-CN.md >> "$ORIGINAL_PROMPT_PATH"
+          render_prompt automation/prompts/repair-trade-intents.zh-CN.md > "$REPAIR_PROMPT_PATH"
+
+          if grep -Eq '\{\{[^}]+\}\}' "$ORIGINAL_PROMPT_PATH" "$REPAIR_PROMPT_PATH"; then
+            echo "::error::Rendered prompts contain unresolved placeholders"
+            exit 1
+          fi
+
+      - name: Run Kimi Code — initial attempt
+        id: kimi-initial
+        continue-on-error: true
+        timeout-minutes: 120
+        env:
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+            -p "$(<"$ORIGINAL_PROMPT_PATH")" \
+            > "$RUNTIME_DIR/kimi-attempt-1.stdout" \
+            2> "$RUNTIME_DIR/kimi-attempt-1.stderr"
+
+      - name: Validate initial trade intents
+        id: validate-initial
+        continue-on-error: true
+        env:
+          KIMI_OUTCOME: ${{ steps.kimi-initial.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$KIMI_OUTCOME" != "success" ]]; then
+            echo "Kimi initial attempt exited unsuccessfully." > "$VALIDATION_ERRORS_PATH"
+            exit 1
+          fi
+          find "$REPORTS_DIR/reports" -type f -name report.json | sort > "$RUNTIME_DIR/all-reports.txt"
+          mapfile -t reports < <(comm -13 "$BASELINE_REPORTS_PATH" "$RUNTIME_DIR/all-reports.txt")
+          if (( ${#reports[@]} != 1 )); then
+            echo "Expected exactly one newly archived private report; found ${#reports[@]}." > "$VALIDATION_ERRORS_PATH"
+            exit 1
+          fi
+          printf '%s\n' "${reports[0]}" > "$CURRENT_REPORT_PATH_FILE"
+          if ! python3 skills/forecast-edge/scripts/report_tool.py validate "${reports[0]}" \
+            > "$REPORT_VALIDATION_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
+            cat "$VALIDATION_ERRORS_PATH" >&2
+            exit 1
+          fi
+          if ! python3 scripts/validate_trade_intents.py "$TRADE_INTENTS_PATH" \
+            --schema "$TRADE_INTENT_SCHEMA_PATH" \
+            --enabled-venues "$ENABLED_PREDICTION_MARKETS" \
+            --polymarket-account-snapshot "$ACCOUNT_SNAPSHOT_PATH" \
+            --report "${reports[0]}" \
+            > "$VALIDATION_SUMMARY_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
+            cat "$VALIDATION_ERRORS_PATH" >&2
+            exit 1
+          fi
+          cat "$VALIDATION_SUMMARY_PATH"
+
+      - name: Run Kimi Code — repair 1 of 3
+        id: kimi-repair-1
+        if: ${{ steps.validate-initial.outcome == 'failure' }}
+        continue-on-error: true
+        timeout-minutes: 120
+        env:
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+            -p "$(<"$REPAIR_PROMPT_PATH")" \
+            > "$RUNTIME_DIR/kimi-attempt-2.stdout" \
+            2> "$RUNTIME_DIR/kimi-attempt-2.stderr"
+
+      - name: Validate repaired trade intents — 1 of 3
+        id: validate-repair-1
+        if: ${{ steps.validate-initial.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          KIMI_OUTCOME: ${{ steps.kimi-repair-1.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$KIMI_OUTCOME" != "success" ]]; then
+            echo "Kimi repair 1 exited unsuccessfully." > "$VALIDATION_ERRORS_PATH"
+            exit 1
+          fi
+          find "$REPORTS_DIR/reports" -type f -name report.json | sort > "$RUNTIME_DIR/all-reports.txt"
+          mapfile -t reports < <(comm -13 "$BASELINE_REPORTS_PATH" "$RUNTIME_DIR/all-reports.txt")
+          if (( ${#reports[@]} != 1 )); then
+            echo "Expected exactly one newly archived private report; found ${#reports[@]}." > "$VALIDATION_ERRORS_PATH"
+            exit 1
+          fi
+          printf '%s\n' "${reports[0]}" > "$CURRENT_REPORT_PATH_FILE"
+          if ! python3 skills/forecast-edge/scripts/report_tool.py validate "${reports[0]}" \
+            > "$REPORT_VALIDATION_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
+            cat "$VALIDATION_ERRORS_PATH" >&2
+            exit 1
+          fi
+          if ! python3 scripts/validate_trade_intents.py "$TRADE_INTENTS_PATH" \
+            --schema "$TRADE_INTENT_SCHEMA_PATH" \
+            --enabled-venues "$ENABLED_PREDICTION_MARKETS" \
+            --polymarket-account-snapshot "$ACCOUNT_SNAPSHOT_PATH" \
+            --report "${reports[0]}" \
+            > "$VALIDATION_SUMMARY_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
+            cat "$VALIDATION_ERRORS_PATH" >&2
+            exit 1
+          fi
+          cat "$VALIDATION_SUMMARY_PATH"
+
+      - name: Run Kimi Code — repair 2 of 3
+        id: kimi-repair-2
+        if: ${{ steps.validate-repair-1.outcome == 'failure' }}
+        continue-on-error: true
+        timeout-minutes: 120
+        env:
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+            -p "$(<"$REPAIR_PROMPT_PATH")" \
+            > "$RUNTIME_DIR/kimi-attempt-3.stdout" \
+            2> "$RUNTIME_DIR/kimi-attempt-3.stderr"
+
+      - name: Validate repaired trade intents — 2 of 3
+        id: validate-repair-2
+        if: ${{ steps.validate-repair-1.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          KIMI_OUTCOME: ${{ steps.kimi-repair-2.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$KIMI_OUTCOME" != "success" ]]; then
+            echo "Kimi repair 2 exited unsuccessfully." > "$VALIDATION_ERRORS_PATH"
+            exit 1
+          fi
+          find "$REPORTS_DIR/reports" -type f -name report.json | sort > "$RUNTIME_DIR/all-reports.txt"
+          mapfile -t reports < <(comm -13 "$BASELINE_REPORTS_PATH" "$RUNTIME_DIR/all-reports.txt")
+          if (( ${#reports[@]} != 1 )); then
+            echo "Expected exactly one newly archived private report; found ${#reports[@]}." > "$VALIDATION_ERRORS_PATH"
+            exit 1
+          fi
+          printf '%s\n' "${reports[0]}" > "$CURRENT_REPORT_PATH_FILE"
+          if ! python3 skills/forecast-edge/scripts/report_tool.py validate "${reports[0]}" \
+            > "$REPORT_VALIDATION_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
+            cat "$VALIDATION_ERRORS_PATH" >&2
+            exit 1
+          fi
+          if ! python3 scripts/validate_trade_intents.py "$TRADE_INTENTS_PATH" \
+            --schema "$TRADE_INTENT_SCHEMA_PATH" \
+            --enabled-venues "$ENABLED_PREDICTION_MARKETS" \
+            --polymarket-account-snapshot "$ACCOUNT_SNAPSHOT_PATH" \
+            --report "${reports[0]}" \
+            > "$VALIDATION_SUMMARY_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
+            cat "$VALIDATION_ERRORS_PATH" >&2
+            exit 1
+          fi
+          cat "$VALIDATION_SUMMARY_PATH"
+
+      - name: Run Kimi Code — repair 3 of 3
+        id: kimi-repair-3
+        if: ${{ steps.validate-repair-2.outcome == 'failure' }}
+        continue-on-error: true
+        timeout-minutes: 120
+        env:
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+            -p "$(<"$REPAIR_PROMPT_PATH")" \
+            > "$RUNTIME_DIR/kimi-attempt-4.stdout" \
+            2> "$RUNTIME_DIR/kimi-attempt-4.stderr"
+
+      - name: Validate repaired trade intents — 3 of 3
+        id: validate-repair-3
+        if: ${{ steps.validate-repair-2.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          KIMI_OUTCOME: ${{ steps.kimi-repair-3.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$KIMI_OUTCOME" != "success" ]]; then
+            echo "Kimi repair 3 exited unsuccessfully." > "$VALIDATION_ERRORS_PATH"
+            exit 1
+          fi
+          find "$REPORTS_DIR/reports" -type f -name report.json | sort > "$RUNTIME_DIR/all-reports.txt"
+          mapfile -t reports < <(comm -13 "$BASELINE_REPORTS_PATH" "$RUNTIME_DIR/all-reports.txt")
+          if (( ${#reports[@]} != 1 )); then
+            echo "Expected exactly one newly archived private report; found ${#reports[@]}." > "$VALIDATION_ERRORS_PATH"
+            exit 1
+          fi
+          printf '%s\n' "${reports[0]}" > "$CURRENT_REPORT_PATH_FILE"
+          if ! python3 skills/forecast-edge/scripts/report_tool.py validate "${reports[0]}" \
+            > "$REPORT_VALIDATION_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
+            cat "$VALIDATION_ERRORS_PATH" >&2
+            exit 1
+          fi
+          if ! python3 scripts/validate_trade_intents.py "$TRADE_INTENTS_PATH" \
+            --schema "$TRADE_INTENT_SCHEMA_PATH" \
+            --enabled-venues "$ENABLED_PREDICTION_MARKETS" \
+            --polymarket-account-snapshot "$ACCOUNT_SNAPSHOT_PATH" \
+            --report "${reports[0]}" \
+            > "$VALIDATION_SUMMARY_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
+            cat "$VALIDATION_ERRORS_PATH" >&2
+            exit 1
+          fi
+          cat "$VALIDATION_SUMMARY_PATH"
+
+      - name: Enforce retry limit
+        if: ${{ always() }}
+        env:
+          INITIAL_VALIDATION: ${{ steps.validate-initial.outcome }}
+          REPAIR_1_VALIDATION: ${{ steps.validate-repair-1.outcome }}
+          REPAIR_2_VALIDATION: ${{ steps.validate-repair-2.outcome }}
+          REPAIR_3_VALIDATION: ${{ steps.validate-repair-3.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$INITIAL_VALIDATION" == "success" || \
+                "$REPAIR_1_VALIDATION" == "success" || \
+                "$REPAIR_2_VALIDATION" == "success" || \
+                "$REPAIR_3_VALIDATION" == "success" ]]; then
+            exit 0
+          fi
+          echo "::error::Trade intents failed validation after the initial attempt and three repairs"
+          if [[ -f "$VALIDATION_ERRORS_PATH" ]]; then
+            cat "$VALIDATION_ERRORS_PATH" >&2
+          fi
+          exit 1
+
+      - name: Build artifact manifest
+        id: manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          successful_attempt=4
+          if [[ "${{ steps.validate-initial.outcome }}" == "success" ]]; then
+            successful_attempt=1
+          elif [[ "${{ steps.validate-repair-1.outcome }}" == "success" ]]; then
+            successful_attempt=2
+          elif [[ "${{ steps.validate-repair-2.outcome }}" == "success" ]]; then
+            successful_attempt=3
+          fi
+          generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          digest=$(sha256sum "$TRADE_INTENTS_PATH" | cut -d ' ' -f 1)
+          jq -n \
+            --arg schema_version "1.0" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg commit_sha "$GITHUB_SHA" \
+            --arg generated_at "$generated_at" \
+            --arg trade_intents_sha256 "$digest" \
+            --argjson successful_kimi_attempt "$successful_attempt" \
+            --slurpfile validation "$VALIDATION_SUMMARY_PATH" \
+            '{
+              schema_version: $schema_version,
+              repository: $repository,
+              workflow_run_id: $run_id,
+              workflow_run_attempt: $run_attempt,
+              commit_sha: $commit_sha,
+              generated_at: $generated_at,
+              successful_kimi_attempt: $successful_kimi_attempt,
+              trade_intents_sha256: $trade_intents_sha256,
+              validation: $validation[0]
+            }' > "$MANIFEST_PATH"
+          echo "generated-at=$generated_at" >> "$GITHUB_OUTPUT"
+
+      - name: Upload validated trade-intent artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: forecast-edge-trade-intents
+          path: |
+            ${{ env.TRADE_INTENTS_PATH }}
+            ${{ env.VALIDATION_SUMMARY_PATH }}
+            ${{ env.MANIFEST_PATH }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Stage private report history
+        if: ${{ github.event.repository.private }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_report=$(<"$CURRENT_REPORT_PATH_FILE")
+          current_report_dir=$(dirname "$current_report")
+          archive_name=$(basename "$current_report_dir")
+          mkdir -p "$RUNTIME_DIR/private-report/$archive_name"
+          cp -R "$current_report_dir/." "$RUNTIME_DIR/private-report/$archive_name/"
+
+      - name: Upload private report history
+        if: ${{ github.event.repository.private }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: forecast-edge-private-report
+          path: ${{ env.RUNTIME_DIR }}/private-report
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Format Issue notification
+        env:
+          GENERATED_AT: ${{ steps.manifest.outputs.generated-at }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          item_count=$(jq -r '.items' "$VALIDATION_SUMMARY_PATH")
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          body=$(<automation/templates/trade-intents-issue.md)
+          body=${body//'{{RUN_URL}}'/$run_url}
+          body=${body//'{{COMMIT_SHA}}'/$GITHUB_SHA}
+          body=${body//'{{GENERATED_AT}}'/$GENERATED_AT}
+          body=${body//'{{ITEM_COUNT}}'/$item_count}
+          printf '%s\n\n' "$body" > "$RUNTIME_DIR/issue.md"
+          if [[ -s "$TRADE_INTENTS_PATH" ]]; then
+            printf '| Venue | Market | Outcome | Side | Reference price | Notional | Quantity | Currency |\n' >> "$RUNTIME_DIR/issue.md"
+            printf '| --- | --- | --- | --- | ---: | ---: | ---: | --- |\n' >> "$RUNTIME_DIR/issue.md"
+            jq -r '"| \(.venue) | `\(.multi_market_identifier)` | \(.outcome) | \(.side) | \(.reference_price) | \(.notional) | \(.quantity) | \(.currency) |"' \
+              "$TRADE_INTENTS_PATH" >> "$RUNTIME_DIR/issue.md"
+          else
+            printf '_本轮没有通过策略门槛且需要执行的交易意图。_\n' >> "$RUNTIME_DIR/issue.md"
+          fi
+
+      - name: Create Issue notification
+        if: ${{ github.event.repository.private && vars.CREATE_TRADE_INTENT_ISSUE != 'false' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GENERATED_AT: ${{ steps.manifest.outputs.generated-at }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh issue create \
+            --title "Forecast Edge iteration — $GENERATED_AT" \
+            --body-file "$RUNTIME_DIR/issue.md"
+
+      - name: Upload validation diagnostics on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: forecast-edge-validation-errors-${{ github.run_id }}
+          path: ${{ env.VALIDATION_ERRORS_PATH }}
+          if-no-files-found: warn
+          retention-days: 7
