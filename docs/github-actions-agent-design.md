@@ -76,7 +76,7 @@
 
 - 官方 CLI 可在 Linux 上安装，并支持固定 npm 版本。
 - `kimi -p "..."` 是非交互模式；该模式默认使用自动权限策略，不需要追加 `--auto` 或 `--yolo`，而且这些参数不能与 `-p` 同用。
-- CI 在 Workflow 中公开固定 `KIMI_MODEL_NAME`，只通过 `KIMI_MODEL_API_KEY` 环境变量注入 Secret，避免把 API Key 写入仓库。
+- CI 在 Workflow 中公开固定 `KIMI_MODEL_NAME` 和 Kimi Code 专用的 `KIMI_MODEL_BASE_URL=https://api.kimi.com/coding/v1`，只通过 `KIMI_MODEL_API_KEY` 环境变量注入 Secret，避免把 API Key 写入仓库。该专用 Key 不能使用普通的 `api.moonshot.ai/v1` 端点。
 - `--output-format stream-json` 输出的是 Kimi 的 Assistant/tool 运行事件流，不是业务交易 JSONL。因此交易 JSONL 必须由 prompt 指定 Agent 写到独立文件，不能直接把 CLI stdout 当成交易指令。
 - GitHub-hosted runner 是临时环境。可以缓存 npm 下载或固定版本二进制，但每个 iteration 仍需要恢复/安装；若要完全预装，需要自托管 runner 或自定义 runner image。
 

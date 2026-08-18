@@ -82,9 +82,20 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         self.assertIn("ENABLED_PREDICTION_MARKETS: polymarket", self.workflow)
         self.assertIn('KIMI_CODE_VERSION: "0.37.0"', self.workflow)
         self.assertIn("KIMI_MODEL_NAME: kimi-for-coding", self.workflow)
+        self.assertIn(
+            "KIMI_MODEL_BASE_URL: https://api.kimi.com/coding/v1", self.workflow
+        )
         self.assertNotIn("vars.KIMI_CODE_VERSION", self.workflow)
         self.assertNotIn("vars.KIMI_MODEL_NAME", self.workflow)
+        self.assertNotIn("vars.KIMI_MODEL_BASE_URL", self.workflow)
         self.assertNotIn("vars.ENABLED_PREDICTION_MARKETS", self.workflow)
+
+    def test_kimi_failures_emit_bounded_diagnostics(self) -> None:
+        for attempt in range(1, 5):
+            self.assertIn(
+                f"sed -n '1,200p' \"$RUNTIME_DIR/kimi-attempt-{attempt}.stderr\" >&2",
+                self.workflow,
+            )
 
     def test_prompt_requires_current_holdings_and_novel_event_research(self) -> None:
         prompt = SCHEDULED_PROMPT_PATH.read_text(encoding="utf-8")

@@ -57,14 +57,13 @@ bash skills/forecast-edge/tests/test_cli.sh
 - Repository Variable `POLYMARKET_ACCOUNT`：公开 Polymarket profile URL。
 - Repository Variable `FORECAST_EDGE_INTERVAL_HOURS`：可选，整数且不小于 `6`，默认 `12`。
 - Repository Variable `FORECAST_EDGE_ANCHOR_UTC_HOUR`：可选，`0`–`23`，默认 `2`；默认 `N=12` 时对应北京时间约 `10:23` 与 `22:23`。
-- Repository Variable `KIMI_MODEL_NAME`：可选，默认 `kimi-for-coding`。
-- Repository Variable `KIMI_CODE_VERSION`：可选，默认固定为 `0.37.0`。
 - Repository Variable `CREATE_TRADE_INTENT_ISSUE`：可选；private repository 默认创建 Issue，设为 `false` 时只上传 artifact。public repository 不创建包含交易数量的 Issue。
 - Repository Variable `ALLOW_PUBLIC_TRADE_INTENTS`：public repository 必须显式设为 `true` 才能运行，因为交易 artifact 会公开方向和数量；private repository 无需设置。
+- Repository Variable `ALLOW_PUBLIC_RESEARCH_RELEASES`：public repository 必须显式设为 `true` 才能创建公开研究 Release；private repository 无需设置。
 
 GitHub 的 Cron 不能读取 Repository Variable，因此 workflow 每小时第 `23` 分钟触发一次轻量 gate，只有满足 N 小时间隔时才开始完整 iteration。也可以在 Actions 页面用 `workflow_dispatch` 随时手动运行；手动运行会绕过定时间隔 gate，但仍执行全部配置和产物校验。
 
-每个成功 iteration 上传名为 `forecast-edge-trade-intents` 的 artifact，包含严格 JSONL、校验摘要和 provenance manifest。账户快照只在临时 runner 内用于本轮校验，不进入 artifact；未来执行工作流必须重新获取实时持仓。private repository 还会以单独的 `forecast-edge-private-report` artifact 保存本轮私有报告，并在下一轮恢复最近两份，供比较和回撤控制；public repository 不上传私有报告，每轮按无历史状态运行。交易意图协议见 [Schema](schemas/trade-intent.schema.json)，架构与安全边界见 [设计记录](docs/github-actions-agent-design.md)。
+每个成功 iteration 上传名为 `forecast-edge-trade-intents` 的 artifact，且 artifact 只包含严格校验后的 `trade-intents.jsonl`。研究报告、校验摘要和 provenance manifest 进入本轮 GitHub Release；账户快照只在临时 runner 内用于本轮校验，不进入 artifact 或 Release。下一轮从最近若干个研究 Release 恢复滚动历史；未来执行工作流必须重新获取实时持仓。交易意图协议见 [Schema](schemas/trade-intent.schema.json)，架构与安全边界见 [设计记录](docs/github-actions-agent-design.md)。
 
 ## 通用飞书机器人通知（可选）
 
