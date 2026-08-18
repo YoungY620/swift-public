@@ -7,10 +7,7 @@ on:
     - cron: "23 * * * *"
   workflow_dispatch:
 
-permissions:
-  actions: read
-  contents: read
-  issues: write
+permissions: {}
 
 jobs:
   schedule-gate:
@@ -69,6 +66,10 @@ jobs:
     if: ${{ needs.schedule-gate.outputs.should-run == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 350
+    permissions:
+      actions: read
+      contents: write
+      issues: write
     concurrency:
       group: forecast-edge-research-${{ github.repository }}
       cancel-in-progress: false
@@ -77,23 +78,12 @@ jobs:
       POLYMARKET_ACCOUNT: ${{ vars.POLYMARKET_ACCOUNT }}
       REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
       ALLOW_PUBLIC_TRADE_INTENTS: ${{ vars.ALLOW_PUBLIC_TRADE_INTENTS || 'false' }}
+      ALLOW_PUBLIC_RESEARCH_RELEASES: ${{ vars.ALLOW_PUBLIC_RESEARCH_RELEASES || 'false' }}
       KIMI_CODE_VERSION: ${{ vars.KIMI_CODE_VERSION || '0.37.0' }}
       KIMI_MODEL_NAME: ${{ vars.KIMI_MODEL_NAME || 'kimi-for-coding' }}
       KIMI_MODEL_PROVIDER_TYPE: kimi
       KIMI_DISABLE_TELEMETRY: "1"
-      RUNTIME_DIR: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}
-      REPORTS_DIR: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/reports
-      ACCOUNT_SNAPSHOT_PATH: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/polymarket-account.json
-      TRADE_INTENTS_PATH: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/trade-intents.jsonl
       TRADE_INTENT_SCHEMA_PATH: ${{ github.workspace }}/schemas/trade-intent.schema.json
-      ORIGINAL_PROMPT_PATH: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/prompt.md
-      REPAIR_PROMPT_PATH: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/repair-prompt.md
-      VALIDATION_ERRORS_PATH: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/validation-errors.txt
-      VALIDATION_SUMMARY_PATH: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/validation-summary.json
-      REPORT_VALIDATION_PATH: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/report-validation.json
-      BASELINE_REPORTS_PATH: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/baseline-reports.txt
-      CURRENT_REPORT_PATH_FILE: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/current-report-path.txt
-      MANIFEST_PATH: ${{ github.workspace }}/runtime/github-actions/${{ github.run_id }}/manifest.json
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -122,8 +112,31 @@ jobs:
             echo "::error::Public repositories expose trade-intent artifacts; set ALLOW_PUBLIC_TRADE_INTENTS=true only after accepting that disclosure"
             exit 1
           fi
-          mkdir -p "$RUNTIME_DIR" "$REPORTS_DIR"
-          echo "KIMI_CODE_HOME=$RUNNER_TEMP/kimi-code-home" >> "$GITHUB_ENV"
+          if [[ "$REPOSITORY_PRIVATE" != "true" && "$ALLOW_PUBLIC_RESEARCH_RELEASES" != "true" ]]; then
+            echo "::error::GitHub Releases inherit repository visibility; set ALLOW_PUBLIC_RESEARCH_RELEASES=true only after accepting public disclosure of cumulative research history"
+            exit 1
+          fi
+          runtime_dir="$RUNNER_TEMP/forecast-edge-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          reports_dir="$runtime_dir/reports"
+          release_assets_dir="$runtime_dir/release-assets"
+          mkdir -p "$runtime_dir" "$reports_dir" "$release_assets_dir"
+          {
+            echo "RUNTIME_DIR=$runtime_dir"
+            echo "REPORTS_DIR=$reports_dir"
+            echo "ACCOUNT_SNAPSHOT_PATH=$runtime_dir/polymarket-account.json"
+            echo "TRADE_INTENTS_PATH=$runtime_dir/trade-intents.jsonl"
+            echo "ORIGINAL_PROMPT_PATH=$runtime_dir/prompt.md"
+            echo "REPAIR_PROMPT_PATH=$runtime_dir/repair-prompt.md"
+            echo "VALIDATION_ERRORS_PATH=$runtime_dir/validation-errors.txt"
+            echo "VALIDATION_SUMMARY_PATH=$runtime_dir/validation-summary.json"
+            echo "REPORT_VALIDATION_PATH=$runtime_dir/report-validation.json"
+            echo "BASELINE_REPORTS_PATH=$runtime_dir/baseline-reports.txt"
+            echo "CURRENT_REPORT_PATH_FILE=$runtime_dir/current-report-path.txt"
+            echo "RELEASE_ASSETS_DIR=$release_assets_dir"
+            echo "HISTORY_ARCHIVE_PATH=$release_assets_dir/forecast-edge-research-history.tar.gz"
+            echo "RELEASE_MANIFEST_PATH=$release_assets_dir/research-release-manifest.json"
+            echo "KIMI_CODE_HOME=$RUNNER_TEMP/kimi-code-home"
+          } >> "$GITHUB_ENV"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -152,23 +165,78 @@ jobs:
           python3 -m pip install --disable-pip-version-check \
             --requirement automation/requirements-github-actions.txt
 
-      - name: Restore recent private report history
+      - name: Restore cumulative research history from the latest Release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$REPORTS_DIR/reports"
-          if [[ "$REPOSITORY_PRIVATE" == "true" ]]; then
-            mapfile -t previous_runs < <(
-              gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=forecast-edge-private-report&per_page=100" \
-                --jq 'reduce [.artifacts[] | select(.expired == false) | .workflow_run.id][] as $id ([]; if index($id) then . else . + [$id] end) | .[0:2][]'
+          previous_tag=$(
+            gh api --paginate --slurp \
+              "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+              jq -r 'map(.[]) | map(select(.draft == false and (.tag_name | startswith("forecast-edge-research/run-")))) | sort_by(.created_at) | last | .tag_name // ""'
+          )
+          echo "PREVIOUS_RESEARCH_RELEASE=$previous_tag" >> "$GITHUB_ENV"
+
+          if [[ -n "$previous_tag" ]]; then
+            restore_dir="$RUNNER_TEMP/forecast-edge-release-$GITHUB_RUN_ID"
+            mkdir -p "$restore_dir"
+            gh release download "$previous_tag" \
+              --pattern forecast-edge-research-history.tar.gz \
+              --pattern research-release-manifest.json \
+              --dir "$restore_dir"
+
+            expected_digest=$(jq -er '.history_archive_sha256' "$restore_dir/research-release-manifest.json")
+            actual_digest=$(sha256sum "$restore_dir/forecast-edge-research-history.tar.gz" | cut -d ' ' -f 1)
+            manifest_schema=$(jq -er '.schema_version' "$restore_dir/research-release-manifest.json")
+            manifest_lineage=$(jq -er '.lineage_id' "$restore_dir/research-release-manifest.json")
+            manifest_repository=$(jq -er '.repository' "$restore_dir/research-release-manifest.json")
+            manifest_tag=$(jq -er '.release_tag' "$restore_dir/research-release-manifest.json")
+            manifest_commit=$(jq -er '.commit_sha' "$restore_dir/research-release-manifest.json")
+            tag_commit=$(
+              gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$previous_tag" --jq '.object.sha'
             )
-            for run_id in "${previous_runs[@]}"; do
-              gh run download "$run_id" \
-                --name forecast-edge-private-report \
-                --dir "$REPORTS_DIR/reports"
-            done
+            if [[ "$actual_digest" != "$expected_digest" ]]; then
+              echo "::error::Cumulative research archive digest does not match its Release manifest"
+              exit 1
+            fi
+            if [[ "$manifest_schema" != "1.0" || "$manifest_lineage" != "forecast-edge-production" ]]; then
+              echo "::error::Latest research Release uses an unsupported manifest schema or lineage"
+              exit 1
+            fi
+            if [[ "$manifest_repository" != "$GITHUB_REPOSITORY" || "$manifest_tag" != "$previous_tag" ]]; then
+              echo "::error::Latest research Release manifest does not match this repository and tag"
+              exit 1
+            fi
+            if [[ "$manifest_commit" != "$tag_commit" ]]; then
+              echo "::error::Latest research Release tag does not point to its declared source commit"
+              exit 1
+            fi
+
+            ARCHIVE_PATH="$restore_dir/forecast-edge-research-history.tar.gz" \
+            DESTINATION="$REPORTS_DIR" \
+              python3 - <<'PY'
+          import os
+          import tarfile
+          from pathlib import PurePosixPath
+
+          with tarfile.open(os.environ["ARCHIVE_PATH"], "r:gz") as archive:
+              for member in archive.getmembers():
+                  parts = PurePosixPath(member.name).parts
+                  if not parts or parts[0] != "reports" or ".." in parts:
+                      raise SystemExit(f"unexpected path in research archive: {member.name}")
+                  if not (member.isfile() or member.isdir()):
+                      raise SystemExit(f"unsupported entry in research archive: {member.name}")
+              archive.extractall(os.environ["DESTINATION"])
+          PY
+
+            expected_reports=$(jq -er '.report_count' "$restore_dir/research-release-manifest.json")
+            actual_reports=$(find "$REPORTS_DIR/reports" -type f -name report.json | wc -l | tr -d ' ')
+            if [[ "$actual_reports" != "$expected_reports" ]]; then
+              echo "::error::Restored cumulative research history contains $actual_reports reports; manifest declares $expected_reports"
+              exit 1
+            fi
           fi
           find "$REPORTS_DIR/reports" -type f -name report.json | sort > "$BASELINE_REPORTS_PATH"
 
@@ -434,8 +502,8 @@ jobs:
           fi
           exit 1
 
-      - name: Build artifact manifest
-        id: manifest
+      - name: Build cumulative research Release
+        id: release-package
         shell: bash
         run: |
           set -euo pipefail
@@ -448,64 +516,112 @@ jobs:
             successful_attempt=3
           fi
           generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          digest=$(sha256sum "$TRADE_INTENTS_PATH" | cut -d ' ' -f 1)
+          release_tag="forecast-edge-research/run-$GITHUB_RUN_ID-attempt-$GITHUB_RUN_ATTEMPT"
+          current_report=$(<"$CURRENT_REPORT_PATH_FILE")
+          current_report_dir=$(dirname "$current_report")
+          current_report_relative=${current_report#"$REPORTS_DIR/"}
+          report_count=$(find "$REPORTS_DIR/reports" -type f -name report.json | wc -l | tr -d ' ')
+
+          cp "$current_report" "$RELEASE_ASSETS_DIR/report.json"
+          cp "$current_report_dir/report.md" "$RELEASE_ASSETS_DIR/report.md"
+          cp "$VALIDATION_SUMMARY_PATH" "$RELEASE_ASSETS_DIR/validation-summary.json"
+          tar -C "$REPORTS_DIR" -czf "$HISTORY_ARCHIVE_PATH" reports
+
+          history_digest=$(sha256sum "$HISTORY_ARCHIVE_PATH" | cut -d ' ' -f 1)
+          report_digest=$(sha256sum "$current_report" | cut -d ' ' -f 1)
+          trade_intents_digest=$(sha256sum "$TRADE_INTENTS_PATH" | cut -d ' ' -f 1)
           jq -n \
             --arg schema_version "1.0" \
+            --arg lineage_id "forecast-edge-production" \
             --arg repository "$GITHUB_REPOSITORY" \
+            --arg release_tag "$release_tag" \
+            --arg previous_release "$PREVIOUS_RESEARCH_RELEASE" \
             --arg run_id "$GITHUB_RUN_ID" \
             --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
             --arg commit_sha "$GITHUB_SHA" \
             --arg generated_at "$generated_at" \
-            --arg trade_intents_sha256 "$digest" \
+            --arg current_report_path "$current_report_relative" \
+            --arg history_archive_asset "forecast-edge-research-history.tar.gz" \
+            --arg history_archive_sha256 "$history_digest" \
+            --arg current_report_sha256 "$report_digest" \
+            --arg trade_intents_sha256 "$trade_intents_digest" \
+            --argjson report_count "$report_count" \
             --argjson successful_kimi_attempt "$successful_attempt" \
             --slurpfile validation "$VALIDATION_SUMMARY_PATH" \
             '{
               schema_version: $schema_version,
+              lineage_id: $lineage_id,
               repository: $repository,
+              release_tag: $release_tag,
+              previous_release: (if $previous_release == "" then null else $previous_release end),
               workflow_run_id: $run_id,
               workflow_run_attempt: $run_attempt,
               commit_sha: $commit_sha,
               generated_at: $generated_at,
+              report_count: $report_count,
+              current_report_path: $current_report_path,
+              history_archive_asset: $history_archive_asset,
+              history_archive_sha256: $history_archive_sha256,
+              current_report_sha256: $current_report_sha256,
               successful_kimi_attempt: $successful_kimi_attempt,
               trade_intents_sha256: $trade_intents_sha256,
               validation: $validation[0]
-            }' > "$MANIFEST_PATH"
+            }' > "$RELEASE_MANIFEST_PATH"
+
+          {
+            printf 'Cumulative Forecast Edge research history.\n\n'
+            printf -- '- Source commit: `%s`\n' "$GITHUB_SHA"
+            printf -- '- Workflow run: `%s`, attempt `%s`\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+            printf -- '- Reports in cumulative history: `%s`\n' "$report_count"
+            if [[ -n "$PREVIOUS_RESEARCH_RELEASE" ]]; then
+              printf -- '- Previous cumulative Release: `%s`\n' "$PREVIOUS_RESEARCH_RELEASE"
+            else
+              printf -- '- Previous cumulative Release: none (initial history)\n'
+            fi
+          } > "$RUNTIME_DIR/release-notes.md"
+
           echo "generated-at=$generated_at" >> "$GITHUB_OUTPUT"
+          echo "release-tag=$release_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Publish cumulative research Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release-package.outputs.release-tag }}
+          GENERATED_AT: ${{ steps.release-package.outputs.generated-at }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Refusing to replace existing cumulative research Release $RELEASE_TAG"
+            exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Refusing to publish cumulative research on an existing tag $RELEASE_TAG"
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" \
+            --target "$GITHUB_SHA" \
+            --title "Forecast Edge research — $GENERATED_AT" \
+            --notes-file "$RUNTIME_DIR/release-notes.md" \
+            --latest=false \
+            "$HISTORY_ARCHIVE_PATH" \
+            "$RELEASE_MANIFEST_PATH" \
+            "$RELEASE_ASSETS_DIR/report.json" \
+            "$RELEASE_ASSETS_DIR/report.md" \
+            "$RELEASE_ASSETS_DIR/validation-summary.json"
 
       - name: Upload validated trade-intent artifact
         uses: actions/upload-artifact@v4
         with:
           name: forecast-edge-trade-intents
-          path: |
-            ${{ env.TRADE_INTENTS_PATH }}
-            ${{ env.VALIDATION_SUMMARY_PATH }}
-            ${{ env.MANIFEST_PATH }}
+          path: ${{ env.TRADE_INTENTS_PATH }}
           if-no-files-found: error
           retention-days: 14
 
-      - name: Stage private report history
-        if: ${{ github.event.repository.private }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          current_report=$(<"$CURRENT_REPORT_PATH_FILE")
-          current_report_dir=$(dirname "$current_report")
-          archive_name=$(basename "$current_report_dir")
-          mkdir -p "$RUNTIME_DIR/private-report/$archive_name"
-          cp -R "$current_report_dir/." "$RUNTIME_DIR/private-report/$archive_name/"
-
-      - name: Upload private report history
-        if: ${{ github.event.repository.private }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: forecast-edge-private-report
-          path: ${{ env.RUNTIME_DIR }}/private-report
-          if-no-files-found: error
-          retention-days: 30
-
       - name: Format Issue notification
         env:
-          GENERATED_AT: ${{ steps.manifest.outputs.generated-at }}
+          GENERATED_AT: ${{ steps.release-package.outputs.generated-at }}
+          RELEASE_TAG: ${{ steps.release-package.outputs.release-tag }}
         shell: bash
         run: |
           set -euo pipefail
@@ -516,6 +632,7 @@ jobs:
           body=${body//'{{COMMIT_SHA}}'/$GITHUB_SHA}
           body=${body//'{{GENERATED_AT}}'/$GENERATED_AT}
           body=${body//'{{ITEM_COUNT}}'/$item_count}
+          body=${body//'{{RELEASE_TAG}}'/$RELEASE_TAG}
           printf '%s\n\n' "$body" > "$RUNTIME_DIR/issue.md"
           if [[ -s "$TRADE_INTENTS_PATH" ]]; then
             printf '| Venue | Market | Outcome | Side | Reference price | Notional | Quantity | Currency |\n' >> "$RUNTIME_DIR/issue.md"
@@ -530,7 +647,7 @@ jobs:
         if: ${{ github.event.repository.private && vars.CREATE_TRADE_INTENT_ISSUE != 'false' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          GENERATED_AT: ${{ steps.manifest.outputs.generated-at }}
+          GENERATED_AT: ${{ steps.release-package.outputs.generated-at }}
         shell: bash
         run: |
           set -euo pipefail
@@ -538,11 +655,16 @@ jobs:
             --title "Forecast Edge iteration — $GENERATED_AT" \
             --body-file "$RUNTIME_DIR/issue.md"
 
-      - name: Upload validation diagnostics on failure
+      - name: Report validation diagnostics on failure
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: forecast-edge-validation-errors-${{ github.run_id }}
-          path: ${{ env.VALIDATION_ERRORS_PATH }}
-          if-no-files-found: warn
-          retention-days: 7
+        shell: bash
+        run: |
+          if [[ -s "$VALIDATION_ERRORS_PATH" ]]; then
+            cat "$VALIDATION_ERRORS_PATH" >&2
+            {
+              echo '### Validation diagnostics'
+              echo '```text'
+              sed -n '1,200p' "$VALIDATION_ERRORS_PATH"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

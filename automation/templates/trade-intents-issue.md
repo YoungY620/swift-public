@@ -4,6 +4,7 @@
 - Commit：`{{COMMIT_SHA}}`
 - 生成时间：`{{GENERATED_AT}}`
 - 交易意图数量：{{ITEM_COUNT}}
-- Artifact：`forecast-edge-trade-intents`
+- 累计研究 Release：`{{RELEASE_TAG}}`
+- 交易交付 Artifact：`forecast-edge-trade-intents`（仅包含 `trade-intents.jsonl`）
 
 ## 交易意图
