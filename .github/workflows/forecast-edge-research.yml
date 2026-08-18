@@ -376,6 +376,7 @@ jobs:
             text=${text//'{{TRADE_INTENT_SCHEMA_PATH}}'/$TRADE_INTENT_SCHEMA_PATH}
             text=${text//'{{ORIGINAL_PROMPT_PATH}}'/$ORIGINAL_PROMPT_PATH}
             text=${text//'{{VALIDATION_ERRORS_PATH}}'/$VALIDATION_ERRORS_PATH}
+            text=${text//'{{BASELINE_REPORTS_PATH}}'/$BASELINE_REPORTS_PATH}
             printf '%s\n' "$text"
           }
 

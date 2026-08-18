@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "forecast-edge-research.yml"
 SCHEDULED_PROMPT_PATH = ROOT / "automation" / "prompts" / "scheduled-scan.zh-CN.md"
+REPAIR_PROMPT_PATH = ROOT / "automation" / "prompts" / "repair-trade-intents.zh-CN.md"
 
 
 class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
@@ -126,6 +127,16 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         self.assertIn("至少 10 个", prompt)
         self.assertIn("不得直接沿用历史概率", prompt)
         self.assertIn("只能新增一个", prompt)
+
+    def test_repair_prompt_distinguishes_history_from_the_current_report(self) -> None:
+        prompt = REPAIR_PROMPT_PATH.read_text(encoding="utf-8")
+        render = self.step("Render initial and repair prompts")
+
+        self.assertIn("{{BASELINE_REPORTS_PATH}}", prompt)
+        self.assertIn("路径不在历史报告清单", prompt)
+        self.assertIn("本轮报告数量为 0", prompt)
+        self.assertIn("不得把历史报告误当成", prompt)
+        self.assertIn("{{BASELINE_REPORTS_PATH}}", render)
 
 
 if __name__ == "__main__":
