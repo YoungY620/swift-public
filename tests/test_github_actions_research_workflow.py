@@ -70,6 +70,18 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("private key", probe.lower())
         self.assertNotIn("post-order", probe.lower())
 
+    def test_kimi_provider_is_probed_before_agent_execution(self) -> None:
+        probe = self.step("Probe Kimi model availability")
+
+        self.assertLess(
+            self.workflow.index("      - name: Probe Kimi model availability\n"),
+            self.workflow.index("      - name: Run Kimi Code — initial attempt\n"),
+        )
+        self.assertIn("secrets.KIMI_CODE_API_KEY", probe)
+        self.assertIn('"$KIMI_MODEL_BASE_URL/models"', probe)
+        self.assertIn('.id == $model', probe)
+        self.assertNotIn('echo "$KIMI_MODEL_API_KEY"', probe)
+
     def test_release_permission_and_public_disclosure_gate_are_explicit(self) -> None:
         self.assertIn("contents: write", self.workflow)
         self.assertIn("ALLOW_PUBLIC_RESEARCH_RELEASES", self.workflow)
@@ -105,7 +117,7 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
     def test_stable_public_options_are_workflow_constants(self) -> None:
         self.assertIn("ENABLED_PREDICTION_MARKETS: polymarket", self.workflow)
         self.assertIn('KIMI_CODE_VERSION: "0.37.0"', self.workflow)
-        self.assertIn("KIMI_MODEL_NAME: kimi-for-coding", self.workflow)
+        self.assertIn("KIMI_MODEL_NAME: kimi-k3-highspeed", self.workflow)
         self.assertIn(
             "KIMI_MODEL_BASE_URL: https://api.kimi.com/coding/v1", self.workflow
         )

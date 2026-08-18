@@ -81,7 +81,7 @@ jobs:
       ALLOW_PUBLIC_TRADE_INTENTS: ${{ vars.ALLOW_PUBLIC_TRADE_INTENTS || 'false' }}
       ALLOW_PUBLIC_RESEARCH_RELEASES: ${{ vars.ALLOW_PUBLIC_RESEARCH_RELEASES || 'false' }}
       KIMI_CODE_VERSION: "0.37.0"
-      KIMI_MODEL_NAME: kimi-for-coding
+      KIMI_MODEL_NAME: kimi-k3-highspeed
       KIMI_MODEL_PROVIDER_TYPE: kimi
       KIMI_MODEL_BASE_URL: https://api.kimi.com/coding/v1
       KIMI_DISABLE_TELEMETRY: "1"
@@ -164,6 +164,26 @@ jobs:
             echo "RELEASE_MANIFEST_PATH=$release_assets_dir/research-release-manifest.json"
             echo "KIMI_CODE_HOME=$RUNNER_TEMP/kimi-code-home"
           } >> "$GITHUB_ENV"
+
+      - name: Probe Kimi model availability
+        env:
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          models=$(
+            curl --fail-with-body --silent --show-error \
+              --retry 3 --retry-all-errors --retry-delay 2 --max-time 30 \
+              --header "Authorization: Bearer $KIMI_MODEL_API_KEY" \
+              "$KIMI_MODEL_BASE_URL/models"
+          )
+          if ! jq -e --arg model "$KIMI_MODEL_NAME" \
+            '.data | type == "array" and any(.[]; .id == $model)' \
+            <<< "$models" >/dev/null; then
+            echo "::error::Configured Kimi model is unavailable from the configured provider"
+            exit 1
+          fi
+          echo "Kimi provider exposes the configured model"
 
       - name: Probe Polymarket runner trade availability
         id: polymarket-readiness
