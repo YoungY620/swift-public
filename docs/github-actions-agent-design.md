@@ -48,7 +48,7 @@
 
 ### 已确定需求
 
-1. 工作流在 GitHub 托管的 Linux runner 上运行，使用 Kimi Code CLI 的非交互模式。
+1. GitHub 托管的 Linux runner 只执行轻量 schedule gate；完整 research job 固定在标签为 `forecast-edge` 的 macOS ARM64 self-hosted runner 上运行，使用 Kimi Code CLI 的非交互模式。
 2. Kimi Code API Key 来自 GitHub Actions Secret；公开的 Polymarket 账户标识来自全局配置。
 3. 现有定时扫描 prompt 与新增固定 prompt 统一放进 `automation/prompts/`，并修改所有旧路径。
 4. 工作流用多个可观察的 step 完成安装、配置检查、滚动历史 Release 恢复、账户快照、Agent 运行、Schema 校验、卖单持仓校验、重试、Release 发布、artifact 上传和 Issue 通知；不由一个总控脚本隐藏全部流程。
@@ -74,11 +74,11 @@
 
 ### Kimi Code 已确认能力
 
-- 官方 CLI 可在 Linux 上安装，并支持固定 npm 版本。
+- 官方 CLI 可通过 npm 在 self-hosted macOS ARM64 runner 上安装，并支持固定版本。
 - `kimi -p "..."` 是非交互模式；该模式默认使用自动权限策略，不需要追加 `--auto` 或 `--yolo`，而且这些参数不能与 `-p` 同用。
 - CI 在 Workflow 中公开固定 `KIMI_MODEL_NAME=kimi-k3-highspeed` 和 `KIMI_MODEL_BASE_URL=https://api.kimi.com/coding/v1`，只通过 `KIMI_MODEL_API_KEY` 环境变量注入 Secret，避免把 API Key 写入仓库。Agent 启动前必须调用 provider 的模型列表接口，确认鉴权有效且固定模型可用。
 - `--output-format stream-json` 输出的是 Kimi 的 Assistant/tool 运行事件流，不是业务交易 JSONL。因此交易 JSONL 必须由 prompt 指定 Agent 写到独立文件，不能直接把 CLI stdout 当成交易指令。
-- GitHub-hosted runner 是临时环境。可以缓存 npm 下载或固定版本二进制，但每个 iteration 仍需要恢复/安装；若要完全预装，需要自托管 runner 或自定义 runner image。
+- 当前 self-hosted runner 保留 runner 级 npm cache，但每个 iteration 仍固定安装并验证约定的 CLI 版本，避免依赖机器上可能变化的全局 Kimi 安装。
 
 ## 单轮研究 Release 与滚动历史窗口
 
@@ -144,7 +144,7 @@ GitHub Release 继承仓库可见性。private repository 中的 Release 受仓�
 2. 调用 `https://clob.polymarket.com/`，要求公开 CLOB health 返回 `OK`；
 3. 把结果写入该 Run 的 Step Summary。`blocked=true` 产生 warning，但不阻止只读研究继续运行。
 
-该探针只能回答“本次 Runner 的公开网络和地域前置条件是否通过”。`blocked=false` 是下单的必要条件，不代表账户认证、签名、余额、allowance、价格或订单提交一定成功；GitHub-hosted Runner 的出口位置也可能在下一轮改变。第一阶段不得为了证明可交易而注入钱包凭据或提交测试订单。
+该探针只能回答“本次 Runner 的公开网络和地域前置条件是否通过”。`blocked=false` 是下单的必要条件，不代表账户认证、签名、余额、allowance、价格或订单提交一定成功；self-hosted Runner 的 VPN 或出口状态也可能在下一轮改变。第一阶段不得为了证明可交易而注入钱包凭据或提交测试订单。
 
 真正的端到端交易验证应留给未来独立的手动执行 Workflow：先在实际执行 Runner 上重复 geoblock，再做 authenticated read-only 账户、余额和 allowance 检查。任何创建后立即取消的订单仍然是真实订单，存在成交可能，必须另行获得明确授权并经过受保护的 GitHub Environment，而不能作为普通健康检查。
 

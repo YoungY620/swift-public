@@ -49,7 +49,7 @@ bash skills/forecast-edge/tests/test_cli.sh
 
 ## GitHub Actions 定时研究（可选）
 
-`.github/workflows/forecast-edge-research.yml` 可以在 GitHub 托管的 Linux runner 上安装固定版本的 Kimi Code CLI，执行完整研究，生成并校验多市场交易意图 JSONL，上传精确绑定当前 run 的 artifact，并创建一个 Issue 通知，再把同一份 `issue.md` 原文发送到飞书私聊。第一阶段始终只读，不包含任何交易凭据或下单逻辑；当前 v1 只允许 `polymarket` venue。
+`.github/workflows/forecast-edge-research.yml` 由 GitHub 托管的轻量 schedule gate 负责定时判断，完整 research job 固定运行在标签为 `forecast-edge` 的 `self-hosted / macOS / ARM64` runner。该 runner 能同时访问固定 Kimi provider 与 Polymarket 公开接口；Workflow 会安装固定版本的 Kimi Code CLI，执行完整研究，生成并校验多市场交易意图 JSONL，上传精确绑定当前 run 的 artifact，并创建一个 Issue 通知，再把同一份 `issue.md` 原文发送到飞书私聊。第一阶段始终只读，不包含任何交易凭据或下单逻辑；当前 v1 只允许 `polymarket` venue。
 
 在仓库 Settings 中配置：
 
@@ -63,6 +63,8 @@ bash skills/forecast-edge/tests/test_cli.sh
 - Repository Variable `CREATE_TRADE_INTENT_ISSUE`：可选；private repository 默认创建 Issue，设为 `false` 时只上传 artifact。public repository 不创建包含交易数量的 Issue。
 - Repository Variable `ALLOW_PUBLIC_TRADE_INTENTS`：public repository 必须显式设为 `true` 才能运行，因为交易 artifact 会公开方向和数量；private repository 无需设置。
 - Repository Variable `ALLOW_PUBLIC_RESEARCH_RELEASES`：public repository 必须显式设为 `true` 才能创建公开研究 Release；private repository 无需设置。
+
+仓库必须保持一台带有 `forecast-edge` 标签的 macOS ARM64 self-hosted runner 在线。Runner 启动时应让 Homebrew `bin` 目录优先于系统目录，以保证 `shell: bash` 使用 Bash 5，并提供 `gh`、`jq`、`npm`、`python3`、`sha256sum`、`tar` 和 `timeout`；Workflow 会在读取研究输入前逐项检查。
 
 GitHub 的 Cron 不能读取 Repository Variable，因此 workflow 每小时第 `23` 分钟触发一次轻量 gate，只有满足 N 小时间隔时才开始完整 iteration。也可以在 Actions 页面用 `workflow_dispatch` 随时手动运行；手动运行会绕过定时间隔 gate，但仍执行全部配置和产物校验。
 
