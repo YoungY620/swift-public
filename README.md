@@ -53,7 +53,7 @@ bash skills/forecast-edge/tests/test_cli.sh
 
 在仓库 Settings 中配置：
 
-- Actions Secret `KIMI_CODE_API_KEY`：Kimi 模型 API Key。
+- Actions Secret `KIMI_CODE_API_KEY`：当前固定 Kimi provider 的 API Key；Workflow 会在启动 Agent 前验证该 key 可访问固定模型。
 - Actions Secret `FEISHU_APP_ID`：启用了机器人能力的飞书自建应用 App ID。
 - Actions Secret `FEISHU_APP_SECRET`：该飞书应用的 App Secret。
 - Actions Secret `FEISHU_CHAT_ID`：机器人与接收人的私聊 `chat_id`（`oc_...`）。

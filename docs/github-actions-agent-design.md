@@ -76,7 +76,7 @@
 
 - 官方 CLI 可在 Linux 上安装，并支持固定 npm 版本。
 - `kimi -p "..."` 是非交互模式；该模式默认使用自动权限策略，不需要追加 `--auto` 或 `--yolo`，而且这些参数不能与 `-p` 同用。
-- CI 在 Workflow 中公开固定 `KIMI_MODEL_NAME` 和 Kimi Code 专用的 `KIMI_MODEL_BASE_URL=https://api.kimi.com/coding/v1`，只通过 `KIMI_MODEL_API_KEY` 环境变量注入 Secret，避免把 API Key 写入仓库。该专用 Key 不能使用普通的 `api.moonshot.ai/v1` 端点。
+- CI 在 Workflow 中公开固定 `KIMI_MODEL_NAME=kimi-k3-highspeed` 和 `KIMI_MODEL_BASE_URL=https://api.kimi.com/coding/v1`，只通过 `KIMI_MODEL_API_KEY` 环境变量注入 Secret，避免把 API Key 写入仓库。Agent 启动前必须调用 provider 的模型列表接口，确认鉴权有效且固定模型可用。
 - `--output-format stream-json` 输出的是 Kimi 的 Assistant/tool 运行事件流，不是业务交易 JSONL。因此交易 JSONL 必须由 prompt 指定 Agent 写到独立文件，不能直接把 CLI stdout 当成交易指令。
 - GitHub-hosted runner 是临时环境。可以缓存 npm 下载或固定版本二进制，但每个 iteration 仍需要恢复/安装；若要完全预装，需要自托管 runner 或自定义 runner image。
 
@@ -132,7 +132,7 @@ GitHub Release 继承仓库可见性。private repository 中的 Release 受仓�
 | `ALLOW_PUBLIC_TRADE_INTENTS` | `false` | public repository 中对公开 JSONL 的显式风险确认。 |
 | `ALLOW_PUBLIC_RESEARCH_RELEASES` | `false` | public repository 中对公开研究报告的显式风险确认。 |
 
-稳定且公开的实现参数直接写在 Workflow：v1 venue 为 `polymarket`、Kimi Code CLI 为 `0.37.0`、模型名为 `kimi-for-coding`、provider 类型、telemetry 开关、重试次数、timeout 和文件名。它们不是部署凭据，不需要 Repository Secret 或 Variable。`${{ github.token }}` 是 GitHub 为每次 Run 自动生成的短期 token，也不需要用户设置。
+稳定且公开的实现参数直接写在 Workflow：v1 venue 为 `polymarket`、Kimi Code CLI 为 `0.37.0`、模型名为 `kimi-k3-highspeed`、provider URL 与类型、telemetry 开关、重试次数、timeout 和文件名。它们不是部署凭据，不需要 Repository Secret 或 Variable。`${{ github.token }}` 是 GitHub 为每次 Run 自动生成的短期 token，也不需要用户设置。
 
 第一阶段不配置任何 Polymarket 交易凭据、钱包私钥、签名 Secret、VPN Secret 或 Kalshi Secret；这些只可能属于未来独立的第二阶段执行 Workflow。
 
