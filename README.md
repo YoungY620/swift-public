@@ -64,7 +64,7 @@ bash skills/forecast-edge/tests/test_cli.sh
 - Repository Variable `ALLOW_PUBLIC_TRADE_INTENTS`：public repository 必须显式设为 `true` 才能运行，因为交易 artifact 会公开方向和数量；private repository 无需设置。
 - Repository Variable `ALLOW_PUBLIC_RESEARCH_RELEASES`：public repository 必须显式设为 `true` 才能创建公开研究 Release；private repository 无需设置。
 
-仓库必须保持一台带有 `forecast-edge` 标签的 macOS ARM64 self-hosted runner 在线。Runner 启动时应让 Homebrew `bin` 目录优先于系统目录，以保证 `shell: bash` 使用 Bash 5，并提供 `gh`、`jq`、`npm`、`python3`、`sha256sum`、`tar` 和 `timeout`；Workflow 会在读取研究输入前逐项检查。
+仓库必须保持一台带有 `forecast-edge` 标签的 macOS ARM64 self-hosted runner 在线。Runner 启动时应让 Homebrew `bin` 目录优先于系统目录，以保证 `shell: bash` 使用 Bash 5，并提供 `gh`、`jq`、`npm`、`python3`、`sha256sum`、`tar` 和 `timeout`；Workflow 会在读取研究输入前逐项检查。Python 依赖安装在每个 iteration 独立的 runner 临时 venv 中，不修改 Homebrew 或系统 Python。
 
 GitHub 的 Cron 不能读取 Repository Variable，因此 workflow 每小时第 `23` 分钟触发一次轻量 gate，只有满足 N 小时间隔时才开始完整 iteration。也可以在 Actions 页面用 `workflow_dispatch` 随时手动运行；手动运行会绕过定时间隔 gate，但仍执行全部配置和产物校验。
 

@@ -96,6 +96,15 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         self.assertIn('.id == $model', probe)
         self.assertNotIn('echo "$KIMI_MODEL_API_KEY"', probe)
 
+    def test_python_dependencies_are_isolated_in_a_runner_temp_venv(self) -> None:
+        install = self.step("Install JSON Schema validator")
+
+        self.assertIn('echo "PYTHON_VENV_DIR=$runtime_dir/python-venv"', self.workflow)
+        self.assertIn('python3 -m venv "$PYTHON_VENV_DIR"', install)
+        self.assertIn('"$PYTHON_VENV_DIR/bin/python" -m pip install', install)
+        self.assertIn('echo "$PYTHON_VENV_DIR/bin" >> "$GITHUB_PATH"', install)
+        self.assertNotIn("--break-system-packages", install)
+
     def test_release_permission_and_public_disclosure_gate_are_explicit(self) -> None:
         self.assertIn("contents: write", self.workflow)
         self.assertIn("ALLOW_PUBLIC_RESEARCH_RELEASES", self.workflow)

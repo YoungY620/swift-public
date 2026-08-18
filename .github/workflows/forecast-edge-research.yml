@@ -177,6 +177,7 @@ jobs:
             echo "REPORT_ARCHIVE_PATH=$release_assets_dir/forecast-edge-research-report.tar.gz"
             echo "RELEASE_MANIFEST_PATH=$release_assets_dir/research-release-manifest.json"
             echo "KIMI_CODE_HOME=$RUNNER_TEMP/kimi-code-home"
+            echo "PYTHON_VENV_DIR=$runtime_dir/python-venv"
           } >> "$GITHUB_ENV"
 
       - name: Probe Kimi model availability
@@ -262,8 +263,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m pip install --disable-pip-version-check \
+          python3 -m venv "$PYTHON_VENV_DIR"
+          "$PYTHON_VENV_DIR/bin/python" -m pip install --disable-pip-version-check \
             --requirement automation/requirements-github-actions.txt
+          echo "$PYTHON_VENV_DIR/bin" >> "$GITHUB_PATH"
+          "$PYTHON_VENV_DIR/bin/python" -c 'import jsonschema'
 
       - name: Restore recent research Releases
         env:
