@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "forecast-edge-research.yml"
+SCHEDULED_PROMPT_PATH = ROOT / "automation" / "prompts" / "scheduled-scan.zh-CN.md"
 
 
 class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
@@ -27,16 +29,23 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("git push", self.workflow)
         self.assertNotIn("git checkout -b", self.workflow)
 
-    def test_each_release_restores_and_republishes_cumulative_history(self) -> None:
-        restore = self.step("Restore cumulative research history from the latest Release")
-        package = self.step("Build cumulative research Release")
-        publish = self.step("Publish cumulative research Release")
+    def test_each_release_contains_one_report_and_restores_a_rolling_window(self) -> None:
+        restore = self.step("Restore recent research Releases")
+        package = self.step("Build current-iteration research Release")
+        publish = self.step("Publish current-iteration research Release")
 
         self.assertIn("gh release download", restore)
-        self.assertIn("forecast-edge-research-history.tar.gz", restore)
-        self.assertIn("history_archive_sha256", restore)
-        self.assertIn('tar -C "$REPORTS_DIR" -czf "$HISTORY_ARCHIVE_PATH" reports', package)
-        self.assertIn("previous_release", package)
+        self.assertIn("FORECAST_EDGE_HISTORY_RELEASE_COUNT", self.workflow)
+        self.assertIn('.[0:$limit]', restore)
+        self.assertIn("forecast-edge-research-report.tar.gz", restore)
+        self.assertIn("report_archive_sha256", restore)
+        self.assertIn(
+            'tar -C "$REPORTS_DIR" -czf "$REPORT_ARCHIVE_PATH" "$current_report_dir_relative"',
+            package,
+        )
+        self.assertIn('--argjson report_count "1"', package)
+        self.assertIn("history_releases_used", package)
+        self.assertNotIn("history_archive", package)
         self.assertIn('release_tag="forecast-edge-research/run-', package)
         self.assertIn('gh release create "$RELEASE_TAG"', publish)
         self.assertIn('--target "$GITHUB_SHA"', publish)
@@ -55,6 +64,25 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         self.assertIn("contents: write", self.workflow)
         self.assertIn("ALLOW_PUBLIC_RESEARCH_RELEASES", self.workflow)
         self.assertIn("GitHub Releases inherit repository visibility", self.workflow)
+
+    def test_only_kimi_api_key_is_a_configured_secret(self) -> None:
+        configured_secrets = set(re.findall(r"secrets\.([A-Z0-9_]+)", self.workflow))
+        self.assertEqual(configured_secrets, {"KIMI_CODE_API_KEY"})
+
+    def test_stable_public_options_are_workflow_constants(self) -> None:
+        self.assertIn("ENABLED_PREDICTION_MARKETS: polymarket", self.workflow)
+        self.assertIn('KIMI_CODE_VERSION: "0.37.0"', self.workflow)
+        self.assertIn("KIMI_MODEL_NAME: kimi-for-coding", self.workflow)
+        self.assertNotIn("vars.KIMI_CODE_VERSION", self.workflow)
+        self.assertNotIn("vars.KIMI_MODEL_NAME", self.workflow)
+        self.assertNotIn("vars.ENABLED_PREDICTION_MARKETS", self.workflow)
+
+    def test_prompt_requires_current_holdings_and_novel_event_research(self) -> None:
+        prompt = SCHEDULED_PROMPT_PATH.read_text(encoding="utf-8")
+        self.assertIn("重新研究全部当前持仓", prompt)
+        self.assertIn("至少 10 个", prompt)
+        self.assertIn("不得直接沿用历史概率", prompt)
+        self.assertIn("只能新增一个", prompt)
 
 
 if __name__ == "__main__":

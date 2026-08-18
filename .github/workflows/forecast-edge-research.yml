@@ -74,13 +74,14 @@ jobs:
       group: forecast-edge-research-${{ github.repository }}
       cancel-in-progress: false
     env:
-      ENABLED_PREDICTION_MARKETS: ${{ vars.ENABLED_PREDICTION_MARKETS || 'polymarket' }}
+      ENABLED_PREDICTION_MARKETS: polymarket
       POLYMARKET_ACCOUNT: ${{ vars.POLYMARKET_ACCOUNT }}
+      HISTORY_RELEASE_COUNT: ${{ vars.FORECAST_EDGE_HISTORY_RELEASE_COUNT || '2' }}
       REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
       ALLOW_PUBLIC_TRADE_INTENTS: ${{ vars.ALLOW_PUBLIC_TRADE_INTENTS || 'false' }}
       ALLOW_PUBLIC_RESEARCH_RELEASES: ${{ vars.ALLOW_PUBLIC_RESEARCH_RELEASES || 'false' }}
-      KIMI_CODE_VERSION: ${{ vars.KIMI_CODE_VERSION || '0.37.0' }}
-      KIMI_MODEL_NAME: ${{ vars.KIMI_MODEL_NAME || 'kimi-for-coding' }}
+      KIMI_CODE_VERSION: "0.37.0"
+      KIMI_MODEL_NAME: kimi-for-coding
       KIMI_MODEL_PROVIDER_TYPE: kimi
       KIMI_DISABLE_TELEMETRY: "1"
       TRADE_INTENT_SCHEMA_PATH: ${{ github.workspace }}/schemas/trade-intent.schema.json
@@ -104,8 +105,13 @@ jobs:
             echo "::error::Required repository variable POLYMARKET_ACCOUNT is not configured"
             exit 1
           fi
-          if [[ "$ENABLED_PREDICTION_MARKETS" != "polymarket" ]]; then
-            echo "::error::v1 supports exactly ENABLED_PREDICTION_MARKETS=polymarket"
+          if [[ ! "$HISTORY_RELEASE_COUNT" =~ ^[0-9]+$ ]]; then
+            echo "::error::FORECAST_EDGE_HISTORY_RELEASE_COUNT must be an integer from 2 through 20"
+            exit 1
+          fi
+          history_release_count=$((10#$HISTORY_RELEASE_COUNT))
+          if (( history_release_count < 2 || history_release_count > 20 )); then
+            echo "::error::FORECAST_EDGE_HISTORY_RELEASE_COUNT must be an integer from 2 through 20"
             exit 1
           fi
           if [[ "$REPOSITORY_PRIVATE" != "true" && "$ALLOW_PUBLIC_TRADE_INTENTS" != "true" ]]; then
@@ -113,7 +119,7 @@ jobs:
             exit 1
           fi
           if [[ "$REPOSITORY_PRIVATE" != "true" && "$ALLOW_PUBLIC_RESEARCH_RELEASES" != "true" ]]; then
-            echo "::error::GitHub Releases inherit repository visibility; set ALLOW_PUBLIC_RESEARCH_RELEASES=true only after accepting public disclosure of cumulative research history"
+            echo "::error::GitHub Releases inherit repository visibility; set ALLOW_PUBLIC_RESEARCH_RELEASES=true only after accepting public disclosure of iteration research reports"
             exit 1
           fi
           runtime_dir="$RUNNER_TEMP/forecast-edge-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
@@ -132,8 +138,9 @@ jobs:
             echo "REPORT_VALIDATION_PATH=$runtime_dir/report-validation.json"
             echo "BASELINE_REPORTS_PATH=$runtime_dir/baseline-reports.txt"
             echo "CURRENT_REPORT_PATH_FILE=$runtime_dir/current-report-path.txt"
+            echo "HISTORY_RELEASE_TAGS_PATH=$runtime_dir/history-release-tags.json"
             echo "RELEASE_ASSETS_DIR=$release_assets_dir"
-            echo "HISTORY_ARCHIVE_PATH=$release_assets_dir/forecast-edge-research-history.tar.gz"
+            echo "REPORT_ARCHIVE_PATH=$release_assets_dir/forecast-edge-research-report.tar.gz"
             echo "RELEASE_MANIFEST_PATH=$release_assets_dir/research-release-manifest.json"
             echo "KIMI_CODE_HOME=$RUNNER_TEMP/kimi-code-home"
           } >> "$GITHUB_ENV"
@@ -165,79 +172,124 @@ jobs:
           python3 -m pip install --disable-pip-version-check \
             --requirement automation/requirements-github-actions.txt
 
-      - name: Restore cumulative research history from the latest Release
+      - name: Restore recent research Releases
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$REPORTS_DIR/reports"
-          previous_tag=$(
+          mapfile -t previous_tags < <(
             gh api --paginate --slurp \
               "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
-              jq -r 'map(.[]) | map(select(.draft == false and (.tag_name | startswith("forecast-edge-research/run-")))) | sort_by(.created_at) | last | .tag_name // ""'
+              jq -r --argjson limit "$HISTORY_RELEASE_COUNT" '
+                map(.[]) |
+                map(select(.draft == false and (.tag_name | startswith("forecast-edge-research/run-")))) |
+                sort_by(.created_at) |
+                reverse |
+                .[0:$limit] |
+                .[].tag_name
+              '
           )
-          echo "PREVIOUS_RESEARCH_RELEASE=$previous_tag" >> "$GITHUB_ENV"
+          printf '%s\n' "${previous_tags[@]}" |
+            jq -Rsc 'split("\n") | map(select(length > 0))' > "$HISTORY_RELEASE_TAGS_PATH"
 
-          if [[ -n "$previous_tag" ]]; then
-            restore_dir="$RUNNER_TEMP/forecast-edge-release-$GITHUB_RUN_ID"
+          for index in "${!previous_tags[@]}"; do
+            previous_tag=${previous_tags[$index]}
+            restore_dir="$RUNNER_TEMP/forecast-edge-release-$GITHUB_RUN_ID-$index"
             mkdir -p "$restore_dir"
             gh release download "$previous_tag" \
-              --pattern forecast-edge-research-history.tar.gz \
+              --pattern forecast-edge-research-report.tar.gz \
               --pattern research-release-manifest.json \
               --dir "$restore_dir"
 
-            expected_digest=$(jq -er '.history_archive_sha256' "$restore_dir/research-release-manifest.json")
-            actual_digest=$(sha256sum "$restore_dir/forecast-edge-research-history.tar.gz" | cut -d ' ' -f 1)
+            expected_digest=$(jq -er '.report_archive_sha256' "$restore_dir/research-release-manifest.json")
+            actual_digest=$(sha256sum "$restore_dir/forecast-edge-research-report.tar.gz" | cut -d ' ' -f 1)
             manifest_schema=$(jq -er '.schema_version' "$restore_dir/research-release-manifest.json")
             manifest_lineage=$(jq -er '.lineage_id' "$restore_dir/research-release-manifest.json")
             manifest_repository=$(jq -er '.repository' "$restore_dir/research-release-manifest.json")
             manifest_tag=$(jq -er '.release_tag' "$restore_dir/research-release-manifest.json")
             manifest_commit=$(jq -er '.commit_sha' "$restore_dir/research-release-manifest.json")
+            manifest_report_count=$(jq -er '.report_count' "$restore_dir/research-release-manifest.json")
+            manifest_report_path=$(jq -er '.current_report_path' "$restore_dir/research-release-manifest.json")
+            expected_report_digest=$(jq -er '.current_report_sha256' "$restore_dir/research-release-manifest.json")
             tag_commit=$(
               gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$previous_tag" --jq '.object.sha'
             )
             if [[ "$actual_digest" != "$expected_digest" ]]; then
-              echo "::error::Cumulative research archive digest does not match its Release manifest"
+              echo "::error::Research report archive digest does not match Release $previous_tag"
               exit 1
             fi
             if [[ "$manifest_schema" != "1.0" || "$manifest_lineage" != "forecast-edge-production" ]]; then
-              echo "::error::Latest research Release uses an unsupported manifest schema or lineage"
+              echo "::error::Research Release $previous_tag uses an unsupported manifest schema or lineage"
               exit 1
             fi
             if [[ "$manifest_repository" != "$GITHUB_REPOSITORY" || "$manifest_tag" != "$previous_tag" ]]; then
-              echo "::error::Latest research Release manifest does not match this repository and tag"
+              echo "::error::Research Release manifest does not match this repository and tag"
               exit 1
             fi
             if [[ "$manifest_commit" != "$tag_commit" ]]; then
-              echo "::error::Latest research Release tag does not point to its declared source commit"
+              echo "::error::Research Release tag does not point to its declared source commit"
+              exit 1
+            fi
+            if [[ "$manifest_report_count" != "1" ]]; then
+              echo "::error::Research Release $previous_tag must contain exactly one iteration report"
               exit 1
             fi
 
-            ARCHIVE_PATH="$restore_dir/forecast-edge-research-history.tar.gz" \
+            reports_before=$(find "$REPORTS_DIR/reports" -type f -name report.json | wc -l | tr -d ' ')
+            ARCHIVE_PATH="$restore_dir/forecast-edge-research-report.tar.gz" \
             DESTINATION="$REPORTS_DIR" \
+            EXPECTED_REPORT_PATH="$manifest_report_path" \
               python3 - <<'PY'
           import os
           import tarfile
           from pathlib import PurePosixPath
 
           with tarfile.open(os.environ["ARCHIVE_PATH"], "r:gz") as archive:
+              roots = set()
+              report_roots = set()
               for member in archive.getmembers():
                   parts = PurePosixPath(member.name).parts
-                  if not parts or parts[0] != "reports" or ".." in parts:
+                  if len(parts) < 2 or parts[0] != "reports" or ".." in parts:
                       raise SystemExit(f"unexpected path in research archive: {member.name}")
                   if not (member.isfile() or member.isdir()):
                       raise SystemExit(f"unsupported entry in research archive: {member.name}")
+                  roots.add(parts[1])
+                  if member.isfile() and len(parts) == 3 and parts[2] == "report.json":
+                      report_roots.add(parts[1])
+              if len(roots) != 1 or report_roots != roots:
+                  raise SystemExit("research archive must contain exactly one report directory")
+              report_root = next(iter(roots))
+              expected_report = PurePosixPath(os.environ["EXPECTED_REPORT_PATH"]).parts
+              if expected_report != ("reports", report_root, "report.json"):
+                  raise SystemExit("research archive does not match the manifest report path")
+              destination = os.path.join(os.environ["DESTINATION"], "reports", report_root)
+              if os.path.exists(destination):
+                  raise SystemExit(f"refusing to overwrite restored report: {report_root}")
               archive.extractall(os.environ["DESTINATION"])
           PY
 
-            expected_reports=$(jq -er '.report_count' "$restore_dir/research-release-manifest.json")
-            actual_reports=$(find "$REPORTS_DIR/reports" -type f -name report.json | wc -l | tr -d ' ')
-            if [[ "$actual_reports" != "$expected_reports" ]]; then
-              echo "::error::Restored cumulative research history contains $actual_reports reports; manifest declares $expected_reports"
+            reports_after=$(find "$REPORTS_DIR/reports" -type f -name report.json | wc -l | tr -d ' ')
+            if (( reports_after != reports_before + 1 )); then
+              echo "::error::Research Release $previous_tag did not restore exactly one report"
               exit 1
             fi
+            actual_report_digest=$(sha256sum "$REPORTS_DIR/$manifest_report_path" | cut -d ' ' -f 1)
+            if [[ "$actual_report_digest" != "$expected_report_digest" ]]; then
+              echo "::error::Research report digest does not match Release $previous_tag"
+              exit 1
+            fi
+          done
+
+          restored_reports=$(find "$REPORTS_DIR/reports" -type f -name report.json | wc -l | tr -d ' ')
+          if (( restored_reports != ${#previous_tags[@]} )); then
+            echo "::error::Restored report count does not match selected Release count"
+            exit 1
           fi
+          while IFS= read -r report; do
+            python3 skills/forecast-edge/scripts/report_tool.py validate "$report" >/dev/null
+          done < <(find "$REPORTS_DIR/reports" -type f -name report.json | sort)
           find "$REPORTS_DIR/reports" -type f -name report.json | sort > "$BASELINE_REPORTS_PATH"
 
       - name: Capture trusted Polymarket account snapshot
@@ -502,7 +554,7 @@ jobs:
           fi
           exit 1
 
-      - name: Build cumulative research Release
+      - name: Build current-iteration research Release
         id: release-package
         shell: bash
         run: |
@@ -520,14 +572,15 @@ jobs:
           current_report=$(<"$CURRENT_REPORT_PATH_FILE")
           current_report_dir=$(dirname "$current_report")
           current_report_relative=${current_report#"$REPORTS_DIR/"}
-          report_count=$(find "$REPORTS_DIR/reports" -type f -name report.json | wc -l | tr -d ' ')
+          current_report_dir_relative=${current_report_dir#"$REPORTS_DIR/"}
+          history_releases_used=$(jq 'length' "$HISTORY_RELEASE_TAGS_PATH")
 
           cp "$current_report" "$RELEASE_ASSETS_DIR/report.json"
           cp "$current_report_dir/report.md" "$RELEASE_ASSETS_DIR/report.md"
           cp "$VALIDATION_SUMMARY_PATH" "$RELEASE_ASSETS_DIR/validation-summary.json"
-          tar -C "$REPORTS_DIR" -czf "$HISTORY_ARCHIVE_PATH" reports
+          tar -C "$REPORTS_DIR" -czf "$REPORT_ARCHIVE_PATH" "$current_report_dir_relative"
 
-          history_digest=$(sha256sum "$HISTORY_ARCHIVE_PATH" | cut -d ' ' -f 1)
+          report_archive_digest=$(sha256sum "$REPORT_ARCHIVE_PATH" | cut -d ' ' -f 1)
           report_digest=$(sha256sum "$current_report" | cut -d ' ' -f 1)
           trade_intents_digest=$(sha256sum "$TRADE_INTENTS_PATH" | cut -d ' ' -f 1)
           jq -n \
@@ -535,55 +588,53 @@ jobs:
             --arg lineage_id "forecast-edge-production" \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg release_tag "$release_tag" \
-            --arg previous_release "$PREVIOUS_RESEARCH_RELEASE" \
             --arg run_id "$GITHUB_RUN_ID" \
             --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
             --arg commit_sha "$GITHUB_SHA" \
             --arg generated_at "$generated_at" \
             --arg current_report_path "$current_report_relative" \
-            --arg history_archive_asset "forecast-edge-research-history.tar.gz" \
-            --arg history_archive_sha256 "$history_digest" \
+            --arg report_archive_asset "forecast-edge-research-report.tar.gz" \
+            --arg report_archive_sha256 "$report_archive_digest" \
             --arg current_report_sha256 "$report_digest" \
             --arg trade_intents_sha256 "$trade_intents_digest" \
-            --argjson report_count "$report_count" \
+            --argjson history_release_count_requested "$HISTORY_RELEASE_COUNT" \
+            --argjson report_count "1" \
             --argjson successful_kimi_attempt "$successful_attempt" \
+            --slurpfile history_releases "$HISTORY_RELEASE_TAGS_PATH" \
             --slurpfile validation "$VALIDATION_SUMMARY_PATH" \
             '{
               schema_version: $schema_version,
               lineage_id: $lineage_id,
               repository: $repository,
               release_tag: $release_tag,
-              previous_release: (if $previous_release == "" then null else $previous_release end),
               workflow_run_id: $run_id,
               workflow_run_attempt: $run_attempt,
               commit_sha: $commit_sha,
               generated_at: $generated_at,
               report_count: $report_count,
               current_report_path: $current_report_path,
-              history_archive_asset: $history_archive_asset,
-              history_archive_sha256: $history_archive_sha256,
+              report_archive_asset: $report_archive_asset,
+              report_archive_sha256: $report_archive_sha256,
               current_report_sha256: $current_report_sha256,
+              history_release_count_requested: $history_release_count_requested,
+              history_releases_used: $history_releases[0],
               successful_kimi_attempt: $successful_kimi_attempt,
               trade_intents_sha256: $trade_intents_sha256,
               validation: $validation[0]
             }' > "$RELEASE_MANIFEST_PATH"
 
           {
-            printf 'Cumulative Forecast Edge research history.\n\n'
+            printf 'Forecast Edge research for this iteration.\n\n'
             printf -- '- Source commit: `%s`\n' "$GITHUB_SHA"
             printf -- '- Workflow run: `%s`, attempt `%s`\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
-            printf -- '- Reports in cumulative history: `%s`\n' "$report_count"
-            if [[ -n "$PREVIOUS_RESEARCH_RELEASE" ]]; then
-              printf -- '- Previous cumulative Release: `%s`\n' "$PREVIOUS_RESEARCH_RELEASE"
-            else
-              printf -- '- Previous cumulative Release: none (initial history)\n'
-            fi
+            printf -- '- Reports in this Release: `1`\n'
+            printf -- '- Prior Releases loaded for rolling context: `%s`\n' "$history_releases_used"
           } > "$RUNTIME_DIR/release-notes.md"
 
           echo "generated-at=$generated_at" >> "$GITHUB_OUTPUT"
           echo "release-tag=$release_tag" >> "$GITHUB_OUTPUT"
 
-      - name: Publish cumulative research Release
+      - name: Publish current-iteration research Release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release-package.outputs.release-tag }}
@@ -592,11 +643,11 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "::error::Refusing to replace existing cumulative research Release $RELEASE_TAG"
+            echo "::error::Refusing to replace existing research Release $RELEASE_TAG"
             exit 1
           fi
           if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "::error::Refusing to publish cumulative research on an existing tag $RELEASE_TAG"
+            echo "::error::Refusing to publish research on an existing tag $RELEASE_TAG"
             exit 1
           fi
           gh release create "$RELEASE_TAG" \
@@ -604,7 +655,7 @@ jobs:
             --title "Forecast Edge research — $GENERATED_AT" \
             --notes-file "$RUNTIME_DIR/release-notes.md" \
             --latest=false \
-            "$HISTORY_ARCHIVE_PATH" \
+            "$REPORT_ARCHIVE_PATH" \
             "$RELEASE_MANIFEST_PATH" \
             "$RELEASE_ASSETS_DIR/report.json" \
             "$RELEASE_ASSETS_DIR/report.md" \

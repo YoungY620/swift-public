@@ -17,7 +17,7 @@
 
 第一阶段使用一个统一 workflow。它可以根据不同市场的参考文档和公开 API 获取数据，但对下游只发布统一的、经过校验的交易意图协议。
 
-- 用 `ENABLED_PREDICTION_MARKETS` 配置本轮允许研究的平台，例如 `polymarket` 或 `polymarket,kalshi`。
+- v1 在 Workflow 中固定 `ENABLED_PREDICTION_MARKETS=polymarket`；实现 Kalshi adapter 和契约后再由代码变更扩展，不把尚未实现的平台作为部署开关暴露。
 - 每个平台在仓库内提供自己的 API、标识、价格单位、订单簿、持仓和结算规则文档；必要时提供只读 adapter/helper。
 - Agent 只能输出已启用且已登记的平台；未知平台必须使 Schema 校验失败。
 - 组合筛选和资金分配发生在统一研究阶段，但每个 venue 使用真实、独立的账户快照和可用资金，不能假设资金可以在平台之间即时转移。
@@ -51,7 +51,7 @@
 1. 工作流在 GitHub 托管的 Linux runner 上运行，使用 Kimi Code CLI 的非交互模式。
 2. Kimi Code API Key 来自 GitHub Actions Secret；公开的 Polymarket 账户标识来自全局配置。
 3. 现有定时扫描 prompt 与新增固定 prompt 统一放进 `automation/prompts/`，并修改所有旧路径。
-4. 工作流用多个可观察的 step 完成安装、配置检查、累计研究 Release 恢复、账户快照、Agent 运行、Schema 校验、卖单持仓校验、重试、Release 发布、artifact 上传和 Issue 通知；不由一个总控脚本隐藏全部流程。
+4. 工作流用多个可观察的 step 完成安装、配置检查、滚动历史 Release 恢复、账户快照、Agent 运行、Schema 校验、卖单持仓校验、重试、Release 发布、artifact 上传和 Issue 通知；不由一个总控脚本隐藏全部流程。
 5. Agent 生成可同时包含多个预测市场的 JSONL 交易意图。每一行必须是一个 JSON object，禁止 Schema 未声明的字段。
 6. 初次结果不合格时，使用仓库内固定的修复 prompt 再次运行 Kimi Code。重试次数达到约定上限后 workflow 失败。
 7. 只有通过全部校验的 JSONL 才能上传为下游 artifact 或发布通知。
@@ -68,7 +68,7 @@
 7. 校验 JSONL 可解析、逐项符合 JSON Schema，并验证跨字段数值关系。零字节文件明确表示本轮没有可执行操作，是合法结果。
 8. 对所有 `sell` 项，按 item 的 venue 使用对应账户快照，确认对应 outcome 的真实可卖持仓不少于建议数量。
 9. 校验失败时保存机器可读的错误信息，使用固定修复 prompt 让 Kimi Code 重写同一个输出文件，然后重复步骤 7 和 8。
-10. 从最新的研究 Release 恢复完整累计历史，在其中追加本轮不可变报告，然后创建一个以本次 `GITHUB_SHA` 为 target 的新 Release。每个 Release 都包含截至本轮的全部研究报告，而不是只保存增量。
+10. 按配置的滚动窗口恢复最近若干个研究 Release，供 Agent 比较历史证据和近期机会；本轮报告仍只描述本轮重新研究的持仓和候选市场。
 11. artifact 仅上传验证通过的 `trade-intents.jsonl`。校验摘要和 provenance manifest 进入研究 Release；账户快照和 Kimi session 不进入 artifact，未来执行器必须重新获取实时账户状态。
 12. 用固定 Markdown 模板生成通知，在本仓库创建 Issue 或评论。
 
@@ -76,13 +76,15 @@
 
 - 官方 CLI 可在 Linux 上安装，并支持固定 npm 版本。
 - `kimi -p "..."` 是非交互模式；该模式默认使用自动权限策略，不需要追加 `--auto` 或 `--yolo`，而且这些参数不能与 `-p` 同用。
-- CI 可以通过 `KIMI_MODEL_NAME` 和 `KIMI_MODEL_API_KEY` 临时定义模型，避免把 API Key 写入仓库。
+- CI 在 Workflow 中公开固定 `KIMI_MODEL_NAME`，只通过 `KIMI_MODEL_API_KEY` 环境变量注入 Secret，避免把 API Key 写入仓库。
 - `--output-format stream-json` 输出的是 Kimi 的 Assistant/tool 运行事件流，不是业务交易 JSONL。因此交易 JSONL 必须由 prompt 指定 Agent 写到独立文件，不能直接把 CLI stdout 当成交易指令。
 - GitHub-hosted runner 是临时环境。可以缓存 npm 下载或固定版本二进制，但每个 iteration 仍需要恢复/安装；若要完全预装，需要自托管 runner 或自定义 runner image。
 
-## 累计研究 Release 契约
+## 单轮研究 Release 与滚动历史窗口
 
 研究报告、研究结果和中间校验结果不进入代码树、不提交到任何 Git 数据分支，也不使用 Actions Artifact 做历史存储。运行期间的所有这些文件都位于 `runner.temp`；每个成功 iteration 最终创建一个独立的 GitHub Release。
+
+每轮研究范围遵守 Forecast Edge Skill：重新研究全部当前持仓，并深研至少 10 个此前未研究的合格事件，除非完整候选筛选后实际不足 10 个。本轮 `report.json` 只记录这一轮研究和操作判断，不把旧报告复制进新报告。
 
 Release tag 使用：
 
@@ -90,22 +92,46 @@ Release tag 使用：
 forecast-edge-research/run-<workflow-run-id>-attempt-<run-attempt>
 ```
 
-Release tag 的 target 是本轮真正执行的 `GITHUB_SHA`。主分支更新 Workflow、Prompt、Schema 或 harness 后，下一轮自然锚定新 commit，同时继续读取此前 Release 的累计研究历史，不需要合并、rebase 或维护数据分支。
+Release tag 的 target 是本轮真正执行的 `GITHUB_SHA`。主分支更新 Workflow、Prompt、Schema 或 harness 后，下一轮自然锚定新 commit，同时仍可按滚动窗口读取旧版本报告，不需要合并、rebase 或维护数据分支。
 
 每个 Release 至少包含：
 
-- `forecast-edge-research-history.tar.gz`：截至本轮的完整 `reports/` 目录，包含此前全部研究报告和本轮新报告；
-- `report.json`、`report.md`：方便直接下载查看的本轮最新报告；
-- `research-release-manifest.json`：Release tag、源 commit、上一个 Release、累计报告数、文件摘要、Kimi 成功尝试序号和校验结果；
+- `forecast-edge-research-report.tar.gz`：只包含本轮一个不可变报告目录及其 snapshots；
+- `report.json`、`report.md`：方便直接下载查看的本轮报告；
+- `research-release-manifest.json`：Release tag、源 commit、本轮使用的历史 Release tags、文件摘要、Kimi 成功尝试序号和校验结果；
 - `validation-summary.json`：本轮交易意图校验摘要。
 
-每轮开始时只选择 tag 前缀匹配的最新已发布 Release，下载其累计历史包和 Manifest，校验仓库、tag、tag 指向的源 commit、lineage、报告数量和 SHA-256 后解压；没有既有 Release 时从空历史开始。每轮结束时把新报告追加到恢复出的 `reports/` 目录，再发布完整的新版本。旧 Release 永不由 workflow 覆盖或修改；若仓库支持 Immutable Releases，建议启用以保护已发布 tag 和 assets。
+每轮开始时按创建时间选择 tag 前缀匹配的最近 N 个已发布 Release，逐个下载单轮报告包和 Manifest，校验仓库、tag、tag 指向的源 commit、lineage、单报告约束和 SHA-256 后解压。默认 N 为 Skill 指定的 `2`；Repository Variable `FORECAST_EDGE_HISTORY_RELEASE_COUNT` 可将其调整为 `2` 至 `20`。实际不足 N 个时读取全部已有 Release；首次运行从空历史开始。
+
+Agent 对最近报告的使用必须保持 Skill 语义：历史概率不能直接成为本轮答案，全部当前持仓每轮都要重新研究；历史仅用于证据比较、近期机会质量、参考仓位规模和其他明确要求的滚动计算。每个新 Release 只保存本轮结果，旧 Release 永不由 workflow 覆盖或修改；若仓库支持 Immutable Releases，建议启用以保护已发布 tag 和 assets。
 
 Workflow 声明 `contents: write` 以创建 Release 和对应 tag。仓库的 `Settings → Actions → General → Workflow permissions` 也必须允许 `GITHUB_TOKEN` 写入；否则研究和校验可以完成，但发布 Release 时会失败，交易 artifact 不会上传。
 
-“每个 Release 自包含全部历史”意味着单个历史包随 iteration 数量线性增长，而全部 Release 占用的累计存储近似二次增长。当前按需求保留这种可独立恢复的版本语义；上线后需要监控 Release 数量、单包大小和仓库存储，不能用静默删除旧报告的方式规避容量问题。
+GitHub Release 继承仓库可见性。private repository 中的 Release 受仓库权限控制；public repository 会公开本轮研究报告，因此除 `ALLOW_PUBLIC_TRADE_INTENTS=true` 外还必须显式设置 `ALLOW_PUBLIC_RESEARCH_RELEASES=true` 才允许运行。
 
-GitHub Release 继承仓库可见性。private repository 中的 Release 受仓库权限控制；public repository 会公开累计研究历史，因此除 `ALLOW_PUBLIC_TRADE_INTENTS=true` 外还必须显式设置 `ALLOW_PUBLIC_RESEARCH_RELEASES=true` 才允许运行。
+## 第一阶段配置与 Secret 边界
+
+第一阶段只需要用户配置一个 Secret：
+
+| 名称 | 类型 | 原因 |
+| --- | --- | --- |
+| `KIMI_CODE_API_KEY` | Actions Secret，必需 | 可调用付费模型，泄露后可被滥用。 |
+
+以下值不属于凭据，使用 Repository Variables；不得为了隐藏公开标识而增加 Secret：
+
+| 名称 | 默认值 | 用途 |
+| --- | --- | --- |
+| `POLYMARKET_ACCOUNT` | 无，必需 | 公开的 Polymarket profile/address；不同部署需要不同值，所以不硬编码。 |
+| `FORECAST_EDGE_INTERVAL_HOURS` | `12` | 定时 iteration 间隔，整数且至少 6。 |
+| `FORECAST_EDGE_ANCHOR_UTC_HOUR` | `2` | 定时窗口的 UTC 锚点。 |
+| `FORECAST_EDGE_HISTORY_RELEASE_COUNT` | `2` | 恢复多少个最近单轮 Release，允许 2–20。 |
+| `CREATE_TRADE_INTENT_ISSUE` | `true` | private repository 中是否创建交易意图 Issue。 |
+| `ALLOW_PUBLIC_TRADE_INTENTS` | `false` | public repository 中对公开 JSONL 的显式风险确认。 |
+| `ALLOW_PUBLIC_RESEARCH_RELEASES` | `false` | public repository 中对公开研究报告的显式风险确认。 |
+
+稳定且公开的实现参数直接写在 Workflow：v1 venue 为 `polymarket`、Kimi Code CLI 为 `0.37.0`、模型名为 `kimi-for-coding`、provider 类型、telemetry 开关、重试次数、timeout 和文件名。它们不是部署凭据，不需要 Repository Secret 或 Variable。`${{ github.token }}` 是 GitHub 为每次 Run 自动生成的短期 token，也不需要用户设置。
+
+第一阶段不配置任何 Polymarket 交易凭据、钱包私钥、签名 Secret、VPN Secret 或 Kalshi Secret；这些只可能属于未来独立的第二阶段执行 Workflow。
 
 ## JSONL 交易意图契约
 
@@ -173,15 +199,15 @@ v1 采用以下 venue 映射：
 
 ## 重试语义
 
-第一阶段采用初次运行加 3 次修复，共最多 4 次 Kimi 调用。每次修复启动新 session，读取从最新 Release 恢复的累计研究历史、原 JSONL 与校验错误；若本轮有效私有报告已经存在，修复不得重复研究或归档第二份报告。
+第一阶段采用初次运行加 3 次修复，共最多 4 次 Kimi 调用。每次修复启动新 session，读取滚动窗口内恢复的单轮历史报告、原 JSONL 与校验错误；若本轮有效私有报告已经存在，修复不得重复研究或归档第二份报告。
 
 ## Issue 通知
 
-第一阶段在 private repository 中默认每个成功 iteration 创建一个新 Issue。将 Repository Variable `CREATE_TRADE_INTENT_ISSUE` 设为 `false` 可以关闭 Issue，仅保留累计研究 Release 和只含 JSONL 的交易 artifact；public repository 不创建包含交易数量的 Issue。
+第一阶段在 private repository 中默认每个成功 iteration 创建一个新 Issue。将 Repository Variable `CREATE_TRADE_INTENT_ISSUE` 设为 `false` 可以关闭 Issue，仅保留本轮研究 Release 和只含 JSONL 的交易 artifact；public repository 不创建包含交易数量的 Issue。
 
 如果仓库是 public，Issue 会公开交易方向、价格、金额、份额和账户线索，可能造成隐私、策略泄露或抢跑风险。默认建议只在 private repository 创建包含数量的 Issue；public repository 应使用主动降敏的公共简报格式。
 
-GitHub Artifact 和 Release 都不是应用层加密存储。统一交易意图 artifact 包含方向和数量，累计研究 Release 还可能包含账户研究、证据和历史仓位线索。public repository 默认拒绝运行；只有同时设置 `ALLOW_PUBLIC_TRADE_INTENTS=true` 和 `ALLOW_PUBLIC_RESEARCH_RELEASES=true` 接受两类披露后才放行，并且仍不会创建包含数量的 Issue。
+GitHub Artifact 和 Release 都不是应用层加密存储。统一交易意图 artifact 包含方向和数量，本轮研究 Release 还可能包含账户研究、证据和仓位线索。public repository 默认拒绝运行；只有同时设置 `ALLOW_PUBLIC_TRADE_INTENTS=true` 和 `ALLOW_PUBLIC_RESEARCH_RELEASES=true` 接受两类披露后才放行，并且仍不会创建包含数量的 Issue。
 
 ## 第二阶段工作流：真实交易（延期实现）
 
@@ -197,7 +223,7 @@ GitHub Artifact 和 Release 都不是应用层加密存储。统一交易意图 
 
 这样每个 venue 的执行工作流都锚定到唯一的研究 run，不会误取其他定时或手动运行的文件。多个 venue workflow 可以锚定同一个研究 run，各自只处理自己的 item。
 
-不要把第二阶段改成依赖 `on: release`：第一阶段使用默认 `GITHUB_TOKEN` 创建 Release 时，该写操作通常不会递归触发新的 workflow。`workflow_run` 才是执行阶段的触发源；Release 只提供累计研究历史和可核对的 provenance。
+不要把第二阶段改成依赖 `on: release`：第一阶段使用默认 `GITHUB_TOKEN` 创建 Release 时，该写操作通常不会递归触发新的 workflow。`workflow_run` 才是执行阶段的触发源；Release 只提供本轮研究报告、滚动历史来源和可核对的 provenance。
 
 ### 待确认和延期项
 
