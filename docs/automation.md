@@ -17,7 +17,9 @@ Runner 必须：
 - `10:00 Asia/Shanghai`
 - `22:00 Asia/Shanghai`
 
-使用 `automation/prompt.zh-CN.md` 作为提示词正文。仅在运行时填入账户、私有输出目录、仓库目录和公共简报路径；不要复制或改写 Skill 内部规则，避免模板与 Skill 演化后互相矛盾。
+使用 `automation/prompts/scheduled-scan.zh-CN.md` 作为提示词正文。仅在运行时填入账户、私有输出目录、仓库目录和公共简报路径；不要复制或改写 Skill 内部规则，避免模板与 Skill 演化后互相矛盾。GitHub Actions 的交易意图附加契约和修复提示词也保存在同一目录。
+
+GitHub Actions 入口是 `.github/workflows/forecast-edge-research.yml`。它按 workflow step 分别完成调度门控、配置检查、Kimi Code 安装、账户快照、prompt 渲染、Agent 调用、交易意图校验、最多三次修复、artifact 上传和 Issue 通知。`scripts/validate_trade_intents.py` 只负责 JSON Schema、十进制金额关系、venue、抵押资产与卖单公开持仓校验，不负责调度或调用 Agent。
 
 ## Linux systemd
 

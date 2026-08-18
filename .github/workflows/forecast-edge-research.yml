@@ -1,0 +1,760 @@
+name: Forecast Edge scheduled research
+
+on:
+  schedule:
+    # Repository variables cannot be interpolated into cron. Trigger hourly at
+    # a non-peak minute, then let schedule-gate enforce the configured N hours.
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  schedule-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.gate.outputs.should-run }}
+      interval-hours: ${{ steps.gate.outputs.interval-hours }}
+    steps:
+      - name: Validate interval and select iteration
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INTERVAL_HOURS: ${{ vars.FORECAST_EDGE_INTERVAL_HOURS || '12' }}
+          ANCHOR_UTC_HOUR: ${{ vars.FORECAST_EDGE_ANCHOR_UTC_HOUR || '2' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$INTERVAL_HOURS" =~ ^[0-9]+$ ]]; then
+            echo "::error::FORECAST_EDGE_INTERVAL_HOURS must be an integer greater than or equal to 6"
+            exit 1
+          fi
+          if [[ ! "$ANCHOR_UTC_HOUR" =~ ^[0-9]+$ ]]; then
+            echo "::error::FORECAST_EDGE_ANCHOR_UTC_HOUR must be an integer from 0 through 23"
+            exit 1
+          fi
+          interval=$((10#$INTERVAL_HOURS))
+          anchor=$((10#$ANCHOR_UTC_HOUR))
+          if (( interval < 6 )); then
+            echo "::error::FORECAST_EDGE_INTERVAL_HOURS must be an integer greater than or equal to 6"
+            exit 1
+          fi
+          if (( anchor > 23 )); then
+            echo "::error::FORECAST_EDGE_ANCHOR_UTC_HOUR must be an integer from 0 through 23"
+            exit 1
+          fi
+
+          should_run=false
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            should_run=true
+          else
+            epoch_hour=$(( $(date -u +%s) / 3600 ))
+            if (( (epoch_hour - anchor) % interval == 0 )); then
+              should_run=true
+            fi
+          fi
+
+          echo "should-run=$should_run" >> "$GITHUB_OUTPUT"
+          echo "interval-hours=$interval" >> "$GITHUB_OUTPUT"
+          echo "### Schedule gate" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Event: \`$EVENT_NAME\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Interval: \`$interval\` hours" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Start iteration: \`$should_run\`" >> "$GITHUB_STEP_SUMMARY"
+
+  research:
+    needs: schedule-gate
+    if: ${{ needs.schedule-gate.outputs.should-run == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    permissions:
+      actions: read
+      contents: write
+      issues: write
+    concurrency:
+      group: forecast-edge-research-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      ENABLED_PREDICTION_MARKETS: polymarket
+      POLYMARKET_ACCOUNT: ${{ vars.POLYMARKET_ACCOUNT }}
+      HISTORY_RELEASE_COUNT: ${{ vars.FORECAST_EDGE_HISTORY_RELEASE_COUNT || '2' }}
+      REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+      ALLOW_PUBLIC_TRADE_INTENTS: ${{ vars.ALLOW_PUBLIC_TRADE_INTENTS || 'false' }}
+      ALLOW_PUBLIC_RESEARCH_RELEASES: ${{ vars.ALLOW_PUBLIC_RESEARCH_RELEASES || 'false' }}
+      KIMI_CODE_VERSION: "0.37.0"
+      KIMI_MODEL_NAME: kimi-for-coding
+      KIMI_MODEL_PROVIDER_TYPE: kimi
+      KIMI_DISABLE_TELEMETRY: "1"
+      TRADE_INTENT_SCHEMA_PATH: ${{ github.workspace }}/schemas/trade-intent.schema.json
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate workflow configuration
+        env:
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$KIMI_MODEL_API_KEY" ]]; then
+            echo "::error::Required Actions secret KIMI_CODE_API_KEY is not configured"
+            exit 1
+          fi
+          if [[ -z "$POLYMARKET_ACCOUNT" ]]; then
+            echo "::error::Required repository variable POLYMARKET_ACCOUNT is not configured"
+            exit 1
+          fi
+          if [[ ! "$HISTORY_RELEASE_COUNT" =~ ^[0-9]+$ ]]; then
+            echo "::error::FORECAST_EDGE_HISTORY_RELEASE_COUNT must be an integer from 2 through 20"
+            exit 1
+          fi
+          history_release_count=$((10#$HISTORY_RELEASE_COUNT))
+          if (( history_release_count < 2 || history_release_count > 20 )); then
+            echo "::error::FORECAST_EDGE_HISTORY_RELEASE_COUNT must be an integer from 2 through 20"
+            exit 1
+          fi
+          if [[ "$REPOSITORY_PRIVATE" != "true" && "$ALLOW_PUBLIC_TRADE_INTENTS" != "true" ]]; then
+            echo "::error::Public repositories expose trade-intent artifacts; set ALLOW_PUBLIC_TRADE_INTENTS=true only after accepting that disclosure"
+            exit 1
+          fi
+          if [[ "$REPOSITORY_PRIVATE" != "true" && "$ALLOW_PUBLIC_RESEARCH_RELEASES" != "true" ]]; then
+            echo "::error::GitHub Releases inherit repository visibility; set ALLOW_PUBLIC_RESEARCH_RELEASES=true only after accepting public disclosure of iteration research reports"
+            exit 1
+          fi
+          runtime_dir="$RUNNER_TEMP/forecast-edge-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          reports_dir="$runtime_dir/reports"
+          release_assets_dir="$runtime_dir/release-assets"
+          mkdir -p "$runtime_dir" "$reports_dir" "$release_assets_dir"
+          {
+            echo "RUNTIME_DIR=$runtime_dir"
+            echo "REPORTS_DIR=$reports_dir"
+            echo "ACCOUNT_SNAPSHOT_PATH=$runtime_dir/polymarket-account.json"
+            echo "TRADE_INTENTS_PATH=$runtime_dir/trade-intents.jsonl"
+            echo "ORIGINAL_PROMPT_PATH=$runtime_dir/prompt.md"
+            echo "REPAIR_PROMPT_PATH=$runtime_dir/repair-prompt.md"
+            echo "VALIDATION_ERRORS_PATH=$runtime_dir/validation-errors.txt"
+            echo "VALIDATION_SUMMARY_PATH=$runtime_dir/validation-summary.json"
+            echo "REPORT_VALIDATION_PATH=$runtime_dir/report-validation.json"
+            echo "BASELINE_REPORTS_PATH=$runtime_dir/baseline-reports.txt"
+            echo "CURRENT_REPORT_PATH_FILE=$runtime_dir/current-report-path.txt"
+            echo "HISTORY_RELEASE_TAGS_PATH=$runtime_dir/history-release-tags.json"
+            echo "RELEASE_ASSETS_DIR=$release_assets_dir"
+            echo "REPORT_ARCHIVE_PATH=$release_assets_dir/forecast-edge-research-report.tar.gz"
+            echo "RELEASE_MANIFEST_PATH=$release_assets_dir/research-release-manifest.json"
+            echo "KIMI_CODE_HOME=$RUNNER_TEMP/kimi-code-home"
+          } >> "$GITHUB_ENV"
+
+      - name: Probe Polymarket runner trade availability
+        id: polymarket-readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          geoblock=$(curl --fail --silent --show-error --max-time 20 \
+            https://polymarket.com/api/geoblock)
+          if ! jq -e '.blocked | type == "boolean"' <<< "$geoblock" >/dev/null; then
+            echo "::error::Polymarket geoblock response does not contain a boolean blocked field"
+            exit 1
+          fi
+          blocked=$(jq -r '.blocked' <<< "$geoblock")
+          country=$(jq -r '.country // "unknown"' <<< "$geoblock")
+          region=$(jq -r '.region // ""' <<< "$geoblock")
+
+          clob_health=$(curl --fail --silent --show-error --max-time 20 \
+            https://clob.polymarket.com/)
+          if ! jq -e 'select(. == "OK")' <<< "$clob_health" >/dev/null; then
+            echo "::error::Polymarket CLOB health endpoint did not return OK"
+            exit 1
+          fi
+
+          echo "blocked=$blocked" >> "$GITHUB_OUTPUT"
+          echo "country=$country" >> "$GITHUB_OUTPUT"
+          echo "region=$region" >> "$GITHUB_OUTPUT"
+          {
+            echo '### Polymarket runner trade-availability probe'
+            echo "- Official geoblock result: \`blocked=$blocked\`"
+            echo "- Detected country/region: \`$country${region:+/$region}\`"
+            echo '- Public CLOB health: `OK`'
+            echo '- Scope: read-only network probe; no authentication, signing, allowance check, or order submission'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$blocked" == "true" ]]; then
+            echo "::warning::Polymarket reports this runner location as blocked for order placement; research may continue, but this runner must not be used for trading"
+          else
+            echo "::notice::This runner passed the public geoblock probe; that is necessary but not sufficient proof that an authenticated order can execute"
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Restore npm download cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-kimi-code-${{ env.KIMI_CODE_VERSION }}
+          restore-keys: |
+            ${{ runner.os }}-npm-kimi-code-
+
+      - name: Install pinned Kimi Code CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global "@moonshot-ai/kimi-code@$KIMI_CODE_VERSION"
+          kimi --version
+
+      - name: Install JSON Schema validator
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check \
+            --requirement automation/requirements-github-actions.txt
+
+      - name: Restore recent research Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$REPORTS_DIR/reports"
+          mapfile -t previous_tags < <(
+            gh api --paginate --slurp \
+              "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+              jq -r --argjson limit "$HISTORY_RELEASE_COUNT" '
+                map(.[]) |
+                map(select(.draft == false and (.tag_name | startswith("forecast-edge-research/run-")))) |
+                sort_by(.created_at) |
+                reverse |
+                .[0:$limit] |
+                .[].tag_name
+              '
+          )
+          printf '%s\n' "${previous_tags[@]}" |
+            jq -Rsc 'split("\n") | map(select(length > 0))' > "$HISTORY_RELEASE_TAGS_PATH"
+
+          for index in "${!previous_tags[@]}"; do
+            previous_tag=${previous_tags[$index]}
+            restore_dir="$RUNNER_TEMP/forecast-edge-release-$GITHUB_RUN_ID-$index"
+            mkdir -p "$restore_dir"
+            gh release download "$previous_tag" \
+              --pattern forecast-edge-research-report.tar.gz \
+              --pattern research-release-manifest.json \
+              --dir "$restore_dir"
+
+            expected_digest=$(jq -er '.report_archive_sha256' "$restore_dir/research-release-manifest.json")
+            actual_digest=$(sha256sum "$restore_dir/forecast-edge-research-report.tar.gz" | cut -d ' ' -f 1)
+            manifest_schema=$(jq -er '.schema_version' "$restore_dir/research-release-manifest.json")
+            manifest_lineage=$(jq -er '.lineage_id' "$restore_dir/research-release-manifest.json")
+            manifest_repository=$(jq -er '.repository' "$restore_dir/research-release-manifest.json")
+            manifest_tag=$(jq -er '.release_tag' "$restore_dir/research-release-manifest.json")
+            manifest_commit=$(jq -er '.commit_sha' "$restore_dir/research-release-manifest.json")
+            manifest_report_count=$(jq -er '.report_count' "$restore_dir/research-release-manifest.json")
+            manifest_report_path=$(jq -er '.current_report_path' "$restore_dir/research-release-manifest.json")
+            expected_report_digest=$(jq -er '.current_report_sha256' "$restore_dir/research-release-manifest.json")
+            tag_commit=$(
+              gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$previous_tag" --jq '.object.sha'
+            )
+            if [[ "$actual_digest" != "$expected_digest" ]]; then
+              echo "::error::Research report archive digest does not match Release $previous_tag"
+              exit 1
+            fi
+            if [[ "$manifest_schema" != "1.0" || "$manifest_lineage" != "forecast-edge-production" ]]; then
+              echo "::error::Research Release $previous_tag uses an unsupported manifest schema or lineage"
+              exit 1
+            fi
+            if [[ "$manifest_repository" != "$GITHUB_REPOSITORY" || "$manifest_tag" != "$previous_tag" ]]; then
+              echo "::error::Research Release manifest does not match this repository and tag"
+              exit 1
+            fi
+            if [[ "$manifest_commit" != "$tag_commit" ]]; then
+              echo "::error::Research Release tag does not point to its declared source commit"
+              exit 1
+            fi
+            if [[ "$manifest_report_count" != "1" ]]; then
+              echo "::error::Research Release $previous_tag must contain exactly one iteration report"
+              exit 1
+            fi
+
+            reports_before=$(find "$REPORTS_DIR/reports" -type f -name report.json | wc -l | tr -d ' ')
+            ARCHIVE_PATH="$restore_dir/forecast-edge-research-report.tar.gz" \
+            DESTINATION="$REPORTS_DIR" \
+            EXPECTED_REPORT_PATH="$manifest_report_path" \
+              python3 - <<'PY'
+          import os
+          import tarfile
+          from pathlib import PurePosixPath
+
+          with tarfile.open(os.environ["ARCHIVE_PATH"], "r:gz") as archive:
+              roots = set()
+              report_roots = set()
+              for member in archive.getmembers():
+                  parts = PurePosixPath(member.name).parts
+                  if len(parts) < 2 or parts[0] != "reports" or ".." in parts:
+                      raise SystemExit(f"unexpected path in research archive: {member.name}")
+                  if not (member.isfile() or member.isdir()):
+                      raise SystemExit(f"unsupported entry in research archive: {member.name}")
+                  roots.add(parts[1])
+                  if member.isfile() and len(parts) == 3 and parts[2] == "report.json":
+                      report_roots.add(parts[1])
+              if len(roots) != 1 or report_roots != roots:
+                  raise SystemExit("research archive must contain exactly one report directory")
+              report_root = next(iter(roots))
+              expected_report = PurePosixPath(os.environ["EXPECTED_REPORT_PATH"]).parts
+              if expected_report != ("reports", report_root, "report.json"):
+                  raise SystemExit("research archive does not match the manifest report path")
+              destination = os.path.join(os.environ["DESTINATION"], "reports", report_root)
+              if os.path.exists(destination):
+                  raise SystemExit(f"refusing to overwrite restored report: {report_root}")
+              archive.extractall(os.environ["DESTINATION"])
+          PY
+
+            reports_after=$(find "$REPORTS_DIR/reports" -type f -name report.json | wc -l | tr -d ' ')
+            if (( reports_after != reports_before + 1 )); then
+              echo "::error::Research Release $previous_tag did not restore exactly one report"
+              exit 1
+            fi
+            actual_report_digest=$(sha256sum "$REPORTS_DIR/$manifest_report_path" | cut -d ' ' -f 1)
+            if [[ "$actual_report_digest" != "$expected_report_digest" ]]; then
+              echo "::error::Research report digest does not match Release $previous_tag"
+              exit 1
+            fi
+          done
+
+          restored_reports=$(find "$REPORTS_DIR/reports" -type f -name report.json | wc -l | tr -d ' ')
+          if (( restored_reports != ${#previous_tags[@]} )); then
+            echo "::error::Restored report count does not match selected Release count"
+            exit 1
+          fi
+          while IFS= read -r report; do
+            python3 skills/forecast-edge/scripts/report_tool.py validate "$report" >/dev/null
+          done < <(find "$REPORTS_DIR/reports" -type f -name report.json | sort)
+          find "$REPORTS_DIR/reports" -type f -name report.json | sort > "$BASELINE_REPORTS_PATH"
+
+      - name: Capture trusted Polymarket account snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 skills/forecast-edge/scripts/polymarket_data.py \
+            --pretty account "$POLYMARKET_ACCOUNT" > "$ACCOUNT_SNAPSHOT_PATH"
+
+      - name: Render initial and repair prompts
+        shell: bash
+        run: |
+          set -euo pipefail
+          render_prompt() {
+            local source=$1
+            local text
+            text=$(<"$source")
+            text=${text//'{{ACCOUNT_PROFILE}}'/$POLYMARKET_ACCOUNT}
+            text=${text//'{{OUTPUT_ROOT}}'/$REPORTS_DIR}
+            text=${text//'{{REPOSITORY_ROOT}}'/$GITHUB_WORKSPACE}
+            text=${text//'{{PUBLIC_BRIEF_PATH}}'/DISABLED}
+            text=${text//'{{ENABLED_PREDICTION_MARKETS}}'/$ENABLED_PREDICTION_MARKETS}
+            text=${text//'{{ACCOUNT_SNAPSHOT_PATH}}'/$ACCOUNT_SNAPSHOT_PATH}
+            text=${text//'{{TRADE_INTENTS_PATH}}'/$TRADE_INTENTS_PATH}
+            text=${text//'{{TRADE_INTENT_SCHEMA_PATH}}'/$TRADE_INTENT_SCHEMA_PATH}
+            text=${text//'{{ORIGINAL_PROMPT_PATH}}'/$ORIGINAL_PROMPT_PATH}
+            text=${text//'{{VALIDATION_ERRORS_PATH}}'/$VALIDATION_ERRORS_PATH}
+            printf '%s\n' "$text"
+          }
+
+          render_prompt automation/prompts/scheduled-scan.zh-CN.md > "$ORIGINAL_PROMPT_PATH"
+          printf '\n' >> "$ORIGINAL_PROMPT_PATH"
+          render_prompt automation/prompts/trade-intents.zh-CN.md >> "$ORIGINAL_PROMPT_PATH"
+          render_prompt automation/prompts/repair-trade-intents.zh-CN.md > "$REPAIR_PROMPT_PATH"
+
+          if grep -Eq '\{\{[^}]+\}\}' "$ORIGINAL_PROMPT_PATH" "$REPAIR_PROMPT_PATH"; then
+            echo "::error::Rendered prompts contain unresolved placeholders"
+            exit 1
+          fi
+
+      - name: Run Kimi Code — initial attempt
+        id: kimi-initial
+        continue-on-error: true
+        timeout-minutes: 120
+        env:
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+            -p "$(<"$ORIGINAL_PROMPT_PATH")" \
+            > "$RUNTIME_DIR/kimi-attempt-1.stdout" \
+            2> "$RUNTIME_DIR/kimi-attempt-1.stderr"
+
+      - name: Validate initial trade intents
+        id: validate-initial
+        continue-on-error: true
+        env:
+          KIMI_OUTCOME: ${{ steps.kimi-initial.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$KIMI_OUTCOME" != "success" ]]; then
+            echo "Kimi initial attempt exited unsuccessfully." > "$VALIDATION_ERRORS_PATH"
+            exit 1
+          fi
+          find "$REPORTS_DIR/reports" -type f -name report.json | sort > "$RUNTIME_DIR/all-reports.txt"
+          mapfile -t reports < <(comm -13 "$BASELINE_REPORTS_PATH" "$RUNTIME_DIR/all-reports.txt")
+          if (( ${#reports[@]} != 1 )); then
+            echo "Expected exactly one newly archived private report; found ${#reports[@]}." > "$VALIDATION_ERRORS_PATH"
+            exit 1
+          fi
+          printf '%s\n' "${reports[0]}" > "$CURRENT_REPORT_PATH_FILE"
+          if ! python3 skills/forecast-edge/scripts/report_tool.py validate "${reports[0]}" \
+            > "$REPORT_VALIDATION_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
+            cat "$VALIDATION_ERRORS_PATH" >&2
+            exit 1
+          fi
+          if ! python3 scripts/validate_trade_intents.py "$TRADE_INTENTS_PATH" \
+            --schema "$TRADE_INTENT_SCHEMA_PATH" \
+            --enabled-venues "$ENABLED_PREDICTION_MARKETS" \
+            --polymarket-account-snapshot "$ACCOUNT_SNAPSHOT_PATH" \
+            --report "${reports[0]}" \
+            > "$VALIDATION_SUMMARY_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
+            cat "$VALIDATION_ERRORS_PATH" >&2
+            exit 1
+          fi
+          cat "$VALIDATION_SUMMARY_PATH"
+
+      - name: Run Kimi Code — repair 1 of 3
+        id: kimi-repair-1
+        if: ${{ steps.validate-initial.outcome == 'failure' }}
+        continue-on-error: true
+        timeout-minutes: 120
+        env:
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+            -p "$(<"$REPAIR_PROMPT_PATH")" \
+            > "$RUNTIME_DIR/kimi-attempt-2.stdout" \
+            2> "$RUNTIME_DIR/kimi-attempt-2.stderr"
+
+      - name: Validate repaired trade intents — 1 of 3
+        id: validate-repair-1
+        if: ${{ steps.validate-initial.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          KIMI_OUTCOME: ${{ steps.kimi-repair-1.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$KIMI_OUTCOME" != "success" ]]; then
+            echo "Kimi repair 1 exited unsuccessfully." > "$VALIDATION_ERRORS_PATH"
+            exit 1
+          fi
+          find "$REPORTS_DIR/reports" -type f -name report.json | sort > "$RUNTIME_DIR/all-reports.txt"
+          mapfile -t reports < <(comm -13 "$BASELINE_REPORTS_PATH" "$RUNTIME_DIR/all-reports.txt")
+          if (( ${#reports[@]} != 1 )); then
+            echo "Expected exactly one newly archived private report; found ${#reports[@]}." > "$VALIDATION_ERRORS_PATH"
+            exit 1
+          fi
+          printf '%s\n' "${reports[0]}" > "$CURRENT_REPORT_PATH_FILE"
+          if ! python3 skills/forecast-edge/scripts/report_tool.py validate "${reports[0]}" \
+            > "$REPORT_VALIDATION_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
+            cat "$VALIDATION_ERRORS_PATH" >&2
+            exit 1
+          fi
+          if ! python3 scripts/validate_trade_intents.py "$TRADE_INTENTS_PATH" \
+            --schema "$TRADE_INTENT_SCHEMA_PATH" \
+            --enabled-venues "$ENABLED_PREDICTION_MARKETS" \
+            --polymarket-account-snapshot "$ACCOUNT_SNAPSHOT_PATH" \
+            --report "${reports[0]}" \
+            > "$VALIDATION_SUMMARY_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
+            cat "$VALIDATION_ERRORS_PATH" >&2
+            exit 1
+          fi
+          cat "$VALIDATION_SUMMARY_PATH"
+
+      - name: Run Kimi Code — repair 2 of 3
+        id: kimi-repair-2
+        if: ${{ steps.validate-repair-1.outcome == 'failure' }}
+        continue-on-error: true
+        timeout-minutes: 120
+        env:
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+            -p "$(<"$REPAIR_PROMPT_PATH")" \
+            > "$RUNTIME_DIR/kimi-attempt-3.stdout" \
+            2> "$RUNTIME_DIR/kimi-attempt-3.stderr"
+
+      - name: Validate repaired trade intents — 2 of 3
+        id: validate-repair-2
+        if: ${{ steps.validate-repair-1.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          KIMI_OUTCOME: ${{ steps.kimi-repair-2.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$KIMI_OUTCOME" != "success" ]]; then
+            echo "Kimi repair 2 exited unsuccessfully." > "$VALIDATION_ERRORS_PATH"
+            exit 1
+          fi
+          find "$REPORTS_DIR/reports" -type f -name report.json | sort > "$RUNTIME_DIR/all-reports.txt"
+          mapfile -t reports < <(comm -13 "$BASELINE_REPORTS_PATH" "$RUNTIME_DIR/all-reports.txt")
+          if (( ${#reports[@]} != 1 )); then
+            echo "Expected exactly one newly archived private report; found ${#reports[@]}." > "$VALIDATION_ERRORS_PATH"
+            exit 1
+          fi
+          printf '%s\n' "${reports[0]}" > "$CURRENT_REPORT_PATH_FILE"
+          if ! python3 skills/forecast-edge/scripts/report_tool.py validate "${reports[0]}" \
+            > "$REPORT_VALIDATION_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
+            cat "$VALIDATION_ERRORS_PATH" >&2
+            exit 1
+          fi
+          if ! python3 scripts/validate_trade_intents.py "$TRADE_INTENTS_PATH" \
+            --schema "$TRADE_INTENT_SCHEMA_PATH" \
+            --enabled-venues "$ENABLED_PREDICTION_MARKETS" \
+            --polymarket-account-snapshot "$ACCOUNT_SNAPSHOT_PATH" \
+            --report "${reports[0]}" \
+            > "$VALIDATION_SUMMARY_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
+            cat "$VALIDATION_ERRORS_PATH" >&2
+            exit 1
+          fi
+          cat "$VALIDATION_SUMMARY_PATH"
+
+      - name: Run Kimi Code — repair 3 of 3
+        id: kimi-repair-3
+        if: ${{ steps.validate-repair-2.outcome == 'failure' }}
+        continue-on-error: true
+        timeout-minutes: 120
+        env:
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+            -p "$(<"$REPAIR_PROMPT_PATH")" \
+            > "$RUNTIME_DIR/kimi-attempt-4.stdout" \
+            2> "$RUNTIME_DIR/kimi-attempt-4.stderr"
+
+      - name: Validate repaired trade intents — 3 of 3
+        id: validate-repair-3
+        if: ${{ steps.validate-repair-2.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          KIMI_OUTCOME: ${{ steps.kimi-repair-3.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$KIMI_OUTCOME" != "success" ]]; then
+            echo "Kimi repair 3 exited unsuccessfully." > "$VALIDATION_ERRORS_PATH"
+            exit 1
+          fi
+          find "$REPORTS_DIR/reports" -type f -name report.json | sort > "$RUNTIME_DIR/all-reports.txt"
+          mapfile -t reports < <(comm -13 "$BASELINE_REPORTS_PATH" "$RUNTIME_DIR/all-reports.txt")
+          if (( ${#reports[@]} != 1 )); then
+            echo "Expected exactly one newly archived private report; found ${#reports[@]}." > "$VALIDATION_ERRORS_PATH"
+            exit 1
+          fi
+          printf '%s\n' "${reports[0]}" > "$CURRENT_REPORT_PATH_FILE"
+          if ! python3 skills/forecast-edge/scripts/report_tool.py validate "${reports[0]}" \
+            > "$REPORT_VALIDATION_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
+            cat "$VALIDATION_ERRORS_PATH" >&2
+            exit 1
+          fi
+          if ! python3 scripts/validate_trade_intents.py "$TRADE_INTENTS_PATH" \
+            --schema "$TRADE_INTENT_SCHEMA_PATH" \
+            --enabled-venues "$ENABLED_PREDICTION_MARKETS" \
+            --polymarket-account-snapshot "$ACCOUNT_SNAPSHOT_PATH" \
+            --report "${reports[0]}" \
+            > "$VALIDATION_SUMMARY_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
+            cat "$VALIDATION_ERRORS_PATH" >&2
+            exit 1
+          fi
+          cat "$VALIDATION_SUMMARY_PATH"
+
+      - name: Enforce retry limit
+        if: ${{ always() }}
+        env:
+          INITIAL_VALIDATION: ${{ steps.validate-initial.outcome }}
+          REPAIR_1_VALIDATION: ${{ steps.validate-repair-1.outcome }}
+          REPAIR_2_VALIDATION: ${{ steps.validate-repair-2.outcome }}
+          REPAIR_3_VALIDATION: ${{ steps.validate-repair-3.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$INITIAL_VALIDATION" == "success" || \
+                "$REPAIR_1_VALIDATION" == "success" || \
+                "$REPAIR_2_VALIDATION" == "success" || \
+                "$REPAIR_3_VALIDATION" == "success" ]]; then
+            exit 0
+          fi
+          echo "::error::Trade intents failed validation after the initial attempt and three repairs"
+          if [[ -f "$VALIDATION_ERRORS_PATH" ]]; then
+            cat "$VALIDATION_ERRORS_PATH" >&2
+          fi
+          exit 1
+
+      - name: Build current-iteration research Release
+        id: release-package
+        shell: bash
+        run: |
+          set -euo pipefail
+          successful_attempt=4
+          if [[ "${{ steps.validate-initial.outcome }}" == "success" ]]; then
+            successful_attempt=1
+          elif [[ "${{ steps.validate-repair-1.outcome }}" == "success" ]]; then
+            successful_attempt=2
+          elif [[ "${{ steps.validate-repair-2.outcome }}" == "success" ]]; then
+            successful_attempt=3
+          fi
+          generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          release_tag="forecast-edge-research/run-$GITHUB_RUN_ID-attempt-$GITHUB_RUN_ATTEMPT"
+          current_report=$(<"$CURRENT_REPORT_PATH_FILE")
+          current_report_dir=$(dirname "$current_report")
+          current_report_relative=${current_report#"$REPORTS_DIR/"}
+          current_report_dir_relative=${current_report_dir#"$REPORTS_DIR/"}
+          history_releases_used=$(jq 'length' "$HISTORY_RELEASE_TAGS_PATH")
+
+          cp "$current_report" "$RELEASE_ASSETS_DIR/report.json"
+          cp "$current_report_dir/report.md" "$RELEASE_ASSETS_DIR/report.md"
+          cp "$VALIDATION_SUMMARY_PATH" "$RELEASE_ASSETS_DIR/validation-summary.json"
+          tar -C "$REPORTS_DIR" -czf "$REPORT_ARCHIVE_PATH" "$current_report_dir_relative"
+
+          report_archive_digest=$(sha256sum "$REPORT_ARCHIVE_PATH" | cut -d ' ' -f 1)
+          report_digest=$(sha256sum "$current_report" | cut -d ' ' -f 1)
+          trade_intents_digest=$(sha256sum "$TRADE_INTENTS_PATH" | cut -d ' ' -f 1)
+          jq -n \
+            --arg schema_version "1.0" \
+            --arg lineage_id "forecast-edge-production" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg release_tag "$release_tag" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg commit_sha "$GITHUB_SHA" \
+            --arg generated_at "$generated_at" \
+            --arg current_report_path "$current_report_relative" \
+            --arg report_archive_asset "forecast-edge-research-report.tar.gz" \
+            --arg report_archive_sha256 "$report_archive_digest" \
+            --arg current_report_sha256 "$report_digest" \
+            --arg trade_intents_sha256 "$trade_intents_digest" \
+            --argjson history_release_count_requested "$HISTORY_RELEASE_COUNT" \
+            --argjson report_count "1" \
+            --argjson successful_kimi_attempt "$successful_attempt" \
+            --slurpfile history_releases "$HISTORY_RELEASE_TAGS_PATH" \
+            --slurpfile validation "$VALIDATION_SUMMARY_PATH" \
+            '{
+              schema_version: $schema_version,
+              lineage_id: $lineage_id,
+              repository: $repository,
+              release_tag: $release_tag,
+              workflow_run_id: $run_id,
+              workflow_run_attempt: $run_attempt,
+              commit_sha: $commit_sha,
+              generated_at: $generated_at,
+              report_count: $report_count,
+              current_report_path: $current_report_path,
+              report_archive_asset: $report_archive_asset,
+              report_archive_sha256: $report_archive_sha256,
+              current_report_sha256: $current_report_sha256,
+              history_release_count_requested: $history_release_count_requested,
+              history_releases_used: $history_releases[0],
+              successful_kimi_attempt: $successful_kimi_attempt,
+              trade_intents_sha256: $trade_intents_sha256,
+              validation: $validation[0]
+            }' > "$RELEASE_MANIFEST_PATH"
+
+          {
+            printf 'Forecast Edge research for this iteration.\n\n'
+            printf -- '- Source commit: `%s`\n' "$GITHUB_SHA"
+            printf -- '- Workflow run: `%s`, attempt `%s`\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+            printf -- '- Reports in this Release: `1`\n'
+            printf -- '- Prior Releases loaded for rolling context: `%s`\n' "$history_releases_used"
+          } > "$RUNTIME_DIR/release-notes.md"
+
+          echo "generated-at=$generated_at" >> "$GITHUB_OUTPUT"
+          echo "release-tag=$release_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Publish current-iteration research Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release-package.outputs.release-tag }}
+          GENERATED_AT: ${{ steps.release-package.outputs.generated-at }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Refusing to replace existing research Release $RELEASE_TAG"
+            exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Refusing to publish research on an existing tag $RELEASE_TAG"
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" \
+            --target "$GITHUB_SHA" \
+            --title "Forecast Edge research — $GENERATED_AT" \
+            --notes-file "$RUNTIME_DIR/release-notes.md" \
+            --latest=false \
+            "$REPORT_ARCHIVE_PATH" \
+            "$RELEASE_MANIFEST_PATH" \
+            "$RELEASE_ASSETS_DIR/report.json" \
+            "$RELEASE_ASSETS_DIR/report.md" \
+            "$RELEASE_ASSETS_DIR/validation-summary.json"
+
+      - name: Upload validated trade-intent artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: forecast-edge-trade-intents
+          path: ${{ env.TRADE_INTENTS_PATH }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Format Issue notification
+        env:
+          GENERATED_AT: ${{ steps.release-package.outputs.generated-at }}
+          RELEASE_TAG: ${{ steps.release-package.outputs.release-tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          item_count=$(jq -r '.items' "$VALIDATION_SUMMARY_PATH")
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          body=$(<automation/templates/trade-intents-issue.md)
+          body=${body//'{{RUN_URL}}'/$run_url}
+          body=${body//'{{COMMIT_SHA}}'/$GITHUB_SHA}
+          body=${body//'{{GENERATED_AT}}'/$GENERATED_AT}
+          body=${body//'{{ITEM_COUNT}}'/$item_count}
+          body=${body//'{{RELEASE_TAG}}'/$RELEASE_TAG}
+          printf '%s\n\n' "$body" > "$RUNTIME_DIR/issue.md"
+          if [[ -s "$TRADE_INTENTS_PATH" ]]; then
+            printf '| Venue | Market | Outcome | Side | Reference price | Notional | Quantity | Currency |\n' >> "$RUNTIME_DIR/issue.md"
+            printf '| --- | --- | --- | --- | ---: | ---: | ---: | --- |\n' >> "$RUNTIME_DIR/issue.md"
+            jq -r '"| \(.venue) | `\(.multi_market_identifier)` | \(.outcome) | \(.side) | \(.reference_price) | \(.notional) | \(.quantity) | \(.currency) |"' \
+              "$TRADE_INTENTS_PATH" >> "$RUNTIME_DIR/issue.md"
+          else
+            printf '_本轮没有通过策略门槛且需要执行的交易意图。_\n' >> "$RUNTIME_DIR/issue.md"
+          fi
+
+      - name: Create Issue notification
+        if: ${{ github.event.repository.private && vars.CREATE_TRADE_INTENT_ISSUE != 'false' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GENERATED_AT: ${{ steps.release-package.outputs.generated-at }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh issue create \
+            --title "Forecast Edge iteration — $GENERATED_AT" \
+            --body-file "$RUNTIME_DIR/issue.md"
+
+      - name: Report validation diagnostics on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          if [[ -s "$VALIDATION_ERRORS_PATH" ]]; then
+            cat "$VALIDATION_ERRORS_PATH" >&2
+            {
+              echo '### Validation diagnostics'
+              echo '```text'
+              sed -n '1,200p' "$VALIDATION_ERRORS_PATH"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

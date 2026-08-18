@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/forecast-edge/trade-intent.schema.json",
+  "title": "Forecast Edge Trade Intent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "venue",
+    "multi_market_identifier",
+    "instrument_identifier",
+    "outcome",
+    "side",
+    "reference_price",
+    "notional",
+    "quantity",
+    "currency"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "venue": {
+      "enum": ["polymarket"]
+    },
+    "multi_market_identifier": {
+      "type": "string",
+      "pattern": "^0x[a-fA-F0-9]{64}$"
+    },
+    "instrument_identifier": {
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "outcome": {
+      "enum": ["yes", "no"]
+    },
+    "side": {
+      "enum": ["buy", "sell"]
+    },
+    "reference_price": {
+      "$ref": "#/$defs/decimal"
+    },
+    "notional": {
+      "$ref": "#/$defs/decimal"
+    },
+    "quantity": {
+      "$ref": "#/$defs/decimal"
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9._-]{0,15}$"
+    }
+  },
+  "$defs": {
+    "decimal": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,18})?$"
+    }
+  }
+}

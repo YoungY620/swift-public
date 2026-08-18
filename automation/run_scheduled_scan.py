@@ -133,7 +133,7 @@ def build_parser(repository_root: Path) -> argparse.ArgumentParser:
     parser.add_argument(
         "--prompt-template",
         type=Path,
-        default=repository_root / "automation" / "prompt.zh-CN.md",
+        default=repository_root / "automation" / "prompts" / "scheduled-scan.zh-CN.md",
     )
     parser.add_argument(
         "--public-brief-dir",
