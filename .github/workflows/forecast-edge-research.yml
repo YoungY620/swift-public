@@ -95,11 +95,30 @@ jobs:
       - name: Validate workflow configuration
         env:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}
         shell: bash
         run: |
           set -euo pipefail
           if [[ -z "$KIMI_MODEL_API_KEY" ]]; then
             echo "::error::Required Actions secret KIMI_CODE_API_KEY is not configured"
+            exit 1
+          fi
+          if [[ -z "$FEISHU_APP_ID" ]]; then
+            echo "::error::Required Actions secret FEISHU_APP_ID is not configured"
+            exit 1
+          fi
+          if [[ -z "$FEISHU_APP_SECRET" ]]; then
+            echo "::error::Required Actions secret FEISHU_APP_SECRET is not configured"
+            exit 1
+          fi
+          if [[ -z "$FEISHU_CHAT_ID" ]]; then
+            echo "::error::Required Actions secret FEISHU_CHAT_ID is not configured"
+            exit 1
+          fi
+          if [[ "$FEISHU_CHAT_ID" != oc_* ]]; then
+            echo "::error::FEISHU_CHAT_ID must be a chat_id beginning with oc_"
             exit 1
           fi
           if [[ -z "$POLYMARKET_ACCOUNT" ]]; then
@@ -757,6 +776,71 @@ jobs:
           gh issue create \
             --title "Forecast Edge iteration — $GENERATED_AT" \
             --body-file "$RUNTIME_DIR/issue.md"
+
+      - name: Send Issue notification to Feishu
+        env:
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -s "$RUNTIME_DIR/issue.md" ]]; then
+            echo "::error::Issue notification body is missing or empty"
+            exit 1
+          fi
+
+          token_response=$(
+            jq -cn \
+              --arg app_id "$FEISHU_APP_ID" \
+              --arg app_secret "$FEISHU_APP_SECRET" \
+              '{app_id: $app_id, app_secret: $app_secret}' \
+              | curl --fail-with-body --silent --show-error \
+                  --retry 3 --retry-all-errors --retry-delay 2 --max-time 30 \
+                  --request POST \
+                  --header 'Content-Type: application/json; charset=utf-8' \
+                  --data-binary @- \
+                  https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal
+          )
+          if ! tenant_token=$(
+            jq -er \
+              'select(.code == 0) | .tenant_access_token | select(type == "string" and length > 0)' \
+              <<< "$token_response"
+          ); then
+            echo "::error::Feishu tenant token request failed"
+            exit 1
+          fi
+          echo "::add-mask::$tenant_token"
+
+          message_payload=$(
+            jq -cn \
+              --arg receive_id "$FEISHU_CHAT_ID" \
+              --arg uuid "forecast-edge-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+              --rawfile issue "$RUNTIME_DIR/issue.md" \
+              '{
+                receive_id: $receive_id,
+                msg_type: "text",
+                content: ({text: $issue} | tojson),
+                uuid: $uuid
+              }'
+          )
+          send_response=$(
+            printf '%s' "$message_payload" \
+              | curl --fail-with-body --silent --show-error \
+                  --retry 3 --retry-all-errors --retry-delay 2 --max-time 30 \
+                  --request POST \
+                  --header "Authorization: Bearer $tenant_token" \
+                  --header 'Content-Type: application/json; charset=utf-8' \
+                  --data-binary @- \
+                  'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id'
+          )
+          if ! jq -e \
+            '.code == 0 and (.data.message_id | type == "string" and length > 0)' \
+            <<< "$send_response" >/dev/null; then
+            echo "::error::Feishu message delivery failed"
+            exit 1
+          fi
+          echo "Feishu Issue notification delivered"
 
       - name: Report validation diagnostics on failure
         if: ${{ failure() }}

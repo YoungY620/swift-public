@@ -49,11 +49,14 @@ bash skills/forecast-edge/tests/test_cli.sh
 
 ## GitHub Actions 定时研究（可选）
 
-`.github/workflows/forecast-edge-research.yml` 可以在 GitHub 托管的 Linux runner 上安装固定版本的 Kimi Code CLI，执行完整研究，生成并校验多市场交易意图 JSONL，上传精确绑定当前 run 的 artifact，并创建一个 Issue 通知。第一阶段始终只读，不包含任何交易凭据或下单逻辑；当前 v1 只允许 `polymarket` venue。
+`.github/workflows/forecast-edge-research.yml` 可以在 GitHub 托管的 Linux runner 上安装固定版本的 Kimi Code CLI，执行完整研究，生成并校验多市场交易意图 JSONL，上传精确绑定当前 run 的 artifact，并创建一个 Issue 通知，再把同一份 `issue.md` 原文发送到飞书私聊。第一阶段始终只读，不包含任何交易凭据或下单逻辑；当前 v1 只允许 `polymarket` venue。
 
 在仓库 Settings 中配置：
 
 - Actions Secret `KIMI_CODE_API_KEY`：Kimi 模型 API Key。
+- Actions Secret `FEISHU_APP_ID`：启用了机器人能力的飞书自建应用 App ID。
+- Actions Secret `FEISHU_APP_SECRET`：该飞书应用的 App Secret。
+- Actions Secret `FEISHU_CHAT_ID`：机器人与接收人的私聊 `chat_id`（`oc_...`）。
 - Repository Variable `POLYMARKET_ACCOUNT`：公开 Polymarket profile URL。
 - Repository Variable `FORECAST_EDGE_INTERVAL_HOURS`：可选，整数且不小于 `6`，默认 `12`。
 - Repository Variable `FORECAST_EDGE_ANCHOR_UTC_HOUR`：可选，`0`–`23`，默认 `2`；默认 `N=12` 时对应北京时间约 `10:23` 与 `22:23`。
@@ -63,7 +66,7 @@ bash skills/forecast-edge/tests/test_cli.sh
 
 GitHub 的 Cron 不能读取 Repository Variable，因此 workflow 每小时第 `23` 分钟触发一次轻量 gate，只有满足 N 小时间隔时才开始完整 iteration。也可以在 Actions 页面用 `workflow_dispatch` 随时手动运行；手动运行会绕过定时间隔 gate，但仍执行全部配置和产物校验。
 
-每个成功 iteration 上传名为 `forecast-edge-trade-intents` 的 artifact，且 artifact 只包含严格校验后的 `trade-intents.jsonl`。研究报告、校验摘要和 provenance manifest 进入本轮 GitHub Release；账户快照只在临时 runner 内用于本轮校验，不进入 artifact 或 Release。下一轮从最近若干个研究 Release 恢复滚动历史；未来执行工作流必须重新获取实时持仓。交易意图协议见 [Schema](schemas/trade-intent.schema.json)，架构与安全边界见 [设计记录](docs/github-actions-agent-design.md)。
+每个成功 iteration 上传名为 `forecast-edge-trade-intents` 的 artifact，且 artifact 只包含严格校验后的 `trade-intents.jsonl`。研究报告、校验摘要和 provenance manifest 进入本轮 GitHub Release；账户快照只在临时 runner 内用于本轮校验，不进入 artifact 或 Release。下一轮从最近若干个研究 Release 恢复滚动历史；未来执行工作流必须重新获取实时持仓。Issue 与飞书通知共用临时 runner 中的同一个 `issue.md`；飞书使用 bot 身份和 `im:message:send_as_bot` 权限发送纯文本，不需要额外配置 receive ID 类型或机器人名称。交易意图协议见 [Schema](schemas/trade-intent.schema.json)，架构与安全边界见 [设计记录](docs/github-actions-agent-design.md)。
 
 ## 通用飞书机器人通知（可选）
 

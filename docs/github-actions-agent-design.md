@@ -70,7 +70,7 @@
 9. 校验失败时保存机器可读的错误信息，使用固定修复 prompt 让 Kimi Code 重写同一个输出文件，然后重复步骤 7 和 8。
 10. 按配置的滚动窗口恢复最近若干个研究 Release，供 Agent 比较历史证据和近期机会；本轮报告仍只描述本轮重新研究的持仓和候选市场。
 11. artifact 仅上传验证通过的 `trade-intents.jsonl`。校验摘要和 provenance manifest 进入研究 Release；账户快照和 Kimi session 不进入 artifact，未来执行器必须重新获取实时账户状态。
-12. 用固定 Markdown 模板生成通知，在本仓库创建 Issue 或评论。
+12. 用固定 Markdown 模板生成通知，在本仓库创建 Issue，并把同一份 `issue.md` 原文作为纯文本发送到飞书私聊。
 
 ### Kimi Code 已确认能力
 
@@ -111,11 +111,14 @@ GitHub Release 继承仓库可见性。private repository 中的 Release 受仓�
 
 ## 第一阶段配置与 Secret 边界
 
-第一阶段只需要用户配置一个 Secret：
+第一阶段需要用户配置四个 Secret；其中三个仅用于飞书通知：
 
 | 名称 | 类型 | 原因 |
 | --- | --- | --- |
 | `KIMI_CODE_API_KEY` | Actions Secret，必需 | 可调用付费模型，泄露后可被滥用。 |
+| `FEISHU_APP_ID` | Actions Secret，必需 | 与 App Secret 配对获取应用身份 token。 |
+| `FEISHU_APP_SECRET` | Actions Secret，必需 | 飞书应用凭据，泄露后可被滥用。 |
+| `FEISHU_CHAT_ID` | Actions Secret，必需 | 将通知限定路由到机器人与接收人的私聊。 |
 
 以下值不属于凭据，使用 Repository Variables；不得为了隐藏公开标识而增加 Secret：
 
@@ -213,9 +216,11 @@ v1 采用以下 venue 映射：
 
 第一阶段采用初次运行加 3 次修复，共最多 4 次 Kimi 调用。每次修复启动新 session，读取滚动窗口内恢复的单轮历史报告、原 JSONL 与校验错误；若本轮有效私有报告已经存在，修复不得重复研究或归档第二份报告。
 
-## Issue 通知
+## Issue 与飞书通知
 
 第一阶段在 private repository 中默认每个成功 iteration 创建一个新 Issue。将 Repository Variable `CREATE_TRADE_INTENT_ISSUE` 设为 `false` 可以关闭 Issue，仅保留本轮研究 Release 和只含 JSONL 的交易 artifact；public repository 不创建包含交易数量的 Issue。
+
+无论是否通过配置关闭 GitHub Issue，成功 iteration 都会把为 Issue 生成的同一个临时 `issue.md` 原样作为纯文本发送到 `FEISHU_CHAT_ID`。Workflow 使用 App ID 与 App Secret 获取短期 tenant token，不保存该 token；发送请求带有基于 GitHub run 和 attempt 的幂等键。飞书应用只需机器人发送消息权限，不引入 receive ID 类型、机器人名称或 webhook 等额外配置。
 
 如果仓库是 public，Issue 会公开交易方向、价格、金额、份额和账户线索，可能造成隐私、策略泄露或抢跑风险。默认建议只在 private repository 创建包含数量的 Issue；public repository 应使用主动降敏的公共简报格式。
 

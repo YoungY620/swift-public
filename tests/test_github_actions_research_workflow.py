@@ -74,9 +74,32 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         self.assertIn("ALLOW_PUBLIC_RESEARCH_RELEASES", self.workflow)
         self.assertIn("GitHub Releases inherit repository visibility", self.workflow)
 
-    def test_only_kimi_api_key_is_a_configured_secret(self) -> None:
+    def test_only_required_api_and_notification_secrets_are_configured(self) -> None:
         configured_secrets = set(re.findall(r"secrets\.([A-Z0-9_]+)", self.workflow))
-        self.assertEqual(configured_secrets, {"KIMI_CODE_API_KEY"})
+        self.assertEqual(
+            configured_secrets,
+            {
+                "KIMI_CODE_API_KEY",
+                "FEISHU_APP_ID",
+                "FEISHU_APP_SECRET",
+                "FEISHU_CHAT_ID",
+            },
+        )
+
+    def test_feishu_receives_the_exact_issue_body_after_issue_creation(self) -> None:
+        send = self.step("Send Issue notification to Feishu")
+
+        self.assertLess(
+            self.workflow.index("      - name: Create Issue notification\n"),
+            self.workflow.index("      - name: Send Issue notification to Feishu\n"),
+        )
+        self.assertIn('--rawfile issue "$RUNTIME_DIR/issue.md"', send)
+        self.assertIn('msg_type: "text"', send)
+        self.assertIn("content: ({text: $issue} | tojson)", send)
+        self.assertIn('uuid: $uuid', send)
+        self.assertIn("receive_id_type=chat_id", send)
+        self.assertNotIn("FEISHU_RECEIVE_ID_TYPE", send)
+        self.assertNotIn("FEISHU_EXPECTED_BOT_NAME", send)
 
     def test_stable_public_options_are_workflow_constants(self) -> None:
         self.assertIn("ENABLED_PREDICTION_MARKETS: polymarket", self.workflow)
