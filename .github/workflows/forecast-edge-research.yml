@@ -83,6 +83,7 @@ jobs:
       KIMI_CODE_VERSION: "0.37.0"
       KIMI_MODEL_NAME: kimi-for-coding
       KIMI_MODEL_PROVIDER_TYPE: kimi
+      KIMI_MODEL_BASE_URL: https://api.kimi.com/coding/v1
       KIMI_DISABLE_TELEMETRY: "1"
       TRADE_INTENT_SCHEMA_PATH: ${{ github.workspace }}/schemas/trade-intent.schema.json
     steps:
@@ -378,10 +379,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+          if ! kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
             -p "$(<"$ORIGINAL_PROMPT_PATH")" \
             > "$RUNTIME_DIR/kimi-attempt-1.stdout" \
-            2> "$RUNTIME_DIR/kimi-attempt-1.stderr"
+            2> "$RUNTIME_DIR/kimi-attempt-1.stderr"; then
+            sed -n '1,200p' "$RUNTIME_DIR/kimi-attempt-1.stderr" >&2
+            exit 1
+          fi
 
       - name: Validate initial trade intents
         id: validate-initial
@@ -428,10 +432,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+          if ! kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
             -p "$(<"$REPAIR_PROMPT_PATH")" \
             > "$RUNTIME_DIR/kimi-attempt-2.stdout" \
-            2> "$RUNTIME_DIR/kimi-attempt-2.stderr"
+            2> "$RUNTIME_DIR/kimi-attempt-2.stderr"; then
+            sed -n '1,200p' "$RUNTIME_DIR/kimi-attempt-2.stderr" >&2
+            exit 1
+          fi
 
       - name: Validate repaired trade intents — 1 of 3
         id: validate-repair-1
@@ -479,10 +486,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+          if ! kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
             -p "$(<"$REPAIR_PROMPT_PATH")" \
             > "$RUNTIME_DIR/kimi-attempt-3.stdout" \
-            2> "$RUNTIME_DIR/kimi-attempt-3.stderr"
+            2> "$RUNTIME_DIR/kimi-attempt-3.stderr"; then
+            sed -n '1,200p' "$RUNTIME_DIR/kimi-attempt-3.stderr" >&2
+            exit 1
+          fi
 
       - name: Validate repaired trade intents — 2 of 3
         id: validate-repair-2
@@ -530,10 +540,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+          if ! kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
             -p "$(<"$REPAIR_PROMPT_PATH")" \
             > "$RUNTIME_DIR/kimi-attempt-4.stdout" \
-            2> "$RUNTIME_DIR/kimi-attempt-4.stderr"
+            2> "$RUNTIME_DIR/kimi-attempt-4.stderr"; then
+            sed -n '1,200p' "$RUNTIME_DIR/kimi-attempt-4.stderr" >&2
+            exit 1
+          fi
 
       - name: Validate repaired trade intents — 3 of 3
         id: validate-repair-3
