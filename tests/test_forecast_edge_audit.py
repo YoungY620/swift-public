@@ -190,6 +190,24 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertEqual(normalized["checks"][0]["status"], "FAIL")
         self.assertEqual(normalized["overall_status"], "FAIL")
 
+    def test_normalizer_registers_missing_anomaly_evidence(self) -> None:
+        response = self.response()
+        response["overall_status"] = "WARN"
+        response["checks"][0]["status"] = "WARN"
+        response["anomalies"] = [
+            {
+                "check_id": response["checks"][0]["id"],
+                "severity": "critical",
+                "summary": "缺少预期证据。",
+                "evidence": ["release.missing"],
+            }
+        ]
+        normalized = audit_module.normalize_unsupported_judgments(
+            response, self.rubric, self.evidence
+        )
+        self.assertIn("release.missing", normalized["missing_evidence"])
+        audit_module.validate_response(normalized, self.rubric, self.evidence, self.schema)
+
     def test_fallback_is_schema_valid_and_fail_closed(self) -> None:
         response = audit_module.fallback_response(self.rubric, "123", "invalid response")
         errors = list(Draft202012Validator(self.schema).iter_errors(response))

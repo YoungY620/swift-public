@@ -113,8 +113,15 @@ def normalize_unsupported_judgments(
         check["evidence"] = sorted(set(absent))
         check["reason"] = "缺少支持原判断的必要证据，已由确定性校验器降级。"
         downgraded = True
+    anomalies = response.get("anomalies", [])
+    if isinstance(anomalies, list):
+        for anomaly in anomalies:
+            if not isinstance(anomaly, dict) or not isinstance(anomaly.get("evidence"), list):
+                continue
+            for key in anomaly["evidence"]:
+                if isinstance(key, str) and not resolve(evidence, key)[0]:
+                    missing.add(key)
     if downgraded:
-        response["missing_evidence"] = sorted(missing)
         response["confidence"] = "LOW"
         statuses = [
             str(item.get("status")) for item in checks if isinstance(item, dict)
@@ -123,6 +130,7 @@ def normalize_unsupported_judgments(
             response["overall_status"] = "FAIL"
         else:
             response["overall_status"] = "INSUFFICIENT_EVIDENCE"
+    response["missing_evidence"] = sorted(missing)
     return response
 
 
