@@ -40,6 +40,27 @@ class ReportToolTests(unittest.TestCase):
         with self.assertRaisesRegex(report_tool.ReportError, "Simplified-Chinese"):
             report_tool.validate_report(report)
 
+    def test_adapter_report_requires_venue_native_routing_identifiers(self) -> None:
+        report = load_report()
+        report["run"]["account"] = {
+            "input": "fixture-account",
+            "adapter": "kalshi",
+            "identifier": "fixture-account",
+        }
+        for index, analysis in enumerate(
+            report["current_positions"] + report["candidates"], start=1
+        ):
+            analysis["market"]["event_identifier"] = f"KX-EVENT-{index}"
+            analysis["market"]["multi_market_identifier"] = f"KX-MARKET-{index}"
+            analysis["market"]["instrument_identifier"] = f"KX-CONTRACT-{index}"
+            analysis["market"]["url"] = f"https://example.com/markets/{index}"
+
+        self.assertEqual(report_tool.validate_report(report)["run"]["account"]["adapter"], "kalshi")
+
+        del report["candidates"][0]["market"]["instrument_identifier"]
+        with self.assertRaisesRegex(report_tool.ReportError, "instrument_identifier"):
+            report_tool.validate_report(report)
+
     def test_current_position_requires_previous_comparison_field(self) -> None:
         report = load_report()
         del report["current_positions"][0]["comparison"]

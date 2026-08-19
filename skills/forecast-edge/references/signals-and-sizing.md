@@ -9,13 +9,13 @@ YES: v = p
 NO:  v = 1 - p
 ```
 
-Use fresh executable order-book prices, not a displayed last trade or midpoint. Fetch the token-specific fee rate and calculate fees at every filled price level:
+Use fresh executable order-book prices, not a displayed last trade or midpoint. Use the selected adapter's executable instrument, fee metadata, and fee calculation at every filled price level. The currently registered adapter normalizes its fee as:
 
 ```text
 fee = shares × fee_rate × price × (1 - price)
 ```
 
-If Polymarket changes its fee contract, update the script and tests rather than preserving this formula from memory.
+An adapter whose native fee rule differs must provide the corresponding tested calculation; never apply another venue's formula by analogy.
 
 ## Crossing rules
 
@@ -98,11 +98,11 @@ Keep the Kelly fraction configurable and enabled by default at `0.25`.
 Define conservative bankroll as:
 
 ```text
-public pUSD balance from the dynamically discovered active collateral contract
+public available cash from the selected adapter's normalized snapshot
 + current holdings valued at complete executable bid VWAP after sell fees
 ```
 
-If a verified authenticated available-to-trade value is lower than the public pUSD balance, use the lower value as cash. Never substitute a fixed legacy token balance.
+If a verified authenticated available-to-trade value is lower than the normalized public balance, use the lower value as cash. Never substitute a fixed legacy balance.
 
 Report model value separately. Do not use it to inflate the sizing bankroll.
 

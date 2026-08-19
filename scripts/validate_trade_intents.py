@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -72,36 +73,83 @@ def snapshot_positions(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(container, dict):
         container = container.get("positions", [])
     if not isinstance(container, list):
-        raise TradeIntentError("Polymarket account snapshot positions must contain a list")
+        raise TradeIntentError("normalized account snapshot positions must contain a list")
     return [position for position in container if isinstance(position, dict)]
 
 
 def snapshot_currency(snapshot: dict[str, Any]) -> str:
-    collateral = snapshot.get("collateral", {})
-    if not isinstance(collateral, dict) or not str(collateral.get("asset", "")).strip():
-        raise TradeIntentError("Polymarket account snapshot has no active collateral asset")
-    return str(collateral["asset"])
+    portfolio = snapshot.get("portfolio", {})
+    if not isinstance(portfolio, dict) or not str(portfolio.get("currency", "")).strip():
+        raise TradeIntentError("normalized account snapshot has no portfolio currency")
+    return str(portfolio["currency"])
 
 
 def held_quantity(snapshot: dict[str, Any], item: dict[str, Any]) -> Decimal:
     total = Decimal(0)
     for position in snapshot_positions(snapshot):
-        if str(position.get("conditionId", "")).casefold() != str(
+        if str(position.get("market_identifier", "")).casefold() != str(
             item["multi_market_identifier"]
         ).casefold():
             continue
-        if str(position.get("asset", "")) != str(item["instrument_identifier"]):
+        if str(position.get("instrument_identifier", "")) != str(item["instrument_identifier"]):
             continue
         if str(position.get("outcome", "")).casefold() != str(item["outcome"]).casefold():
             continue
         try:
-            size = Decimal(str(position.get("size", "")))
+            size = Decimal(str(position.get("quantity", "")))
         except InvalidOperation as exc:
-            raise TradeIntentError("matched Polymarket position has an invalid size") from exc
+            raise TradeIntentError("matched normalized position has an invalid quantity") from exc
         if not size.is_finite() or size < 0:
-            raise TradeIntentError("matched Polymarket position has an invalid size")
+            raise TradeIntentError("matched normalized position has an invalid quantity")
         total += size
     return total
+
+
+def load_adapter_registry(path: Path) -> dict[str, dict[str, Any]]:
+    registry = load_json_object(path, "market adapter registry")
+    if registry.get("schema_version") != "1.0":
+        raise TradeIntentError("market adapter registry must use schema_version 1.0")
+    adapters = registry.get("adapters")
+    if not isinstance(adapters, dict) or not adapters:
+        raise TradeIntentError("market adapter registry must contain adapters")
+    result: dict[str, dict[str, Any]] = {}
+    for adapter, raw in adapters.items():
+        if not isinstance(adapter, str) or not isinstance(raw, dict):
+            raise TradeIntentError("market adapter registry contains an invalid entry")
+        for field in ("market_identifier_pattern", "instrument_identifier_pattern"):
+            pattern = raw.get(field)
+            if not isinstance(pattern, str) or not pattern:
+                raise TradeIntentError(f"market adapter {adapter} has no {field}")
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise TradeIntentError(
+                    f"market adapter {adapter} has an invalid {field}: {exc}"
+                ) from exc
+        result[adapter] = raw
+    return result
+
+
+def load_snapshot_manifest(path: Path) -> dict[str, dict[str, Any]]:
+    manifest = load_json_object(path, "account snapshot manifest")
+    if manifest.get("schema_version") != "1.0":
+        raise TradeIntentError("account snapshot manifest must use schema_version 1.0")
+    raw_snapshots = manifest.get("snapshots")
+    if not isinstance(raw_snapshots, dict):
+        raise TradeIntentError("account snapshot manifest must contain a snapshots object")
+    snapshots: dict[str, dict[str, Any]] = {}
+    for adapter, raw_path in raw_snapshots.items():
+        if not isinstance(adapter, str) or not isinstance(raw_path, str) or not raw_path:
+            raise TradeIntentError("account snapshot manifest contains an invalid entry")
+        snapshot = load_json_object(Path(raw_path), f"{adapter} account snapshot")
+        if snapshot.get("schema_version") != "1.0" or snapshot.get("adapter") != adapter:
+            raise TradeIntentError(
+                f"{adapter} account snapshot does not match the normalized adapter contract"
+            )
+        snapshot_currency(snapshot)
+        snapshot_positions(snapshot)
+        snapshots[adapter] = snapshot
+    return snapshots
 
 
 def report_decimal(value: Any, label: str) -> Decimal:
@@ -114,6 +162,15 @@ def report_decimal(value: Any, label: str) -> Decimal:
     return result
 
 
+def report_adapter(report: dict[str, Any]) -> str:
+    run = report.get("run")
+    account = run.get("account") if isinstance(run, dict) else None
+    adapter = account.get("adapter") if isinstance(account, dict) else None
+    if not isinstance(adapter, str) or not adapter:
+        raise TradeIntentError("private report run.account.adapter must identify one venue")
+    return adapter
+
+
 def validate_report_alignment(items: list[dict[str, Any]], report: dict[str, Any]) -> None:
     if report.get("schema_version") != "3.0":
         raise TradeIntentError("private report must use schema_version 3.0")
@@ -121,7 +178,31 @@ def validate_report_alignment(items: list[dict[str, Any]], report: dict[str, Any
     if not isinstance(actions, list):
         raise TradeIntentError("private report actions must be a list")
 
-    remaining = list(enumerate(items, start=1))
+    adapter = report_adapter(report)
+    venue_items = [
+        (line_number, item)
+        for line_number, item in enumerate(items, start=1)
+        if item["venue"] == adapter
+    ]
+
+    current_positions = report.get("current_positions", [])
+    candidates = report.get("candidates", [])
+    if not isinstance(current_positions, list) or not isinstance(candidates, list):
+        raise TradeIntentError("private report analyses must be lists")
+    analyses = current_positions + candidates
+    if not all(isinstance(analysis, dict) for analysis in analyses):
+        raise TradeIntentError("private report analyses must be objects")
+    analysis_by_market: dict[str, dict[str, Any]] = {}
+    for analysis in analyses:
+        market = analysis.get("market")
+        if not isinstance(market, dict) or not str(market.get("id", "")):
+            raise TradeIntentError("private report analysis has no market id")
+        market_id = str(market["id"])
+        if market_id in analysis_by_market:
+            raise TradeIntentError(f"private report duplicates market id {market_id}")
+        analysis_by_market[market_id] = analysis
+
+    remaining = list(venue_items)
     actionable = 0
     side_by_action = {"BUY": "buy", "ADD": "buy", "SELL": "sell", "TRIM": "sell"}
     for action_index, raw_action in enumerate(actions):
@@ -137,6 +218,23 @@ def validate_report_alignment(items: list[dict[str, Any]], report: dict[str, Any
         execution = raw_action.get("execution")
         if not isinstance(execution, dict):
             raise TradeIntentError(f"private report action {action_index} has no execution")
+        market_id = str(raw_action.get("market_id", ""))
+        analysis = analysis_by_market.get(market_id)
+        if analysis is None:
+            raise TradeIntentError(
+                f"private report action {action_index} has no matching market analysis"
+            )
+        market = analysis.get("market")
+        if not isinstance(market, dict):
+            raise TradeIntentError(
+                f"private report action {action_index} has an invalid market analysis"
+            )
+        market_identifier = str(market.get("multi_market_identifier", ""))
+        instrument_identifier = str(market.get("instrument_identifier", ""))
+        if not market_identifier or not instrument_identifier:
+            raise TradeIntentError(
+                f"private report action {action_index} lacks routing identifiers"
+            )
         actionable += 1
         expected_side = side_by_action[str(action_name)]
         expected_outcome = str(raw_action.get("outcome", "")).casefold()
@@ -151,6 +249,10 @@ def validate_report_alignment(items: list[dict[str, Any]], report: dict[str, Any
         match_at: int | None = None
         for remaining_index, (line_number, item) in enumerate(remaining):
             if item["side"] != expected_side or item["outcome"] != expected_outcome:
+                continue
+            if str(item["multi_market_identifier"]) != market_identifier:
+                continue
+            if str(item["instrument_identifier"]) != instrument_identifier:
                 continue
             price = Decimal(item["reference_price"])
             notional = Decimal(item["notional"])
@@ -174,9 +276,10 @@ def validate_report_alignment(items: list[dict[str, Any]], report: dict[str, Any
         raise TradeIntentError(
             f"JSONL lines {lines} have no matching actionable private report entry"
         )
-    if actionable != len(items):
+    if actionable != len(venue_items):
         raise TradeIntentError(
-            f"private report has {actionable} actionable entries but JSONL has {len(items)} items"
+            f"private report for {adapter} has {actionable} actionable entries but JSONL has "
+            f"{len(venue_items)} items"
         )
 
 
@@ -184,15 +287,25 @@ def validate_items(
     items: list[dict[str, Any]],
     schema: dict[str, Any],
     enabled_venues: set[str],
-    polymarket_snapshot: dict[str, Any] | None,
-    report: dict[str, Any] | None = None,
+    snapshots: dict[str, dict[str, Any]],
+    adapters: dict[str, dict[str, Any]],
+    reports: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if Draft202012Validator is None:
         raise TradeIntentError("the jsonschema package is required")
     Draft202012Validator.check_schema(schema)
     validator = Draft202012Validator(schema)
-    seen_instruments: set[tuple[str, str]] = set()
+    seen_targets: set[tuple[str, str, str]] = set()
     counts: dict[str, int] = {}
+    if set(snapshots) != enabled_venues:
+        raise TradeIntentError(
+            "normalized account snapshots must exactly match the enabled venues"
+        )
+    unregistered = enabled_venues - set(adapters)
+    if unregistered:
+        raise TradeIntentError(
+            f"enabled venues have no registered adapter: {', '.join(sorted(unregistered))}"
+        )
 
     for line_number, item in enumerate(items, start=1):
         schema_errors = sorted(validator.iter_errors(item), key=lambda error: list(error.path))
@@ -204,13 +317,32 @@ def validate_items(
         venue = str(item["venue"])
         if venue not in enabled_venues:
             raise TradeIntentError(f"line {line_number} venue {venue!r} is not enabled")
-        instrument_key = (venue, str(item["instrument_identifier"]))
-        if instrument_key in seen_instruments:
+        adapter = adapters[venue]
+        if re.fullmatch(
+            str(adapter["market_identifier_pattern"]),
+            str(item["multi_market_identifier"]),
+        ) is None:
+            raise TradeIntentError(
+                f"line {line_number} market identifier violates the {venue} adapter contract"
+            )
+        if re.fullmatch(
+            str(adapter["instrument_identifier_pattern"]),
+            str(item["instrument_identifier"]),
+        ) is None:
+            raise TradeIntentError(
+                f"line {line_number} instrument identifier violates the {venue} adapter contract"
+            )
+        routing_target = (
+            venue,
+            str(item["multi_market_identifier"]),
+            str(item["instrument_identifier"]),
+        )
+        if routing_target in seen_targets:
             raise TradeIntentError(
                 f"line {line_number} duplicates or conflicts with an earlier instruction "
-                f"for {instrument_key}"
+                f"for {routing_target}"
             )
-        seen_instruments.add(instrument_key)
+        seen_targets.add(routing_target)
         counts[venue] = counts.get(venue, 0) + 1
 
         price = decimal_field(item, "reference_price", line_number)
@@ -225,25 +357,36 @@ def validate_items(
                 f"{NOTIONAL_TOLERANCE}"
             )
 
-        if venue == "polymarket":
-            if polymarket_snapshot is None:
-                raise TradeIntentError("Polymarket intents require a trusted account snapshot")
-            expected_currency = snapshot_currency(polymarket_snapshot)
-            if item["currency"] != expected_currency:
+        snapshot = snapshots[venue]
+        expected_currency = snapshot_currency(snapshot)
+        if item["currency"] != expected_currency:
+            raise TradeIntentError(
+                f"line {line_number} currency {item['currency']!r} does not match "
+                f"the {venue} snapshot currency {expected_currency!r}"
+            )
+        if item["side"] == "sell":
+            available = held_quantity(snapshot, item)
+            if available < quantity:
                 raise TradeIntentError(
-                    f"line {line_number} currency {item['currency']!r} does not match "
-                    f"active collateral {expected_currency!r}"
+                    f"line {line_number} sell quantity {quantity} exceeds held "
+                    f"quantity {available} on {venue}"
                 )
-            if item["side"] == "sell":
-                available = held_quantity(polymarket_snapshot, item)
-                if available < quantity:
-                    raise TradeIntentError(
-                        f"line {line_number} sell quantity {quantity} exceeds held "
-                        f"quantity {available}"
-                    )
 
-    if report is not None:
-        validate_report_alignment(items, report)
+    if reports is not None:
+        report_venues: set[str] = set()
+        for report in reports:
+            adapter = report_adapter(report)
+            if adapter in report_venues:
+                raise TradeIntentError(f"multiple private reports declare venue {adapter}")
+            report_venues.add(adapter)
+            validate_report_alignment(items, report)
+        if report_venues != enabled_venues:
+            raise TradeIntentError(
+                "private report venues must exactly match the enabled venues"
+            )
+        item_venues = {str(item["venue"]) for item in items}
+        if item_venues - report_venues:
+            raise TradeIntentError("JSONL contains a venue with no matching private report")
     return {"items": len(items), "venues": dict(sorted(counts.items()))}
 
 
@@ -256,8 +399,13 @@ def build_parser(root: Path) -> argparse.ArgumentParser:
         default=root / "schemas" / "trade-intent.schema.json",
     )
     parser.add_argument("--enabled-venues", default="polymarket")
-    parser.add_argument("--polymarket-account-snapshot", type=Path)
-    parser.add_argument("--report", type=Path)
+    parser.add_argument("--account-snapshots-manifest", type=Path, required=True)
+    parser.add_argument(
+        "--adapter-registry",
+        type=Path,
+        default=root / "skills" / "forecast-edge" / "config" / "adapters.json",
+    )
+    parser.add_argument("--report", type=Path, action="append", default=[])
     return parser
 
 
@@ -268,13 +416,17 @@ def main(argv: list[str] | None = None) -> int:
     if not enabled_venues:
         raise TradeIntentError("at least one enabled venue is required")
     schema = load_json_object(args.schema, "trade-intent schema")
-    snapshot = (
-        load_json_object(args.polymarket_account_snapshot, "Polymarket account snapshot")
-        if args.polymarket_account_snapshot
-        else None
+    snapshots = load_snapshot_manifest(args.account_snapshots_manifest)
+    adapters = load_adapter_registry(args.adapter_registry)
+    reports = [load_json_object(path, "private report") for path in args.report]
+    summary = validate_items(
+        load_jsonl(args.jsonl),
+        schema,
+        enabled_venues,
+        snapshots,
+        adapters,
+        reports if reports else None,
     )
-    report = load_json_object(args.report, "private report") if args.report else None
-    summary = validate_items(load_jsonl(args.jsonl), schema, enabled_venues, snapshot, report)
     json.dump(summary, sys.stdout, ensure_ascii=False, sort_keys=True)
     sys.stdout.write("\n")
     return 0

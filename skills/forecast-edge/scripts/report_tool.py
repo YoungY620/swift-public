@@ -12,6 +12,7 @@ import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import probability_tree
 
@@ -111,6 +112,19 @@ def require_fields(value: dict[str, Any], fields: set[str], path: str) -> None:
     missing = sorted(field for field in fields if field not in value)
     if missing:
         raise ReportError(f"{path} is missing fields: {', '.join(missing)}")
+
+
+def require_safe_market_url(value: Any, path: str) -> None:
+    if not isinstance(value, str) or value != value.strip() or any(ch.isspace() for ch in value):
+        raise ReportError(f"{path} must be a trimmed HTTPS URL")
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ReportError(f"{path} must be an absolute credential-free HTTPS URL")
 
 
 def validate_evidence(evidence: Any, path: str, *, current_position: bool) -> None:
@@ -280,10 +294,7 @@ def validate_v3_analysis(raw: Any, path: str, *, current_position: bool) -> None
     )
     if market["outcome"] not in {"YES", "NO"}:
         raise ReportError(f"{path}.market.outcome must be YES or NO")
-    if not isinstance(market["url"], str) or not re.match(
-        r"^https://(?:www\.)?polymarket\.com/event/", market["url"]
-    ):
-        raise ReportError(f"{path}.market.url must be a Polymarket event URL")
+    require_safe_market_url(market["url"], f"{path}.market.url")
 
     evidence_by_id, probability_ids, resolution_ids = validate_v3_evidence(
         analysis["evidence"], f"{path}.evidence", current_position=current_position
@@ -665,7 +676,16 @@ def validate_report(report: Any) -> dict[str, Any]:
         "report.run",
     )
     account = require_object(run["account"], "report.run.account")
-    require_fields(account, {"input", "address"}, "report.run.account")
+    require_fields(account, {"input"}, "report.run.account")
+    adapter = account.get("adapter")
+    if adapter is None:
+        if not str(account.get("address") or "").strip():
+            raise ReportError("legacy report.run.account must contain address")
+    else:
+        if not isinstance(adapter, str) or re.fullmatch(r"[a-z][a-z0-9-]{0,31}", adapter) is None:
+            raise ReportError("report.run.account.adapter is invalid")
+        if not str(account.get("identifier") or "").strip():
+            raise ReportError("adapter report.run.account must contain identifier")
     require_list(run["previous_report_ids"], "report.run.previous_report_ids")
     if len(run["previous_report_ids"]) > 2:
         raise ReportError("report.run.previous_report_ids cannot contain more than two reports")
@@ -718,6 +738,19 @@ def validate_report(report: Any) -> dict[str, Any]:
             current_position=False,
             schema_version=schema_version,
         )
+    if adapter is not None:
+        identifier_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}")
+        for index, analysis in enumerate(current + candidates):
+            market = require_object(analysis.get("market"), f"report.analysis[{index}].market")
+            require_fields(
+                market,
+                {"event_identifier", "multi_market_identifier", "instrument_identifier"},
+                f"report.analysis[{index}].market",
+            )
+            for field in ("event_identifier", "multi_market_identifier", "instrument_identifier"):
+                value = market[field]
+                if not isinstance(value, str) or identifier_pattern.fullmatch(value) is None:
+                    raise ReportError(f"report.analysis[{index}].market.{field} is invalid")
     if schema_version == "2.1":
         notes = [item["resolution_review"]["note"].strip() for item in current + candidates]
         if len(notes) != len(set(notes)):
@@ -1018,7 +1051,8 @@ def render_report(report: dict[str, Any]) -> str:
         "",
         f"- 运行 ID：`{run['id']}`",
         f"- 数据截止：{run['data_cutoff']}",
-        f"- 账户：`{run['account']['address']}`",
+        f"- 预测市场：`{run['account'].get('adapter', 'legacy-polymarket')}`",
+        f"- 账户：`{run['account'].get('identifier', run['account'].get('address'))}`",
         f"- 可用抵押资金：{portfolio['available_collateral']}",
         f"- 保守总资金：{portfolio['estimated_bankroll']}",
         f"- 机会储备：{portfolio['reserve_cash']}",
@@ -1098,7 +1132,9 @@ def archive_report(report_path: Path, output_root: Path, snapshots: list[Path]) 
     report = read_report(report_path)
     timestamp = safe_component(str(report["run"]["completed_at"]).replace(":", "-"))
     run_id = safe_component(str(report["run"]["id"]))
-    destination = output_root / "reports" / f"{timestamp}_{run_id}"
+    adapter = report["run"]["account"].get("adapter")
+    adapter_component = f"_{safe_component(str(adapter))}" if adapter else ""
+    destination = output_root / "reports" / f"{timestamp}{adapter_component}_{run_id}"
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
         destination.mkdir()
@@ -1122,7 +1158,9 @@ def archive_report(report_path: Path, output_root: Path, snapshots: list[Path]) 
     return destination
 
 
-def previous_reports(output_root: Path, limit: int) -> list[dict[str, Any]]:
+def previous_reports(
+    output_root: Path, limit: int, adapter: str | None = None
+) -> list[dict[str, Any]]:
     reports_root = output_root / "reports"
     if not reports_root.exists():
         return []
@@ -1135,12 +1173,19 @@ def previous_reports(output_root: Path, limit: int) -> list[dict[str, Any]]:
             report = read_report(report_path)
         except (OSError, json.JSONDecodeError, ReportError):
             continue
+        account = report["run"]["account"]
+        report_adapter = account.get("adapter")
+        if report_adapter is None and account.get("address"):
+            report_adapter = "polymarket"
+        if adapter is not None and report_adapter != adapter:
+            continue
         results.append(
             {
                 "directory": str(directory),
                 "report_path": str(report_path),
                 "run_id": report["run"]["id"],
                 "completed_at": report["run"]["completed_at"],
+                "adapter": report_adapter,
             }
         )
         if len(results) >= limit:
@@ -1163,6 +1208,7 @@ def build_parser() -> argparse.ArgumentParser:
     previous = subparsers.add_parser("previous", help="Locate recent immutable reports")
     previous.add_argument("--output-root", required=True)
     previous.add_argument("--limit", type=int, default=2)
+    previous.add_argument("--adapter")
     return parser
 
 
@@ -1188,7 +1234,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "previous":
             if args.limit < 1:
                 raise ReportError("--limit must be positive")
-            result = previous_reports(Path(args.output_root), args.limit)
+            result = previous_reports(Path(args.output_root), args.limit, args.adapter)
         else:  # pragma: no cover - argparse enforces a command.
             raise ReportError(f"unsupported command: {args.command}")
     except (OSError, json.JSONDecodeError, ReportError) as exc:

@@ -38,7 +38,7 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         self.assertIn("BASH_VERSINFO[0] < 4", validate)
         self.assertIn("curl gh jq npm python3 sha256sum tar timeout", validate)
 
-    def test_each_release_contains_one_report_and_restores_a_rolling_window(self) -> None:
+    def test_each_release_contains_one_report_per_adapter_and_restores_a_rolling_window(self) -> None:
         restore = self.step("Restore recent research Releases")
         package = self.step("Build current-iteration research Release")
         publish = self.step("Publish current-iteration research Release")
@@ -48,11 +48,13 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         self.assertIn('.[0:$limit]', restore)
         self.assertIn("forecast-edge-research-report.tar.gz", restore)
         self.assertIn("report_archive_sha256", restore)
-        self.assertIn(
-            'tar -C "$REPORTS_DIR" -czf "$REPORT_ARCHIVE_PATH" "$current_report_dir_relative"',
-            package,
-        )
-        self.assertIn('--argjson report_count "1"', package)
+        self.assertIn('"${current_report_directories[@]}"', package)
+        self.assertIn('--arg schema_version "2.0"', package)
+        self.assertIn('reports: $reports[0]', package)
+        self.assertIn('--argjson report_count "$report_count"', package)
+        self.assertIn('report-$adapter.json', package)
+        self.assertIn('manifest_schema" == "1.0"', restore)
+        self.assertIn('manifest_schema" != "2.0"', restore)
         self.assertIn("history_releases_used", package)
         self.assertNotIn("history_archive", package)
         self.assertIn('release_tag="forecast-edge-research/run-', package)
@@ -126,6 +128,10 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         self.assertIn('[[ "$http_status" != "200" ]]', verify)
         self.assertIn('echo "URL_VERIFICATION_PATH=$runtime_dir/url_verification.json"', self.workflow)
         self.assertIn('all(.[]; .http_status == 200)', verify)
+        self.assertIn('market_data.py', verify)
+        self.assertIn('--adapter "$venue" canonical-url "$market_identifier"', verify)
+        self.assertIn('.value.venue == $venue', verify)
+        self.assertIn('.value.multi_market_identifier == $market_identifier', verify)
         self.assertNotIn("polymarket_data.py", verify)
         self.assertNotIn("gamma", verify.lower())
         self.assertNotIn("polymarket", verify.lower())
@@ -154,7 +160,10 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("FEISHU_EXPECTED_BOT_NAME", send)
 
     def test_stable_public_options_are_workflow_constants(self) -> None:
-        self.assertIn("ENABLED_PREDICTION_MARKETS: polymarket", self.workflow)
+        self.assertIn(
+            "ENABLED_PREDICTION_MARKETS: ${{ vars.FORECAST_EDGE_MARKET_ADAPTERS || 'polymarket' }}",
+            self.workflow,
+        )
         self.assertIn('KIMI_CODE_VERSION: "0.37.0"', self.workflow)
         self.assertIn("KIMI_MODEL_NAME: kimi-for-coding", self.workflow)
         self.assertIn(
@@ -165,6 +174,33 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("vars.KIMI_MODEL_BASE_URL", self.workflow)
         self.assertNotIn("vars.ENABLED_PREDICTION_MARKETS", self.workflow)
 
+    def test_all_validation_attempts_use_the_multi_venue_iteration_validator(self) -> None:
+        self.assertEqual(self.workflow.count("scripts/validate_research_iteration.py"), 4)
+        self.assertEqual(self.workflow.count('--current-reports-manifest "$CURRENT_REPORTS_MANIFEST"'), 4)
+        self.assertEqual(self.workflow.count('--account-snapshots-manifest "$ACCOUNT_SNAPSHOTS_MANIFEST"'), 4)
+        self.assertEqual(
+            self.workflow.count(
+                '--expected-account-snapshots-sha256 "${{ steps.account-snapshots.outputs.sha256 }}"'
+            ),
+            4,
+        )
+        self.assertEqual(self.workflow.count('--repository-root "$GITHUB_WORKSPACE"'), 4)
+        self.assertNotIn("CURRENT_REPORT_PATH_FILE", self.workflow)
+        self.assertNotIn("--polymarket-account-snapshot", self.workflow)
+
+    def test_trade_intent_contract_requires_explicit_venue_and_routing_tuple(self) -> None:
+        prompt = (ROOT / "automation" / "prompts" / "trade-intents.zh-CN.md").read_text(
+            encoding="utf-8"
+        )
+        schema = (ROOT / "schemas" / "trade-intent.schema.json").read_text(encoding="utf-8")
+
+        self.assertIn('"venue"', schema)
+        self.assertIn('"multi_market_identifier"', schema)
+        self.assertIn('"instrument_identifier"', schema)
+        self.assertIn("report.run.account.adapter", prompt)
+        self.assertIn("market.multi_market_identifier", prompt)
+        self.assertIn("market.instrument_identifier", prompt)
+
     def test_kimi_failures_emit_bounded_diagnostics(self) -> None:
         for attempt in range(1, 5):
             self.assertIn(
@@ -174,10 +210,10 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
 
     def test_prompt_requires_current_holdings_and_novel_event_research(self) -> None:
         prompt = SCHEDULED_PROMPT_PATH.read_text(encoding="utf-8")
-        self.assertIn("重新研究全部当前持仓", prompt)
+        self.assertIn("重新研究它的全部当前持仓", prompt)
         self.assertIn("至少 10 个", prompt)
         self.assertIn("不得直接沿用历史概率", prompt)
-        self.assertIn("只能新增一个", prompt)
+        self.assertIn("新增且只新增一个报告", prompt)
 
     def test_repair_prompt_distinguishes_history_from_the_current_report(self) -> None:
         prompt = REPAIR_PROMPT_PATH.read_text(encoding="utf-8")
@@ -185,7 +221,7 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
 
         self.assertIn("{{BASELINE_REPORTS_PATH}}", prompt)
         self.assertIn("路径不在历史报告清单", prompt)
-        self.assertIn("本轮报告数量为 0", prompt)
+        self.assertIn("每个已启用 adapter 必须恰好有一个本轮报告", prompt)
         self.assertIn("不得把历史报告误当成", prompt)
         self.assertIn("{{BASELINE_REPORTS_PATH}}", render)
 
