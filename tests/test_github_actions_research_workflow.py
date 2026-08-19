@@ -37,6 +37,18 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("inputs['execute-live-trades']", self.parent)
         self.assertNotIn("workflow_run:", self.parent)
 
+    def test_parent_grants_reusable_children_only_checkout_permission(self) -> None:
+        research_call = self.parent[
+            self.parent.index("  research:\n") : self.parent.index("\n  execution:\n")
+        ]
+        execution_call = self.parent[
+            self.parent.index("  execution:\n") : self.parent.index("\n  release:\n")
+        ]
+        for child_call in (research_call, execution_call):
+            self.assertIn("permissions:\n      contents: read", child_call)
+            self.assertNotIn("contents: write", child_call)
+            self.assertNotIn("actions: write", child_call)
+
     def test_children_are_reusable_and_do_not_publish(self) -> None:
         for child in (self.research, self.execution):
             self.assertIn("workflow_call:", child)

@@ -108,6 +108,8 @@ jobs:
   research:
     needs: gate
     if: ${{ needs.gate.outputs.should-run == 'true' }}
+    permissions:
+      contents: read
     uses: ./.github/workflows/forecast-edge-research.yml
     with:
       handoff-directory: ${{ needs.gate.outputs.handoff-directory }}
@@ -123,6 +125,8 @@ jobs:
     if: >-
       needs.gate.outputs.execution-ready == 'true' &&
       needs.research.outputs.has-intents == 'true'
+    permissions:
+      contents: read
     uses: ./.github/workflows/execute-polymarket.yml
     with:
       handoff-directory: ${{ needs.gate.outputs.handoff-directory }}
