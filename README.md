@@ -8,7 +8,7 @@ Poly-edge 是面向 Polymarket 的长期概率优势研究与交易意图生成�
 - `.github/workflows/execute-polymarket.yml`：在显式启用并配置生产环境后消费已验证的交易意图。
 - `.github/workflows/pages.yml`：按要求保留原实现；当前仓库未配置 `ENABLE_FORECAST_EDGE_PAGES`，不会执行。
 
-研究 workflow 通过 `kimi --skills-dir "$GITHUB_WORKSPACE/skills"` 直接加载 `skills/forecast-edge`。它依赖：
+研究 workflow 通过 `kimi --skills-dir "$GITHUB_WORKSPACE/skills"` 直接加载 `skills/forecast-edge`，完整研究固定运行在带有 `forecast-edge` 标签的 macOS ARM64 self-hosted runner 上。它依赖：
 
 ```text
 automation/prompts/                 扫描与修复提示词

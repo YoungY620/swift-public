@@ -30,6 +30,20 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("git push", self.workflow)
         self.assertNotIn("git checkout -b", self.workflow)
 
+    def test_research_job_is_pinned_to_the_dedicated_self_hosted_runner(self) -> None:
+        self.assertIn("runs-on: ubuntu-latest", self.workflow)
+        self.assertIn(
+            "runs-on:\n"
+            "      - self-hosted\n"
+            "      - macOS\n"
+            "      - ARM64\n"
+            "      - forecast-edge",
+            self.workflow,
+        )
+        validate = self.step("Validate workflow configuration")
+        self.assertIn("BASH_VERSINFO[0] < 4", validate)
+        self.assertIn("gh jq npm python3 sha256sum tar timeout", validate)
+
     def test_each_release_contains_one_report_and_restores_a_rolling_window(self) -> None:
         restore = self.step("Restore recent research Releases")
         package = self.step("Build current-iteration research Release")
@@ -81,6 +95,15 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         self.assertIn('"$KIMI_MODEL_BASE_URL/models"', probe)
         self.assertIn('.id == $model', probe)
         self.assertNotIn('echo "$KIMI_MODEL_API_KEY"', probe)
+
+    def test_python_dependencies_are_isolated_in_a_runner_temp_venv(self) -> None:
+        install = self.step("Install JSON Schema validator")
+
+        self.assertIn('echo "PYTHON_VENV_DIR=$runtime_dir/python-venv"', self.workflow)
+        self.assertIn('python3 -m venv "$PYTHON_VENV_DIR"', install)
+        self.assertIn('"$PYTHON_VENV_DIR/bin/python" -m pip install', install)
+        self.assertIn('echo "$PYTHON_VENV_DIR/bin" >> "$GITHUB_PATH"', install)
+        self.assertNotIn("--break-system-packages", install)
 
     def test_release_permission_and_public_disclosure_gate_are_explicit(self) -> None:
         self.assertIn("contents: write", self.workflow)
