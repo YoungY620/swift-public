@@ -105,7 +105,7 @@ def validate_response(response: Any, rubric: dict[str, Any], evidence: dict[str,
             raise AuditValidationError(f"{item['id']} has no evidence citation")
         for key in evidence_keys:
             exists, _ = resolve(evidence, key)
-            if not exists:
+            if not exists and status not in {"FAIL", "INSUFFICIENT_EVIDENCE"}:
                 raise AuditValidationError(f"{item['id']} cites a missing evidence path")
 
     statuses = [str(item["status"]) for item in response_checks]
@@ -129,7 +129,12 @@ def validate_response(response: Any, rubric: dict[str, Any], evidence: dict[str,
         for key in anomaly["evidence"]:
             exists, _ = resolve(evidence, key)
             if not exists:
-                raise AuditValidationError("anomaly cites a missing evidence path")
+                missing_path_is_reported = any(
+                    key == missing or key.startswith(missing + ".") or missing.startswith(key + ".")
+                    for missing in response.get("missing_evidence", [])
+                )
+                if not missing_path_is_reported:
+                    raise AuditValidationError("anomaly cites an unreported missing evidence path")
 
 
 def fallback_response(rubric: dict[str, Any], parent_run_id: str, reason: str) -> dict[str, Any]:

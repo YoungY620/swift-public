@@ -117,6 +117,14 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         with self.assertRaisesRegex(audit_module.AuditValidationError, "missing evidence path"):
             audit_module.validate_response(response, self.rubric, self.evidence, self.schema)
 
+    def test_insufficient_evidence_may_cite_the_missing_path(self) -> None:
+        response = self.response()
+        response["overall_status"] = "INSUFFICIENT_EVIDENCE"
+        response["checks"][0]["status"] = "INSUFFICIENT_EVIDENCE"
+        response["checks"][0]["evidence"] = ["release.missing"]
+        response["missing_evidence"] = ["release.missing"]
+        audit_module.validate_response(response, self.rubric, self.evidence, self.schema)
+
     def test_critical_failure_cannot_report_overall_pass(self) -> None:
         response = self.response()
         response["checks"][0]["status"] = "FAIL"
