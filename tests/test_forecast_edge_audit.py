@@ -90,6 +90,7 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertIn("inputs['trip-circuit-breaker'] == true", self.workflow)
         self.assertIn("(.status == \"FAIL\")", self.workflow)
         self.assertIn("and .status == \"INSUFFICIENT_EVIDENCE\"", self.workflow)
+        self.assertIn("FORECAST_EDGE_AUTOMATION_PAUSED", self.workflow)
 
     def test_audit_agent_receives_only_the_model_secret(self) -> None:
         import re

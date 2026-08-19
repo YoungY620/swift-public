@@ -31,6 +31,7 @@ jobs:
       interval-hours: ${{ steps.gate.outputs.interval-hours }}
       anchor-utc-hour: ${{ steps.gate.outputs.anchor-utc-hour }}
       gate-event-name: ${{ steps.gate.outputs.gate-event-name }}
+      automation-paused: ${{ steps.gate.outputs.automation-paused }}
     steps:
       - name: Validate schedule and private workflow configuration
         id: gate
@@ -40,6 +41,7 @@ jobs:
           INTERVAL_HOURS: ${{ vars.FORECAST_EDGE_INTERVAL_HOURS || '8' }}
           ANCHOR_UTC_HOUR: ${{ vars.FORECAST_EDGE_ANCHOR_UTC_HOUR || '2' }}
           LIVE_TRADING_ENABLED: ${{ vars.POLYMARKET_LIVE_TRADING_ENABLED || 'false' }}
+          AUTOMATION_PAUSED: ${{ vars.FORECAST_EDGE_AUTOMATION_PAUSED || 'false' }}
           FORECAST_EDGE_MARKET_ADAPTERS: ${{ vars.FORECAST_EDGE_MARKET_ADAPTERS }}
           FORECAST_EDGE_MARKET_ACCOUNTS_JSON: ${{ vars.FORECAST_EDGE_MARKET_ACCOUNTS_JSON }}
           EC2_HOST: ${{ vars.POLYMARKET_EC2_HOST }}
@@ -69,7 +71,9 @@ jobs:
           fi
 
           should_run=false
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+          if [[ "$AUTOMATION_PAUSED" == "true" ]]; then
+            echo "::warning::Forecast Edge automation is paused by the production circuit breaker"
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             should_run=true
           else
             epoch_hour=$(( $(date -u +%s) / 3600 ))
@@ -96,7 +100,8 @@ jobs:
           fi
 
           execution_requested=false
-          if [[ "$LIVE_TRADING_ENABLED" == "true" || "$MANUAL_EXECUTION" == "true" ]]; then
+          if [[ "$AUTOMATION_PAUSED" != "true" && \
+                ("$LIVE_TRADING_ENABLED" == "true" || "$MANUAL_EXECUTION" == "true") ]]; then
             execution_requested=true
           fi
           execution_ready=$execution_requested
@@ -109,6 +114,7 @@ jobs:
             echo "interval-hours=$interval"
             echo "anchor-utc-hour=$anchor"
             echo "gate-event-name=$EVENT_NAME"
+            echo "automation-paused=$AUTOMATION_PAUSED"
           } >> "$GITHUB_OUTPUT"
 
   research:
@@ -165,6 +171,7 @@ jobs:
       SCHEDULE_ANCHOR_UTC_HOUR: ${{ needs.gate.outputs.anchor-utc-hour }}
       GATE_EVENT_NAME: ${{ needs.gate.outputs.gate-event-name }}
       GATE_SHOULD_RUN: ${{ needs.gate.outputs.should-run }}
+      AUTOMATION_PAUSED: ${{ needs.gate.outputs.automation-paused }}
     steps:
       - name: Check out release templates
         uses: actions/checkout@v4
@@ -341,6 +348,7 @@ jobs:
             --arg schedule_anchor_utc_hour "$SCHEDULE_ANCHOR_UTC_HOUR" \
             --arg gate_event_name "$GATE_EVENT_NAME" \
             --arg gate_should_run "$GATE_SHOULD_RUN" \
+            --arg automation_paused "$AUTOMATION_PAUSED" \
             --arg receipt_asset "$receipt_asset" \
             --arg receipt_sha256 "$receipt_digest" \
             --arg verification_asset "$verification_asset" \
@@ -358,7 +366,8 @@ jobs:
                 event_name:$gate_event_name,
                 interval_hours:($schedule_interval_hours|tonumber),
                 anchor_utc_hour:($schedule_anchor_utc_hour|tonumber),
-                gate_should_run:($gate_should_run == "true")
+                gate_should_run:($gate_should_run == "true"),
+                automation_paused:($automation_paused == "true")
               },
               execution:{
                 requested:$execution_requested,

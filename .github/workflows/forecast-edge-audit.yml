@@ -155,6 +155,7 @@ jobs:
           CONFIGURED_INTERVAL_HOURS: ${{ vars.FORECAST_EDGE_INTERVAL_HOURS || '8' }}
           CONFIGURED_ANCHOR_UTC_HOUR: ${{ vars.FORECAST_EDGE_ANCHOR_UTC_HOUR || '2' }}
           LIVE_TRADING_ENABLED: ${{ vars.POLYMARKET_LIVE_TRADING_ENABLED || 'false' }}
+          AUTOMATION_PAUSED: ${{ vars.FORECAST_EDGE_AUTOMATION_PAUSED || 'false' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -196,11 +197,13 @@ jobs:
             --arg interval_hours "$CONFIGURED_INTERVAL_HOURS" \
             --arg anchor_utc_hour "$CONFIGURED_ANCHOR_UTC_HOUR" \
             --arg live_trading_enabled "$LIVE_TRADING_ENABLED" \
+            --arg automation_paused "$AUTOMATION_PAUSED" \
             --arg circuit_breaker_enabled "$CIRCUIT_BREAKER_ENABLED" \
             '{
               interval_hours:($interval_hours|tonumber),
               anchor_utc_hour:($anchor_utc_hour|tonumber),
               live_trading_enabled:($live_trading_enabled == "true"),
+              automation_paused:($automation_paused == "true"),
               circuit_breaker_enabled:($circuit_breaker_enabled == "true")
             }' > "$AUDIT_EVIDENCE_DIR/configuration.json"
 
@@ -434,6 +437,11 @@ jobs:
           if ! gh variable set POLYMARKET_LIVE_TRADING_ENABLED \
             --repo "$GITHUB_REPOSITORY" --body false; then
             echo "::error::Could not disarm the persistent live-trading variable"
+            breaker_failed=true
+          fi
+          if ! gh variable set FORECAST_EDGE_AUTOMATION_PAUSED \
+            --repo "$GITHUB_REPOSITORY" --body true; then
+            echo "::error::Could not set the persistent automation pause variable"
             breaker_failed=true
           fi
           if ! gh api --method PUT \

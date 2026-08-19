@@ -16,9 +16,9 @@
       "severity": "critical",
       "title": "严重异常触发生产熔断",
       "applies_when": "automatic workflow_run audit",
-      "expected": "任何 FAIL，或 critical/high 的 INSUFFICIENT_EVIDENCE，都关闭 live-trading 变量并禁用父 workflow；手工历史回放默认不熔断。",
-      "evidence_required": ["source_contract.audit_circuit_breaker", "configuration"],
-      "pass_condition": "源码熔断合约成立；自动审计严重异常时必须执行熔断，手工回放只有显式启用后才允许熔断。"
+      "expected": "任何 FAIL，或 critical/high 的 INSUFFICIENT_EVIDENCE，都关闭 live-trading 变量、设置持久 automation pause 并禁用父 workflow；手工历史回放默认不熔断。",
+      "evidence_required": ["source_contract.audit_circuit_breaker", "source_contract.persistent_pause_gate", "configuration"],
+      "pass_condition": "源码熔断合约成立；自动审计严重异常时必须执行三重熔断，手工回放只有显式启用后才允许熔断。"
     },
     {
       "id": "SCHED-001",

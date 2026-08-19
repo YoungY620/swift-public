@@ -100,6 +100,11 @@ def main() -> int:
             and 'and .status == "INSUFFICIENT_EVIDENCE"' in audit
             and "github.event_name == 'workflow_run'" in audit
         ),
+        "persistent_pause_gate": (
+            "AUTOMATION_PAUSED" in parent
+            and 'Forecast Edge automation is paused by the production circuit breaker' in parent
+            and "FORECAST_EDGE_AUTOMATION_PAUSED" in audit
+        ),
         "execution_runner_labels": labels,
         "audit_agent_credential_count": len(audit_secrets),
     }

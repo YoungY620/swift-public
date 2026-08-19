@@ -45,6 +45,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("anchor-utc-hour=$anchor", self.parent)
         self.assertIn("gate-event-name=$EVENT_NAME", self.parent)
         self.assertIn("schedule:{", self.parent)
+        self.assertIn("AUTOMATION_PAUSED", self.parent)
         self.assertIn("interval_hours:($schedule_interval_hours|tonumber)", self.parent)
 
     def test_audit_is_triggered_only_after_the_parent_completes(self) -> None:
