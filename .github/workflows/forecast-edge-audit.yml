@@ -46,9 +46,9 @@ jobs:
             exit 1
           fi
           run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID")
-          jobs=$(gh api --paginate --slurp \
+          jobs=$(gh api --paginate \
             "repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID/jobs?per_page=100" \
-            --jq '[.[].jobs[]]')
+            | jq -s '[.[].jobs[]]')
           jq -e \
             --arg expected "$EXPECTED_PARENT_WORKFLOW" \
             '.name == $expected and .status == "completed"' <<< "$run" >/dev/null
@@ -152,9 +152,9 @@ jobs:
         run: |
           set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID" > "$AUDIT_EVIDENCE_DIR/run.raw.json"
-          gh api --paginate --slurp \
+          gh api --paginate \
             "repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID/jobs?per_page=100" \
-            --jq '[.[].jobs[]]' > "$AUDIT_EVIDENCE_DIR/jobs.raw.json"
+            | jq -s '[.[].jobs[]]' > "$AUDIT_EVIDENCE_DIR/jobs.raw.json"
           jq -e \
             --arg expected "$EXPECTED_PARENT_WORKFLOW" \
             '.name == $expected and .status == "completed"' \
