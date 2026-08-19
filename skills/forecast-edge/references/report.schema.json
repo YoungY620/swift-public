@@ -46,10 +46,14 @@
         "account": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["input", "address"],
+          "required": ["input", "adapter", "identifier"],
           "properties": {
             "input": { "type": "string", "minLength": 1 },
-            "address": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" }
+            "adapter": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,31}$"
+            },
+            "identifier": { "type": "string", "minLength": 1 }
           }
         },
         "previous_report_ids": {
@@ -126,11 +130,33 @@
     "market": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "question", "url", "outcome", "resolution_criteria", "end_date"],
+      "required": [
+        "id",
+        "event_identifier",
+        "multi_market_identifier",
+        "instrument_identifier",
+        "question",
+        "url",
+        "outcome",
+        "resolution_criteria",
+        "end_date"
+      ],
       "properties": {
         "id": { "type": "string", "minLength": 1 },
+        "event_identifier": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+        },
+        "multi_market_identifier": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+        },
+        "instrument_identifier": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+        },
         "question": { "type": "string", "minLength": 1 },
-        "url": { "type": "string", "pattern": "^https://(www\\.)?polymarket\\.com/event/" },
+        "url": { "type": "string", "pattern": "^https://" },
         "outcome": { "enum": ["YES", "NO"] },
         "resolution_criteria": { "type": "string", "minLength": 1 },
         "end_date": { "type": ["string", "null"] }

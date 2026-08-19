@@ -2,7 +2,7 @@
 
 ## Scope and limitations
 
-Use `scripts/polymarket_data.py` for normalized, public, read-only access. It intentionally cannot authenticate, sign, approve collateral, or place orders.
+Use the registered dispatcher, `scripts/market_data.py --adapter polymarket`, for all research access. The adapter delegates to the venue-native helper internally; research must not call that helper directly. Both layers are public and read-only and cannot authenticate, sign, approve collateral, or place orders.
 
 Polymarket currently uses `pUSD` as its trading collateral. Resolve the active `pUSD` contract and decimals from the public collateral-assets endpoint on every scan, then read that ERC-20 balance on Polygon. Do not use a fixed legacy stablecoin contract as the account cash source.
 
@@ -23,31 +23,15 @@ Username resolution reads public profile-page data and extracts the repeated pro
 ## CLI examples
 
 ```bash
-# Resolve only
-python3 scripts/polymarket_data.py --pretty resolve '@public-user'
-
-# Profile and complete public positions
-python3 scripts/polymarket_data.py --pretty account '@public-user'
-python3 scripts/polymarket_data.py --pretty profile '@public-user'
-python3 scripts/polymarket_data.py --pretty positions '@public-user'
-
-# Discover active pUSD metadata, then read its public Polygon balance
-python3 scripts/polymarket_data.py --pretty collateral-asset
-python3 scripts/polymarket_data.py --pretty balance '@public-user'
-
-# Active candidate feed and one market
-python3 scripts/polymarket_data.py --pretty discover --limit 100
-python3 scripts/polymarket_data.py --pretty candidate-events --account-snapshot account.json
-python3 scripts/polymarket_data.py --pretty event 12345
-python3 scripts/polymarket_data.py --pretty market 540817
-
-# Executable token book plus current fee-rate response
-python3 scripts/polymarket_data.py --pretty book TOKEN_ID
+python3 scripts/market_data.py --adapter polymarket --pretty account '@public-user'
+python3 scripts/market_data.py --adapter polymarket --pretty candidate-events --account-snapshot account.json
+python3 scripts/market_data.py --adapter polymarket --pretty event 12345
+python3 scripts/market_data.py --adapter polymarket --pretty market 540817
+python3 scripts/market_data.py --adapter polymarket --pretty book TOKEN_ID
+python3 scripts/market_data.py --adapter polymarket canonical-url CONDITION_ID
 ```
 
-The book command preserves the raw fee response and also returns `fee_rate_bps` plus decimal `fee_rate`. Pass the decimal field to `trade_math.py`.
-
-The `discover` command is a one-page diagnostic. Do not use it as the full-scan candidate universe.
+The native book response preserves the venue fee metadata. The registered adapter applies the venue formula and adds `fee_per_unit` to every normalized bid and ask level. Pass those normalized levels to `trade_math.py`; shared sizing code never applies the venue formula itself.
 
 The `candidate-events` command uses Gamma's `/events/keyset` endpoint and follows each opaque `next_cursor` as `after_cursor` until the active event feed is exhausted. Event pagination avoids the numeric-offset ceiling on `/markets` and prevents a single event with many contracts from consuming the prescreen target. Defaults are 100 events per page and a 100,000-event safety limit. The command normally stops when no next cursor remains; it does not mechanically request 1,000 pages. It fails rather than silently truncating when the API repeats a page or cursor, or when the event universe exceeds the safety limit. Increase the safety limit only after checking pagination behavior.
 
@@ -82,9 +66,7 @@ Official references: [pUSD](https://docs.polymarket.com/concepts/pusd) and [cont
 
 ## Market page URLs
 
-Polymarket serves market pages under the event slug. Build multi-market links as `https://polymarket.com/event/<event-slug>?tid=<market-id>`; a market slug may 404 or select the wrong child market.
-
-Before archival and delivery, open every published link and fetch gamma `/markets?id=<market-id>` to confirm the returned market ID and resolution criteria match the researched market. Rebuild and recheck failures; never substitute a homepage or search-result link.
+Polymarket serves market pages under the event slug, but research must not construct those URLs. Resolve each published link through `market_data.py --adapter polymarket canonical-url MARKET_IDENTIFIER`, then open it and verify HTTP 200 before archival and delivery. Re-resolve and recheck failures; never substitute a homepage or search-result link.
 
 ## Snapshots
 

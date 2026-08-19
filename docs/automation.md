@@ -8,15 +8,17 @@
 
 1. 校验仓库变量、Secrets 与模型可用性。
 2. 恢复近期研究 Release 并验证来源和摘要。
-3. 用 `skills/forecast-edge` 获取账户快照并运行完整研究。
-4. 用 `schemas/trade-intent.schema.json` 和 `scripts/validate_trade_intents.py` 校验交易意图。
-5. 将报告包和 `trade-intents.jsonl` 以 `0700` 目录、`0600` 文件暂存到长期 EC2 的逐次私有 handoff 目录。
+3. 按启用的只读 adapter 获取各 venue 的标准化账户快照，并在 GitHub 托管的 Linux runner 上运行完整研究。
+4. 要求每个启用的 venue 恰好生成一份本轮报告和一份合并后的交易意图 JSONL，并用统一 Schema、adapter 标识规则和对应账户快照进行校验；没有操作时 JSONL 必须是合法空文件，不能省略。
+5. 将各 venue 报告包和合并后的 `trade-intents.jsonl` 以 `0700` 目录、`0600` 文件暂存到长期 EC2 的逐次私有 handoff 目录。
+
+JSONL 的每一行都必须包含 `(venue, multi_market_identifier, instrument_identifier)` 路由元组。该元组保留 adapter 返回的 venue 原生标识，研究核心不解释或改写平台标识。
 
 研究子图不创建 Release/Issue，不发送飞书，也不使用 Actions artifact；模型和校验的详细诊断也不写入 Actions 日志。执行子图把计划、金额和订单诊断保留在 EC2 私有逐次目录，Actions 只看到步骤状态。只有执行子图成功结束，或父图确认本轮未请求/无需执行后，父图才读取私有 handoff，统一创建最终 Release、Issue 和飞书通知；最终 Release 可以包含 `trade-intents.jsonl`。执行失败时不发布，随后仍清理逐次 handoff 目录。
 
 该 workflow 的提示词位于 `automation/prompts/`，通知模板位于 `automation/templates/`。不要把账户、凭据或聊天目标写入这些文件。研究子图只接收模型 API Key 和 EC2 SSH Key，不继承签名私钥或 CLOB 凭据。
 
-## 交易执行 workflow
+必须显式设置 `FORECAST_EDGE_MARKET_ADAPTERS` 和 `FORECAST_EDGE_MARKET_ACCOUNTS_JSON`；前者是逗号分隔的已注册 adapter 列表，后者是 adapter 到公开账户输入的 JSON object。workflow 不默认启用任何市场，也没有 venue 专属变量回退。
 
 `.github/workflows/execute-polymarket.yml` 只消费成功研究子图生成、经 SHA-256 绑定并重新验证过的私有交易意图。它直接运行在 `poly-edge-ec2-eu-north-1` Linux/X64 self-hosted runner 上，不再从 Mac SSH 中转。只有显式启用交易、存在交易意图且 EC2 本地凭据文件安全可用时才进入执行路径；执行代码位于 `execution/` 和对应的 `scripts/`。
 

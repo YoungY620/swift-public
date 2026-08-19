@@ -1,4 +1,4 @@
 interface:
   display_name: "Forecast Edge"
   short_description: "Research and allocate portfolio-aware edges"
-  default_prompt: "Use $forecast-edge to scan my Polymarket portfolio, identify evidence-backed actions, and write the final report in Simplified Chinese."
+  default_prompt: "Use $forecast-edge with my selected prediction-market adapter to scan my portfolio, identify evidence-backed actions, and write the final report in Simplified Chinese."

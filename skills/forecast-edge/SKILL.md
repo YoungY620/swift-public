@@ -1,6 +1,6 @@
 ---
 name: forecast-edge
-description: Research and allocate long-horizon prediction-market edges with public account data, recursive conditional-probability trees, executable order books, fees, portfolio-aware selection, semantic diversification review, quarter-Kelly sizing (fraction configurable), and immutable presentation-closed reports. Use for scheduled or manual Polymarket portfolio scans, full re-evaluation of current positions, discovery and analysis of new political, economic, cultural, or market candidates, and BUY, ADD, MAINTAIN, TRIM, or SELL recommendations without placing orders.
+description: Research and allocate long-horizon prediction-market edges through registered read-only venue adapters, recursive conditional-probability trees, executable order books, fees, portfolio-aware selection, semantic diversification review, quarter-Kelly sizing (fraction configurable), and immutable presentation-closed reports. Use for scheduled or manual prediction-market portfolio scans, full re-evaluation of current positions, discovery and analysis of new political, economic, cultural, or market candidates, and BUY, ADD, MAINTAIN, TRIM, or SELL recommendations without placing orders.
 ---
 
 # Forecast Edge
@@ -9,8 +9,9 @@ Estimate final settlement probabilities more accurately than the market, compare
 
 ## Preserve these invariants
 
-- Use Polymarket only in v1.
+- Use only the venue adapters registered in `config/adapters.json`. Never branch on a venue inside the research method.
 - Use public, read-only data. Never request credentials, authenticate, sign, or submit orders.
+- For every automated research iteration, always write and validate the required trade-intent JSONL. Write a valid empty file when there are no actionable intents; never omit the artifact or weaken the strategy gates merely to populate it.
 - Estimate the probability of the exact settlement outcome, not the next short-term price move.
 - Express every model as `P(market settles YES)`. Derive the `NO` direction value as `1 - P(YES)`.
 - Use a point estimate. Do not introduce probability distributions or confidence intervals.
@@ -23,7 +24,7 @@ Estimate final settlement probabilities more accurately than the market, compare
 - Search for actionable raw edge in descending tiers: prioritize at least 30 percentage points, relax to at least 20 percentage points only after the search and attempt thresholds are met without satisfying the account's operation needs, and consider edges strictly above 10 percentage points only as the final tier. If no opportunity clears the hard floor and all execution and portfolio rules, skip `BUY` and `ADD` for the cycle.
 - Never modify an archived report.
 - Use only the observed account snapshot for cash, holdings, and bankroll. Never invent a nominal or reference bankroll.
-- Discover the current active Polymarket collateral from official public asset metadata on every scan. Size with its public on-chain balance; never assume a fixed legacy collateral contract.
+- Use the selected adapter's fresh normalized portfolio currency and public available-cash value on every scan. Never assume a fixed currency, collateral contract, or transferable balance between venues.
 - Distinguish a market entry opportunity from an executable account action. An unfunded opportunity may remain `entry_eligible`, but its account action must be `MAINTAIN` with zero allocation; never emit a zero-cash `BUY` or `ADD`.
 - Keep market-correlation analysis qualitative. Do not create risk-cluster fields, graphs, identifiers, or persistent state, and do not change a market's probability tree merely to represent portfolio correlation.
 - Prioritize political and economic candidates. Treat culture and markets as secondary domains, and exclude sports and esports markets from new-candidate research.
@@ -36,16 +37,20 @@ Estimate final settlement probabilities more accurately than the market, compare
 
 ## Run a full scan
 
-1. Establish the account input and output directory. Read the latest two archived reports with `scripts/report_tool.py previous` for evidence comparison, recent opportunity quality, and reference-position sizing only.
-2. Create one canonical account snapshot with `scripts/polymarket_data.py account`. Save it unchanged, verify the resolved identity and dynamically discovered active collateral, and derive public collateral cash plus all current positions from it. Read [polymarket-data.md](references/polymarket-data.md).
-3. Fetch complete executable bids for all positions, then calculate holdings liquidation value and conservative bankroll. Treat the public pUSD balance as the public cash estimate; if a verified authenticated available-to-trade value is lower, use the lower value. If cash is zero or unavailable, keep researching but do not invent buying power.
-4. Inspect the current portfolio before expensive candidate research. Run `scripts/polymarket_data.py candidate-events` with the canonical account snapshot to follow Gamma's opaque event keyset cursor until exhaustion and deterministically remove events containing current holdings, sports/esports, duplicates, and events without usable markets. Continue cheap Agent screening through the returned event sequence until about 100 events pass domain, causal-analyzability, horizon, portfolio, and rule-clarity checks, or until the sequence is exhausted. Derive the already-researched market and event set with `scripts/previously_researched.py` over the reports archive. Fetch each selected event with `scripts/polymarket_data.py event`, expand its child markets, reject unclear criteria, then rank the remaining contracts into the descending 30pp, 20pp, and greater-than-10pp deep-research tiers using [portfolio-management.md](references/portfolio-management.md) and [market-selection.md](references/market-selection.md), satisfying the novel-event research quota.
+Run the complete sequence independently for every enabled adapter. Keep each venue's account,
+currency, holdings, order books, portfolio allocation, and report separate. Research logic is
+shared, while the resulting trade intents retain their exact venue and native identifiers.
+
+1. Establish the account input and output directory. Read the latest two archived reports for this adapter with `scripts/report_tool.py previous --adapter ADAPTER` for evidence comparison, recent opportunity quality, and reference-position sizing only. Never use another venue's reports as this venue's history.
+2. Read [market-adapters.md](references/market-adapters.md). Create one normalized canonical account snapshot with `scripts/market_data.py --adapter ADAPTER account ACCOUNT`. Save it unchanged, verify `adapter`, resolved identity, portfolio currency, public cash, and all normalized positions. Read the selected adapter's reference document for its API and native semantics.
+3. Fetch complete executable bids through the same adapter for all positions, then calculate holdings liquidation value and conservative bankroll. Treat the normalized public available-cash value as the public cash estimate; if a verified authenticated available-to-trade value is lower, use the lower value. If cash is zero or unavailable, keep researching but do not invent buying power.
+4. Inspect the current venue portfolio before expensive candidate research. Run `scripts/market_data.py --adapter ADAPTER candidate-events --account-snapshot SNAPSHOT` and require the adapter's complete active-event traversal before screening. Deterministically remove events containing current holdings, sports/esports, duplicates, and events without usable markets. Continue cheap Agent screening through the returned sequence until about 100 events pass domain, causal-analyzability, horizon, portfolio, and rule-clarity checks, or until the sequence is exhausted. Derive this adapter's already-researched market and event set with `scripts/previously_researched.py --adapter ADAPTER` over the reports archive. Fetch selected events through `market_data.py event`, expand child markets, reject unclear criteria, then rank the remaining contracts into the descending 30pp, 20pp, and greater-than-10pp deep-research tiers using [portfolio-management.md](references/portfolio-management.md) and [market-selection.md](references/market-selection.md), satisfying the novel-event research quota.
 5. Reconstruct and re-research every current market. For every queued candidate, build and repeatedly revise one recursive weighted conditional-probability tree rooted at market `YES`. Read [research-method.md](references/research-method.md) and [evidence-policy.md](references/evidence-policy.md); use `scripts/probability_tree.py` for 12-place Decimal arithmetic. Before calculating a final probability or action, run the independent rule-understanding verification in [research-method.md](references/research-method.md).
 6. Fetch a fresh order book and fee rate for every held or proposed outcome. Use `scripts/trade_math.py` to separate standalone market opportunities from cash-constrained account actions and to calculate fractional-Kelly and liquidity caps. Before sizing, apply the drawdown circuit breaker in [signals-and-sizing.md](references/signals-and-sizing.md): derive peak bankroll from archived reports and scale or suspend entries when the drawdown crosses its thresholds. Read [signals-and-sizing.md](references/signals-and-sizing.md).
 7. Reassess the researched opportunities as one portfolio. Apply the second semantic-diversification pass in [portfolio-management.md](references/portfolio-management.md), remove or demote redundant risks, and rank the retained BUY and ADD opportunities.
 8. Submit the entire retained opportunity set to one shared `scripts/portfolio_allocate.py` call with the canonical cash, holdings value, reserve references, cold-start state, and final ranking. Never call it independently per market. Use its allocations as the only tentative BUY and ADD amounts.
 9. Review the tentative portfolio after allocation. Confirm total funding, protected reserve, cold-start count, liquidity, concentration, shared-loss scenarios, and idle cash. If the review fails, revise eligibility, order, or portfolio caps and rerun the one shared allocation; discard the rejected output. Use only the final accepted allocation in the report.
-10. Build schema `3.0` `report.json`. Recompute every embedded tree and execution fill, validate evidence and resolution links, cross-field portfolio consistency, action deltas, and required Chinese narrative fields, verify every published market URL opens and matches the researched criteria, then render `report.md` and archive both with `scripts/report_tool.py`. Read [report-format.md](references/report-format.md) first.
+10. Build one schema `3.0` `report.json` for this adapter. Set `run.account.adapter`, keep the normalized account identifier, and ensure every action belongs to that adapter. Recompute every embedded tree and execution fill, validate evidence and resolution links, cross-field portfolio consistency, action deltas, and required Chinese narrative fields, resolve canonical URLs through the adapter, verify every published URL opens and matches the researched criteria, then render `report.md` and archive both with `scripts/report_tool.py`. Read [report-format.md](references/report-format.md) first.
 
 When holdings or candidates are numerous, parallelize independent market research if sub-agents are available. Give each worker the exact market, settlement criteria, and required output fields; independently verify its citations and calculations before merging.
 
@@ -64,11 +69,12 @@ Do not stop at an actionless “insufficient evidence” conclusion.
 All scripts accept `--help`, print machine-readable JSON to stdout, send diagnostics to stderr, and return exit code `2` for invalid inputs or unavailable required data.
 
 ```bash
-python3 scripts/polymarket_data.py --pretty positions 'https://polymarket.com/@account'
-python3 scripts/polymarket_data.py --pretty collateral-asset
-python3 scripts/polymarket_data.py --pretty account 'https://polymarket.com/@account' > account.json
-python3 scripts/polymarket_data.py --pretty candidate-events --account-snapshot account.json > candidate-events.json
-python3 scripts/polymarket_data.py --pretty event EVENT_ID_OR_SLUG
+python3 scripts/market_data.py adapters
+python3 scripts/market_data.py --adapter "$FORECAST_EDGE_MARKET_ADAPTER" --pretty account "$FORECAST_EDGE_ACCOUNT" > account.json
+python3 scripts/market_data.py --adapter "$FORECAST_EDGE_MARKET_ADAPTER" --pretty candidate-events --account-snapshot account.json > candidate-events.json
+python3 scripts/market_data.py --adapter "$FORECAST_EDGE_MARKET_ADAPTER" --pretty event EVENT_ID_OR_SLUG
+python3 scripts/market_data.py --adapter "$FORECAST_EDGE_MARKET_ADAPTER" --pretty book INSTRUMENT_IDENTIFIER
+python3 scripts/market_data.py --adapter "$FORECAST_EDGE_MARKET_ADAPTER" canonical-url MARKET_IDENTIFIER
 python3 scripts/probability_tree.py --pretty tree.json
 python3 scripts/trade_math.py --pretty sizing.json
 python3 scripts/portfolio_allocate.py --pretty allocation.json
@@ -80,7 +86,7 @@ Treat script results as deterministic calculations, not research judgments. The 
 
 ## Read resources progressively
 
-- Read [polymarket-data.md](references/polymarket-data.md) only for account, market, fee, and order-book retrieval.
+- Read [market-adapters.md](references/market-adapters.md) before any account, market, URL, fee, or order-book retrieval. Then read only the selected adapter's venue-specific reference document declared by `config/adapters.json`.
 - Read [research-method.md](references/research-method.md) whenever estimating or updating a settlement probability.
 - Read [evidence-policy.md](references/evidence-policy.md) whenever collecting, evaluating, or citing evidence.
 - Read [market-selection.md](references/market-selection.md) for candidate screening, horizon, cadence, relative quality, and qualitative correlation checks.
@@ -99,10 +105,6 @@ bash tests/test_cli.sh
 
 To verify real connectivity without storing an account in the Skill, inject it only at runtime:
 
-```bash
-POLYMARKET_ACCOUNT='https://polymarket.com/@public-user' \
-POLYMARKET_EXPECTED_MIN_COLLATERAL='1' \
-bash tests/test_live_account.sh
-```
+Use the selected adapter's live connectivity test and inject its public account only at runtime.
 
 Never replace the placeholder with a personal account in a tracked file.

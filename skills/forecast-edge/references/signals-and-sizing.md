@@ -9,13 +9,7 @@ YES: v = p
 NO:  v = 1 - p
 ```
 
-Use fresh executable order-book prices, not a displayed last trade or midpoint. Fetch the token-specific fee rate and calculate fees at every filled price level:
-
-```text
-fee = shares × fee_rate × price × (1 - price)
-```
-
-If Polymarket changes its fee contract, update the script and tests rather than preserving this formula from memory.
+Use fresh executable order-book prices, not a displayed last trade or midpoint. Use the selected adapter's executable instrument and its `fee_per_unit` value at every filled price level. The adapter must calculate that normalized amount from the venue's native fee rule; shared research and `trade_math.py` must never derive or select a venue fee formula.
 
 ## Crossing rules
 
@@ -98,11 +92,11 @@ Keep the Kelly fraction configurable and enabled by default at `0.25`.
 Define conservative bankroll as:
 
 ```text
-public pUSD balance from the dynamically discovered active collateral contract
+public available cash from the selected adapter's normalized snapshot
 + current holdings valued at complete executable bid VWAP after sell fees
 ```
 
-If a verified authenticated available-to-trade value is lower than the public pUSD balance, use the lower value as cash. Never substitute a fixed legacy token balance.
+If a verified authenticated available-to-trade value is lower than the normalized public balance, use the lower value as cash. Never substitute a fixed legacy balance.
 
 Report model value separately. Do not use it to inflate the sizing bankroll.
 
@@ -128,7 +122,7 @@ After calculating standalone caps for all retained opportunities, send them toge
 A held position can grow past its intended share of bankroll when its price rises. Measure the position at its complete executable exit value and trim the drift without waiting for a sell crossing:
 
 ```text
-best_bid_net = best_bid - sell_fee_per_share(best_bid)
+best_bid_net = best_bid - sell_fee_per_unit(best_bid)
 t = kelly_fraction × max(0, (v - best_bid_net) / (1 - best_bid_net))
 share = liquidation_value(all held shares at bid VWAP after sell fees) / bankroll
 T = max(trim_band_multiplier × t, trim_ceiling_fraction)

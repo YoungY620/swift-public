@@ -47,6 +47,13 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertNotIn("gh issue create", child)
         self.assertNotIn("cron:", self.research)
 
+    def test_research_uses_github_hosted_linux(self) -> None:
+        self.assertIn("runs-on: ubuntu-latest", self.research)
+        self.assertNotIn("self-hosted", self.research)
+        validate = self.step(self.research, "Validate workflow configuration")
+        self.assertIn("BASH_VERSINFO[0] < 4", validate)
+        self.assertIn("curl gh jq npm python3 scp sha256sum ssh", validate)
+
     def test_private_trade_intents_are_staged_on_mode_0700_ec2_storage(self) -> None:
         configure = self.step(self.research, "Configure authenticated EC2 handoff channel")
         stage = self.step(self.research, "Stage private research handoff on EC2")
@@ -134,9 +141,10 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("POLYMARKET_SIGNER_PRIVATE_KEY", self.parent)
         self.assertNotIn("POLYMARKET_CLOB_API_", self.parent)
 
-    def test_execution_price_threshold_is_configurable_and_notional_bounded(self) -> None:
+    def test_execution_price_threshold_is_unique_and_configurable(self) -> None:
         self.assertIn("POLYMARKET_MAX_PRICE_DEVIATION_BPS", self.execution)
         self.assertIn("max_price_deviation_bps", self.execution)
+        self.assertNotIn("max_notional_deviation_bps", self.execution)
 
     def test_research_uses_only_model_and_ec2_handoff_secrets(self) -> None:
         configured = set(re.findall(r"secrets\.([A-Z0-9_]+)", self.research))
@@ -156,19 +164,63 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("ALLOW_PUBLIC_RESEARCH_RELEASES", validate)
         self.assertIn("ALLOW_PUBLIC_TRADE_INTENTS", validate)
 
+    def test_multi_venue_release_package_is_staged_without_publishing(self) -> None:
+        restore = self.step(self.research, "Restore recent research Releases")
+        package = self.step(self.research, "Build current-iteration research Release")
+        stage = self.step(self.research, "Stage private research handoff on EC2")
+        self.assertIn("gh release download", restore)
+        self.assertIn("report_archive_sha256", restore)
+        self.assertIn('"${current_report_directories[@]}"', package)
+        self.assertIn('--arg schema_version "2.0"', package)
+        self.assertIn('reports: $reports[0]', package)
+        self.assertIn('report-$adapter.json', package)
+        self.assertIn(".reports[] | .json_asset, .markdown_asset", stage)
+        self.assertNotIn("gh release create", self.research)
+
+    def test_market_adapters_and_accounts_are_explicit_variables(self) -> None:
+        self.assertIn(
+            "ENABLED_PREDICTION_MARKETS: ${{ vars.FORECAST_EDGE_MARKET_ADAPTERS }}",
+            self.research,
+        )
+        self.assertIn(
+            "MARKET_ACCOUNTS_JSON: ${{ vars.FORECAST_EDGE_MARKET_ACCOUNTS_JSON }}",
+            self.research,
+        )
+        self.assertNotIn("|| 'polymarket'", self.research)
+        self.assertNotIn("vars.POLYMARKET_ACCOUNT", self.research)
+
+    def test_all_validation_attempts_use_multi_venue_validator(self) -> None:
+        self.assertEqual(self.research.count("scripts/validate_research_iteration.py"), 4)
+        self.assertEqual(
+            self.research.count('--current-reports-manifest "$CURRENT_REPORTS_MANIFEST"'),
+            4,
+        )
+        self.assertNotIn("CURRENT_REPORT_PATH_FILE", self.research)
+        self.assertNotIn("--polymarket-account-snapshot", self.research)
+
+    def test_market_urls_are_venue_neutral_and_verified(self) -> None:
+        verify = self.step(self.research, "Resolve and verify published market URLs")
+        self.assertIn("--location --fail-with-body", verify)
+        self.assertIn('[[ "$http_status" != "200" ]]', verify)
+        self.assertIn("market_data.py", verify)
+        self.assertIn('--adapter "$venue" canonical-url "$market_identifier"', verify)
+        self.assertNotIn("polymarket_data.py", verify)
+        self.assertNotIn("gamma", verify.lower())
+
     def test_prompt_requires_current_holdings_and_novel_event_research(self) -> None:
         prompt = SCHEDULED_PROMPT_PATH.read_text(encoding="utf-8")
-        self.assertIn("重新研究全部当前持仓", prompt)
+        self.assertIn("重新研究它的全部当前持仓", prompt)
         self.assertIn("至少 10 个", prompt)
         self.assertIn("不得直接沿用历史概率", prompt)
-        self.assertIn("只能新增一个", prompt)
+        self.assertIn("新增且只新增一个报告", prompt)
 
     def test_repair_prompt_distinguishes_history_from_current_report(self) -> None:
         prompt = REPAIR_PROMPT_PATH.read_text(encoding="utf-8")
         render = self.step(self.research, "Render initial and repair prompts")
         self.assertIn("{{BASELINE_REPORTS_PATH}}", prompt)
         self.assertIn("路径不在历史报告清单", prompt)
-        self.assertIn("本轮报告数量为 0", prompt)
+        self.assertIn("每个已启用 adapter 必须恰好有一个本轮报告", prompt)
+        self.assertIn("不得把历史报告误当成", prompt)
         self.assertIn("{{BASELINE_REPORTS_PATH}}", render)
 
 

@@ -1,8 +1,7 @@
-"""Executable examples for domain-priority and report-language policy."""
+"""Executable checks for the canonical research-policy documentation."""
 
 from __future__ import annotations
 
-import json
 import unittest
 from pathlib import Path
 
@@ -12,38 +11,39 @@ ROOT = Path(__file__).parents[1]
 
 class PolicyConfigTests(unittest.TestCase):
     def test_prioritizes_politics_and_economics_and_excludes_sports(self) -> None:
-        config = json.loads((ROOT / "config" / "defaults.json").read_text())
-        scan = config["scan"]
-        self.assertEqual(scan["primary_themes"], ["politics", "economics"])
-        self.assertEqual(scan["secondary_themes"], ["culture", "markets"])
-        self.assertEqual(scan["excluded_themes"], ["sports", "esports"])
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("Prioritize political and economic candidates", skill)
+        self.assertIn("Treat culture and markets as secondary domains", skill)
+        self.assertIn("exclude sports and esports", skill)
 
     def test_enumerates_the_active_universe_before_building_a_hundred_candidate_prescreen(self) -> None:
-        config = json.loads((ROOT / "config" / "defaults.json").read_text())
-        scan = config["scan"]
-        self.assertTrue(scan["enumerate_active_event_universe"])
-        self.assertEqual(scan["active_event_page_size"], 100)
-        self.assertEqual(scan["active_event_safety_limit"], 100000)
-        self.assertEqual(scan["prescreen_event_target"], 100)
-        self.assertEqual(scan["candidate_research_attempt_threshold_per_tier"], 10)
+        selection = (ROOT / "references" / "market-selection.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("active-event traversal until exhaustion", selection)
+        self.assertIn("about 100 events", selection)
+        self.assertIn("at least ten eligible events", selection)
 
     def test_final_report_language_is_simplified_chinese(self) -> None:
-        config = json.loads((ROOT / "config" / "defaults.json").read_text())
-        self.assertEqual(config["report"]["language"], "zh-CN")
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("Simplified Chinese", skill)
 
-    def test_ten_point_raw_edge_preference_is_soft_and_auditable(self) -> None:
-        config = json.loads((ROOT / "config" / "defaults.json").read_text())
-        execution = config["execution"]
-        self.assertEqual(execution["soft_minimum_raw_edge"], 0.1)
-        self.assertEqual(execution["strong_minimum_raw_edge"], 0.3)
-        self.assertFalse(execution["soft_minimum_raw_edge_is_hard"])
-        self.assertTrue(execution["require_soft_edge_override_reason"])
+    def test_ten_point_raw_edge_floor_is_hard(self) -> None:
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("strictly greater than 10 percentage points", skill)
+        self.assertIn("hard floor with no exceptions", skill)
 
-    def test_discovers_current_pusd_instead_of_using_legacy_collateral(self) -> None:
-        config = json.loads((ROOT / "config" / "defaults.json").read_text())
-        self.assertEqual(config["data"]["collateral_symbol"], "pUSD")
-        self.assertTrue(config["data"]["discover_collateral_each_scan"])
-        self.assertFalse(config["data"]["allow_fixed_legacy_collateral"])
+    def test_shared_research_files_do_not_name_a_venue_or_collateral(self) -> None:
+        paths = [
+            ROOT / "SKILL.md",
+            ROOT / "agents" / "openai.yaml",
+            ROOT / "references" / "market-adapters.md",
+            ROOT / "scripts" / "trade_math.py",
+        ]
+        combined = "\n".join(path.read_text(encoding="utf-8") for path in paths).lower()
+        for venue_specific_name in ("polymarket", "kalshi", "pusd"):
+            with self.subTest(venue_specific_name):
+                self.assertNotIn(venue_specific_name, combined)
 
 
 if __name__ == "__main__":

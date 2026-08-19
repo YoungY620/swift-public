@@ -37,7 +37,8 @@ jobs:
           INTERVAL_HOURS: ${{ vars.FORECAST_EDGE_INTERVAL_HOURS || '12' }}
           ANCHOR_UTC_HOUR: ${{ vars.FORECAST_EDGE_ANCHOR_UTC_HOUR || '2' }}
           LIVE_TRADING_ENABLED: ${{ vars.POLYMARKET_LIVE_TRADING_ENABLED || 'false' }}
-          POLYMARKET_ACCOUNT: ${{ vars.POLYMARKET_ACCOUNT }}
+          FORECAST_EDGE_MARKET_ADAPTERS: ${{ vars.FORECAST_EDGE_MARKET_ADAPTERS }}
+          FORECAST_EDGE_MARKET_ACCOUNTS_JSON: ${{ vars.FORECAST_EDGE_MARKET_ACCOUNTS_JSON }}
           EC2_HOST: ${{ vars.POLYMARKET_EC2_HOST }}
           EC2_USER: ${{ vars.POLYMARKET_EC2_USER }}
           EC2_HOST_FINGERPRINT: ${{ vars.POLYMARKET_EC2_HOST_FINGERPRINT }}
@@ -76,7 +77,8 @@ jobs:
 
           if [[ "$should_run" == "true" ]]; then
             missing_research=()
-            for name in POLYMARKET_ACCOUNT EC2_HOST EC2_USER EC2_HOST_FINGERPRINT \
+            for name in FORECAST_EDGE_MARKET_ADAPTERS FORECAST_EDGE_MARKET_ACCOUNTS_JSON \
+              EC2_HOST EC2_USER EC2_HOST_FINGERPRINT \
               KIMI_CODE_API_KEY FEISHU_APP_ID FEISHU_APP_SECRET FEISHU_CHAT_ID \
               EC2_SSH_PRIVATE_KEY; do
               if [[ -z "${!name:-}" ]]; then
@@ -132,11 +134,7 @@ jobs:
       always() &&
       needs.research.result == 'success' &&
       (needs.execution.result == 'success' || needs.execution.result == 'skipped')
-    runs-on:
-      - self-hosted
-      - macOS
-      - ARM64
-      - forecast-edge
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: write
@@ -209,18 +207,20 @@ jobs:
           ARCHIVE="$RELEASE_RUNTIME_DIR/research-handoff.tar.gz" \
           DESTINATION="$RELEASE_RUNTIME_DIR" python3 - <<'PY'
           import os
+          import re
           import tarfile
           from pathlib import PurePosixPath
 
-          allowed = {
+          required = {
               "release-assets/forecast-edge-research-report.tar.gz",
               "release-assets/research-release-manifest.json",
-              "release-assets/report.json",
-              "release-assets/report.md",
               "release-assets/validation-summary.json",
               "release-notes.md",
               "issue.md",
           }
+          report_asset = re.compile(
+              r"release-assets/report-[a-z][a-z0-9-]*\.(?:json|md)"
+          )
           with tarfile.open(os.environ["ARCHIVE"], "r:gz") as archive:
               files = set()
               for member in archive.getmembers():
@@ -231,13 +231,17 @@ jobs:
                       files.add(member.name)
                   elif not member.isdir():
                       raise SystemExit("unsupported entry in private research handoff")
-              if files != allowed:
+              if not required.issubset(files):
+                  raise SystemExit("private research handoff is missing required files")
+              if any(
+                  path not in required and report_asset.fullmatch(path) is None
+                  for path in files
+              ):
                   raise SystemExit("private research handoff has an unexpected file set")
               archive.extractall(os.environ["DESTINATION"])
           PY
           manifest="$RELEASE_ASSETS_DIR/research-release-manifest.json"
           archive="$RELEASE_ASSETS_DIR/forecast-edge-research-report.tar.gz"
-          report="$RELEASE_ASSETS_DIR/report.json"
           jq -e \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg release_tag "$RELEASE_TAG" \
@@ -245,19 +249,46 @@ jobs:
             --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
             --arg commit_sha "$GITHUB_SHA" \
             --arg trade_digest "$TRADE_INTENTS_SHA256" \
-            '.schema_version == "1.0" and
+            '.schema_version == "2.0" and
              .lineage_id == "forecast-edge-production" and
              .repository == $repository and
              .release_tag == $release_tag and
              .workflow_run_id == $run_id and
              .workflow_run_attempt == $run_attempt and
              .commit_sha == $commit_sha and
-             .trade_intents_sha256 == $trade_digest' \
+             .trade_intents_sha256 == $trade_digest and
+             (.report_count | type == "number" and . > 0) and
+             (.reports | type == "array") and
+             .report_count == (.reports | length) and
+             ([.reports[].adapter] | length == (unique | length)) and
+             all(.reports[];
+               (.adapter | type == "string" and test("^[a-z][a-z0-9-]*$")) and
+               .json_asset == ("report-" + .adapter + ".json") and
+               .markdown_asset == ("report-" + .adapter + ".md") and
+               (.sha256 | test("^[a-f0-9]{64}$"))
+             )' \
             "$manifest" >/dev/null
           test "$(sha256sum "$archive" | cut -d ' ' -f 1)" = \
             "$(jq -r '.report_archive_sha256' "$manifest")"
-          test "$(sha256sum "$report" | cut -d ' ' -f 1)" = \
-            "$(jq -r '.current_report_sha256' "$manifest")"
+          while IFS=$'\t' read -r json_asset markdown_asset report_digest; do
+            test -f "$RELEASE_ASSETS_DIR/$json_asset"
+            test -f "$RELEASE_ASSETS_DIR/$markdown_asset"
+            test "$(sha256sum "$RELEASE_ASSETS_DIR/$json_asset" | cut -d ' ' -f 1)" = \
+              "$report_digest"
+          done < <(
+            jq -r '.reports[] | [.json_asset, .markdown_asset, .sha256] | @tsv' "$manifest"
+          )
+          mapfile -t actual_direct_reports < <(
+            find "$RELEASE_ASSETS_DIR" -maxdepth 1 -type f \
+              \( -name 'report-*.json' -o -name 'report-*.md' \) -printf '%f\n' | sort
+          )
+          mapfile -t expected_direct_reports < <(
+            jq -r '.reports[] | .json_asset, .markdown_asset' "$manifest" | sort
+          )
+          if [[ "${actual_direct_reports[*]}" != "${expected_direct_reports[*]}" ]]; then
+            echo "::error::Private handoff direct reports differ from the signed manifest"
+            exit 1
+          fi
           test "$(sha256sum "$RELEASE_RUNTIME_DIR/trade-intents.jsonl" | cut -d ' ' -f 1)" = \
             "$TRADE_INTENTS_SHA256"
 
@@ -342,11 +373,15 @@ jobs:
           assets=(
             "$RELEASE_ASSETS_DIR/forecast-edge-research-report.tar.gz"
             "$RELEASE_ASSETS_DIR/research-release-manifest.json"
-            "$RELEASE_ASSETS_DIR/report.json"
-            "$RELEASE_ASSETS_DIR/report.md"
             "$RELEASE_ASSETS_DIR/validation-summary.json"
             "$RELEASE_RUNTIME_DIR/iteration-release-manifest.json"
             "$RELEASE_RUNTIME_DIR/trade-intents.jsonl"
+          )
+          while IFS= read -r report_asset; do
+            assets+=("$RELEASE_ASSETS_DIR/$report_asset")
+          done < <(
+            jq -r '.reports[] | .json_asset, .markdown_asset' \
+              "$RELEASE_ASSETS_DIR/research-release-manifest.json" | sort
           )
           if [[ "$EXECUTION_RESULT" == "success" ]]; then
             assets+=(
@@ -433,11 +468,7 @@ jobs:
       always() &&
       needs.gate.outputs.should-run == 'true' &&
       needs.gate.outputs.handoff-directory != ''
-    runs-on:
-      - self-hosted
-      - macOS
-      - ARM64
-      - forecast-edge
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions: {}
     env:

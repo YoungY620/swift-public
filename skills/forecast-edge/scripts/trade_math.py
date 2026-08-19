@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compute deterministic Polymarket edge, order-book capacity, and fractional-Kelly sizing."""
+"""Compute venue-neutral edge, order-book capacity, and fractional-Kelly sizing."""
 
 from __future__ import annotations
 
@@ -30,10 +30,6 @@ def number(value: Any, name: str, *, minimum: float | None = None, maximum: floa
     return result
 
 
-def fee_per_share(price: float, fee_rate: float) -> float:
-    return fee_rate * price * (1.0 - price)
-
-
 def normalize_levels(raw: Any, *, bids: bool) -> list[dict[str, float]]:
     if not isinstance(raw, list):
         raise TradeMathError("order-book levels must be a list")
@@ -43,12 +39,15 @@ def normalize_levels(raw: Any, *, bids: bool) -> list[dict[str, float]]:
             raise TradeMathError(f"order-book level {index} must be an object")
         price = number(item.get("price"), f"level[{index}].price", minimum=0.0, maximum=1.0)
         size = number(item.get("size"), f"level[{index}].size", minimum=0.0)
+        fee_per_unit = number(
+            item.get("fee_per_unit"), f"level[{index}].fee_per_unit", minimum=0.0
+        )
         if size > 0:
-            levels.append({"price": price, "size": size})
+            levels.append({"price": price, "size": size, "fee_per_unit": fee_per_unit})
     return sorted(levels, key=lambda level: level["price"], reverse=bids)
 
 
-def walk_levels(levels: list[dict[str, float]], shares: float, fee_rate: float, *, sell: bool) -> dict[str, Any]:
+def walk_levels(levels: list[dict[str, float]], shares: float, *, sell: bool) -> dict[str, Any]:
     remaining = shares
     gross = 0.0
     fee = 0.0
@@ -58,7 +57,7 @@ def walk_levels(levels: list[dict[str, float]], shares: float, fee_rate: float, 
             break
         take = min(remaining, level["size"])
         price = level["price"]
-        level_fee = take * fee_per_share(price, fee_rate)
+        level_fee = take * level["fee_per_unit"]
         gross += take * price
         fee += level_fee
         fills.append({"price": price, "shares": take, "fee": level_fee})
@@ -79,7 +78,7 @@ def walk_levels(levels: list[dict[str, float]], shares: float, fee_rate: float, 
 
 
 def retention_capacity(
-    asks: list[dict[str, float]], model_value: float, fee_rate: float, minimum_retention: float
+    asks: list[dict[str, float]], model_value: float, minimum_retention: float
 ) -> dict[str, Any]:
     if not asks:
         return {"shares": 0.0, "cash": 0.0, "raw_edge": None, "actual_edge": None, "retention": None}
@@ -91,7 +90,7 @@ def retention_capacity(
     cumulative_surplus = 0.0
     shares = 0.0
     for level in asks:
-        contribution = model_value - level["price"] - fee_per_share(level["price"], fee_rate)
+        contribution = model_value - level["price"] - level["fee_per_unit"]
         surplus_per_share = contribution - required_edge
         if surplus_per_share >= 0:
             shares += level["size"]
@@ -104,7 +103,7 @@ def retention_capacity(
         cumulative_surplus += surplus_per_share * partial
         break
 
-    fill = walk_levels(asks, shares, fee_rate, sell=False)
+    fill = walk_levels(asks, shares, sell=False)
     actual_edge = model_value - fill["all_in_unit"] if shares else None
     retention = actual_edge / raw_edge if actual_edge is not None else None
     return {
@@ -118,13 +117,16 @@ def retention_capacity(
 
 
 def shares_for_cash(
-    levels: list[dict[str, float]], cash: float, fee_rate: float, *, sell: bool = False
+    levels: list[dict[str, float]], cash: float, *, sell: bool = False
 ) -> float:
     remaining = cash
     shares = 0.0
     for level in levels:
-        level_fee = fee_per_share(level["price"], fee_rate)
-        unit_cash = level["price"] - level_fee if sell else level["price"] + level_fee
+        unit_cash = (
+            level["price"] - level["fee_per_unit"]
+            if sell
+            else level["price"] + level["fee_per_unit"]
+        )
         if unit_cash <= 0:
             continue
         take = min(level["size"], remaining / unit_cash)
@@ -157,7 +159,6 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
     model_value = model_probability if side == "YES" else 1.0 - model_probability
     bankroll = number(document.get("bankroll"), "bankroll", minimum=0.0)
     available_cash = number(document.get("available_cash"), "available_cash", minimum=0.0)
-    fee_rate = number(document.get("fee_rate", 0.0), "fee_rate", minimum=0.0)
     kelly_fraction = number(document.get("kelly_fraction", 0.25), "kelly_fraction", minimum=0.0, maximum=1.0)
     max_position_fraction = number(
         document.get("max_position_fraction", 0.05),
@@ -208,7 +209,7 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
     use_reserve = bool(document.get("use_reserve", False))
     normal_cash_budget = available_cash if use_reserve else max(0.0, available_cash - reserve_cash)
 
-    capacity = retention_capacity(asks, model_value, fee_rate, minimum_retention)
+    capacity = retention_capacity(asks, model_value, minimum_retention)
     soft_edge_pass = bool(
         capacity["raw_edge"] is not None
         and capacity["raw_edge"] > soft_minimum_raw_edge + 1e-12
@@ -216,7 +217,7 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
     soft_edge_override_applied = bool(soft_edge_override and not soft_edge_pass)
     soft_entry_allowed = soft_edge_pass or soft_edge_override
     probe_shares = min_order_shares if min_order_shares > 0 else 1.0
-    probe_fill = walk_levels(asks, probe_shares, fee_rate, sell=False)
+    probe_fill = walk_levels(asks, probe_shares, sell=False)
     probe_actual_edge = (
         model_value - probe_fill["all_in_unit"]
         if probe_fill["fully_filled"] and probe_fill["all_in_unit"] is not None
@@ -235,7 +236,7 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
         and probe_retention + 1e-9 >= minimum_retention
     )
     if asks:
-        best_all_in_cost = asks[0]["price"] + fee_per_share(asks[0]["price"], fee_rate)
+        best_all_in_cost = asks[0]["price"] + asks[0]["fee_per_unit"]
         if best_all_in_cost < 1.0:
             full_kelly = max(0.0, (model_value - best_all_in_cost) / (1.0 - best_all_in_cost))
         else:
@@ -252,8 +253,8 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
         if soft_entry_allowed
         else 0.0
     )
-    suggested_shares = shares_for_cash(asks, suggested_cash_cap, fee_rate) if suggested_cash_cap > 0 else 0.0
-    buy_fill = walk_levels(asks, suggested_shares, fee_rate, sell=False)
+    suggested_shares = shares_for_cash(asks, suggested_cash_cap) if suggested_cash_cap > 0 else 0.0
+    buy_fill = walk_levels(asks, suggested_shares, sell=False)
     buy_actual_edge = model_value - buy_fill["all_in_unit"] if buy_fill["all_in_unit"] is not None else None
     buy_retention = (
         buy_actual_edge / capacity["raw_edge"]
@@ -269,7 +270,7 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
         and buy_retention + 1e-9 >= minimum_retention
     )
 
-    sell_fill = walk_levels(bids, current_shares, fee_rate, sell=True) if current_shares > 0 else None
+    sell_fill = walk_levels(bids, current_shares, sell=True) if current_shares > 0 else None
     sell_cross = bool(
         sell_fill
         and sell_fill["fully_filled"]
@@ -285,7 +286,7 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
     trim_cash = 0.0
     trim_fill = None
     if current_shares > 0 and bids and not sell_cross:
-        best_bid_net = bids[0]["price"] - fee_per_share(bids[0]["price"], fee_rate)
+        best_bid_net = bids[0]["price"] - bids[0]["fee_per_unit"]
         if best_bid_net < 1.0:
             trim_target_fraction = kelly_fraction * max(
                 0.0, (model_value - best_bid_net) / (1.0 - best_bid_net)
@@ -295,10 +296,10 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
         trim_threshold = max(trim_band_multiplier * trim_target_fraction, trim_ceiling_fraction)
         if trim_share > trim_threshold:
             trim_cash = (trim_share - trim_threshold) * bankroll
-            trim_shares = min(shares_for_cash(bids, trim_cash, fee_rate, sell=True), current_shares)
+            trim_shares = min(shares_for_cash(bids, trim_cash, sell=True), current_shares)
             if trim_shares >= probe_shares:
                 trim_trigger = True
-                trim_fill = walk_levels(bids, trim_shares, fee_rate, sell=True)
+                trim_fill = walk_levels(bids, trim_shares, sell=True)
             else:
                 trim_shares = 0.0
                 trim_cash = 0.0
