@@ -30,16 +30,10 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("git push", self.workflow)
         self.assertNotIn("git checkout -b", self.workflow)
 
-    def test_research_job_is_pinned_to_the_dedicated_self_hosted_runner(self) -> None:
-        self.assertIn("runs-on: ubuntu-latest", self.workflow)
-        self.assertIn(
-            "runs-on:\n"
-            "      - self-hosted\n"
-            "      - macOS\n"
-            "      - ARM64\n"
-            "      - forecast-edge",
-            self.workflow,
-        )
+    def test_research_job_uses_github_hosted_linux(self) -> None:
+        self.assertEqual(self.workflow.count("runs-on: ubuntu-latest"), 2)
+        self.assertNotIn("self-hosted", self.workflow)
+        self.assertNotIn("local-mac-forecast-edge", self.workflow)
         validate = self.step("Validate workflow configuration")
         self.assertIn("BASH_VERSINFO[0] < 4", validate)
         self.assertIn("curl gh jq npm python3 sha256sum tar timeout", validate)
@@ -75,14 +69,10 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("MANIFEST", upload)
         self.assertNotIn("path: |", upload)
 
-    def test_polymarket_trade_probe_is_read_only(self) -> None:
-        probe = self.step("Probe Polymarket runner trade availability")
-        self.assertIn("https://polymarket.com/api/geoblock", probe)
-        self.assertIn("https://clob.polymarket.com/", probe)
-        self.assertIn("read-only network probe", probe)
-        self.assertNotIn("KIMI_CODE_API_KEY", probe)
-        self.assertNotIn("private key", probe.lower())
-        self.assertNotIn("post-order", probe.lower())
+    def test_research_job_does_not_run_a_venue_trade_probe(self) -> None:
+        self.assertNotIn("Probe Polymarket runner trade availability", self.workflow)
+        self.assertNotIn("https://polymarket.com/api/geoblock", self.workflow)
+        self.assertNotIn("Polymarket runner trade-availability", self.workflow)
 
     def test_kimi_provider_is_probed_before_agent_execution(self) -> None:
         probe = self.step("Probe Kimi model availability")
@@ -122,25 +112,26 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
             },
         )
 
-    def test_published_polymarket_urls_are_canonical_and_verified(self) -> None:
-        verify = self.step("Resolve and verify published Polymarket URLs")
+    def test_published_market_urls_are_venue_neutral_and_verified(self) -> None:
+        verify = self.step("Resolve and verify published market URLs")
         format_issue = self.step("Format Issue notification")
 
         self.assertLess(
-            self.workflow.index("      - name: Resolve and verify published Polymarket URLs\n"),
+            self.workflow.index("      - name: Resolve and verify published market URLs\n"),
             self.workflow.index("      - name: Build current-iteration research Release\n"),
         )
-        self.assertIn("polymarket_data.py", verify)
-        self.assertIn('market "$market_id"', verify)
-        self.assertIn("Gamma's canonical event slug", verify)
-        self.assertIn("https://polymarket.com/event/", verify)
+        self.assertIn('parsed.scheme != "https"', verify)
         self.assertIn("--location --fail-with-body", verify)
         self.assertIn("%{http_code}", verify)
         self.assertIn('[[ "$http_status" != "200" ]]', verify)
         self.assertIn('echo "URL_VERIFICATION_PATH=$runtime_dir/url_verification.json"', self.workflow)
         self.assertIn('all(.[]; .http_status == 200)', verify)
+        self.assertNotIn("polymarket_data.py", verify)
+        self.assertNotIn("gamma", verify.lower())
+        self.assertNotIn("polymarket", verify.lower())
         self.assertIn("NOTIFICATION_ITEMS_PATH", format_issue)
-        self.assertIn("[打开已验证的 Polymarket 盘口]", format_issue)
+        self.assertIn("预测市场：\\(.venue)", format_issue)
+        self.assertIn("[打开已验证的市场页面]", format_issue)
 
     def test_feishu_receives_the_exact_issue_body_as_a_card_after_issue_creation(self) -> None:
         send = self.step("Send Issue notification to Feishu")
@@ -165,7 +156,7 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
     def test_stable_public_options_are_workflow_constants(self) -> None:
         self.assertIn("ENABLED_PREDICTION_MARKETS: polymarket", self.workflow)
         self.assertIn('KIMI_CODE_VERSION: "0.37.0"', self.workflow)
-        self.assertIn("KIMI_MODEL_NAME: kimi-k3-highspeed", self.workflow)
+        self.assertIn("KIMI_MODEL_NAME: kimi-for-coding", self.workflow)
         self.assertIn(
             "KIMI_MODEL_BASE_URL: https://api.kimi.com/coding/v1", self.workflow
         )
