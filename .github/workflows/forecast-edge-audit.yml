@@ -116,6 +116,7 @@ jobs:
             echo "AUDIT_EVIDENCE_PATH=$runtime_dir/evidence/evidence.json"
             echo "AUDIT_AGENT_DIR=$runtime_dir/agent"
             echo "AUDIT_AGENT_RESPONSE_PATH=$runtime_dir/agent-response.json"
+            echo "AUDIT_AGENT_RAW_RESPONSE_PATH=$runtime_dir/agent-response.raw.txt"
             echo "AUDIT_RESULT_PATH=$runtime_dir/audit-result.json"
             echo "KIMI_CODE_HOME=$RUNNER_TEMP/kimi-code-audit-home"
           } >> "$GITHUB_ENV"
@@ -323,12 +324,17 @@ jobs:
           cd "$AUDIT_AGENT_DIR"
           kimi --agent-file "$AUDIT_AGENT_PROFILE_PATH" \
             -p "$(<rendered-prompt.txt)" \
-            > "$AUDIT_AGENT_RESPONSE_PATH" 2> "$AUDIT_RUNTIME_DIR/agent.stderr"
-          if grep -Fq -- "$KIMI_MODEL_API_KEY" "$AUDIT_AGENT_RESPONSE_PATH"; then
-            rm -f "$AUDIT_AGENT_RESPONSE_PATH"
+            > "$AUDIT_AGENT_RAW_RESPONSE_PATH" 2> "$AUDIT_RUNTIME_DIR/agent.stderr"
+          if grep -Fq -- "$KIMI_MODEL_API_KEY" "$AUDIT_AGENT_RAW_RESPONSE_PATH"; then
             echo "::error::Audit agent response contained protected credential material"
             exit 1
           fi
+          "$AUDIT_RUNTIME_DIR/python-venv/bin/python" "$GITHUB_WORKSPACE/scripts/forecast_edge_audit.py" extract \
+            --input "$AUDIT_AGENT_RAW_RESPONSE_PATH" \
+            --rubric "$AUDIT_RUBRIC_PATH" \
+            --evidence "$AUDIT_EVIDENCE_PATH" \
+            --schema "$AUDIT_SCHEMA_PATH" \
+            --output "$AUDIT_AGENT_RESPONSE_PATH"
 
       - name: Validate agent judgment or produce fail-closed audit
         shell: bash
@@ -336,7 +342,7 @@ jobs:
           set -euo pipefail
           validator="$AUDIT_RUNTIME_DIR/python-venv/bin/python"
           if [[ "${{ steps.audit-agent.outcome }}" == "success" ]] && \
-            "$validator" scripts/forecast_edge_audit.py validate \
+            "$validator" "$GITHUB_WORKSPACE/scripts/forecast_edge_audit.py" validate \
               --input "$AUDIT_AGENT_RESPONSE_PATH" \
               --rubric "$AUDIT_RUBRIC_PATH" \
               --evidence "$AUDIT_EVIDENCE_PATH" \
@@ -345,7 +351,7 @@ jobs:
             echo "Validated the audit agent's structured judgment"
           else
             printf '%s\n' 'agent response unavailable or invalid' > "$AUDIT_RUNTIME_DIR/fallback-reason.txt"
-            "$validator" scripts/forecast_edge_audit.py fallback \
+            "$validator" "$GITHUB_WORKSPACE/scripts/forecast_edge_audit.py" fallback \
               --input "$AUDIT_RUNTIME_DIR/fallback-reason.txt" \
               --rubric "$AUDIT_RUBRIC_PATH" \
               --evidence "$AUDIT_EVIDENCE_PATH" \

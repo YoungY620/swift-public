@@ -129,6 +129,14 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         with self.assertRaisesRegex(audit_module.AuditValidationError, "secret-like"):
             audit_module.validate_response(response, self.rubric, self.evidence, self.schema)
 
+    def test_extracts_last_json_object_from_cli_chatter(self) -> None:
+        text = 'progress\n• {"old":true}\nNeed final JSON.\n' + json.dumps(self.response(), ensure_ascii=False)
+        self.assertEqual(audit_module.extract_last_json_object(text), self.response())
+
+    def test_extract_rejects_secret_like_chatter(self) -> None:
+        with self.assertRaisesRegex(audit_module.AuditValidationError, "secret-like"):
+            audit_module.extract_last_json_object("progress POLYMARKET_CLOB_API_SECRET")
+
     def test_fallback_is_schema_valid_and_fail_closed(self) -> None:
         response = audit_module.fallback_response(self.rubric, "123", "invalid response")
         errors = list(Draft202012Validator(self.schema).iter_errors(response))

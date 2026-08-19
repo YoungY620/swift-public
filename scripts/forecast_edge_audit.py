@@ -57,6 +57,29 @@ def reject_secret_like_text(document: Any) -> None:
             raise AuditValidationError("audit output contains secret-like text")
 
 
+def extract_last_json_object(text: str) -> dict[str, Any]:
+    """Extract the last complete JSON object from a CLI stream."""
+    for pattern in SECRET_PATTERNS:
+        if pattern.search(text):
+            raise AuditValidationError("audit output contains secret-like text")
+    decoder = json.JSONDecoder()
+    candidate: dict[str, Any] | None = None
+    candidate_end = -1
+    for index, character in enumerate(text):
+        if character != "{":
+            continue
+        try:
+            value, end = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and index + end > candidate_end:
+            candidate = value
+            candidate_end = index + end
+    if candidate is None:
+        raise AuditValidationError("agent output did not contain a JSON object")
+    return candidate
+
+
 def validate_response(response: Any, rubric: dict[str, Any], evidence: dict[str, Any], schema: dict[str, Any]) -> None:
     errors = sorted(Draft202012Validator(schema).iter_errors(response), key=lambda error: list(error.path))
     if errors:
@@ -136,7 +159,7 @@ def fallback_response(rubric: dict[str, Any], parent_run_id: str, reason: str) -
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("validate", "fallback"))
+    parser.add_argument("command", choices=("validate", "extract", "fallback"))
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--rubric", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
@@ -148,6 +171,11 @@ def main() -> int:
     rubric = load_json(args.rubric, "rubric")
     evidence = load_json(args.evidence, "evidence")
     schema = load_json(args.schema, "audit schema")
+    if args.command == "extract":
+        response = extract_last_json_object(args.input.read_text(encoding="utf-8"))
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(response, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return 0
     if args.command == "fallback":
         response = fallback_response(rubric, args.parent_run_id, "agent 没有返回可校验的 JSON")
     else:
