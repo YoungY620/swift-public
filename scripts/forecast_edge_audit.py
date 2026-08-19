@@ -105,7 +105,7 @@ def validate_response(response: Any, rubric: dict[str, Any], evidence: dict[str,
             raise AuditValidationError(f"{item['id']} has no evidence citation")
         for key in evidence_keys:
             exists, _ = resolve(evidence, key)
-            if not exists and status not in {"FAIL", "INSUFFICIENT_EVIDENCE"}:
+            if not exists and status in {"PASS", "WARN"}:
                 raise AuditValidationError(f"{item['id']} cites a missing evidence path")
 
     statuses = [str(item["status"]) for item in response_checks]

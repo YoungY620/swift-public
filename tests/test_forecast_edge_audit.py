@@ -125,6 +125,12 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         response["missing_evidence"] = ["release.missing"]
         audit_module.validate_response(response, self.rubric, self.evidence, self.schema)
 
+    def test_not_applicable_may_cite_the_missing_path(self) -> None:
+        response = self.response()
+        response["checks"][0]["status"] = "NOT_APPLICABLE"
+        response["checks"][0]["evidence"] = ["release.missing"]
+        audit_module.validate_response(response, self.rubric, self.evidence, self.schema)
+
     def test_critical_failure_cannot_report_overall_pass(self) -> None:
         response = self.response()
         response["checks"][0]["status"] = "FAIL"

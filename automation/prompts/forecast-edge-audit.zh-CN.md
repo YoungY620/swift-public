@@ -8,7 +8,7 @@
 4. 每个 rubric check 必须恰好出现一次，id、severity 必须与 rubric 相同；按 rubric 顺序输出。
 5. 不能从 job success 推导出缺少的业务事实。必要证据不存在时使用 `INSUFFICIENT_EVIDENCE`；明确不适用时才使用 `NOT_APPLICABLE`。
 6. 只有证据明确违反要求时使用 `FAIL`。发现值得关注但未构成明确失败的偏差时使用 `WARN`。
-7. 每个非 `NOT_APPLICABLE` check 必须在 `evidence` 中引用实际证据路径。只使用这些顶级路径或其子路径：`run`、`jobs`、`configuration`、`source_contract`、`release`、`evidence_safety`。
+7. 每个非 `NOT_APPLICABLE` check 必须在 `evidence` 中引用实际或预期的证据路径。`PASS`/`WARN` 只能引用实际存在的路径；`FAIL`/`INSUFFICIENT_EVIDENCE` 可以引用缺失的预期路径，同时必须在 `missing_evidence` 里登记。只使用这些顶级路径或其子路径：`run`、`jobs`、`configuration`、`source_contract`、`release`、`evidence_safety`。
 8. critical check 为 `FAIL` 时，overall_status 必须是 `FAIL`。任何适用 check 为 `INSUFFICIENT_EVIDENCE` 时，overall_status 不得是 `PASS`。有 WARN 且无 FAIL/INSUFFICIENT_EVIDENCE 时，overall_status 为 `WARN`。
 9. 正常的小时唤醒被 8 小时 gate 跳过时，不把研究/执行未运行当异常；依照 applies_when 标记相关项 `NOT_APPLICABLE`。
 10. `anomalies` 只列真实 FAIL 或需要行动的 WARN；证据缺失写入 `missing_evidence`。不得编造订单、余额、费用、runner 或发布时间。
