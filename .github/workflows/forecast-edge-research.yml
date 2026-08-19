@@ -129,7 +129,7 @@ jobs:
             echo "::error::The research runner must expose Bash 4 or newer"
             exit 1
           fi
-          for required_tool in gh jq npm python3 sha256sum tar timeout; do
+          for required_tool in curl gh jq npm python3 sha256sum tar timeout; do
             if ! command -v "$required_tool" >/dev/null; then
               echo "::error::The research runner is missing required tool: $required_tool"
               exit 1
@@ -170,6 +170,8 @@ jobs:
             echo "VALIDATION_ERRORS_PATH=$runtime_dir/validation-errors.txt"
             echo "VALIDATION_SUMMARY_PATH=$runtime_dir/validation-summary.json"
             echo "REPORT_VALIDATION_PATH=$runtime_dir/report-validation.json"
+            echo "NOTIFICATION_ITEMS_PATH=$runtime_dir/notification-items.json"
+            echo "URL_VERIFICATION_PATH=$runtime_dir/url_verification.json"
             echo "BASELINE_REPORTS_PATH=$runtime_dir/baseline-reports.txt"
             echo "CURRENT_REPORT_PATH_FILE=$runtime_dir/current-report-path.txt"
             echo "HISTORY_RELEASE_TAGS_PATH=$runtime_dir/history-release-tags.json"
@@ -664,6 +666,188 @@ jobs:
           fi
           exit 1
 
+      - name: Resolve and verify published Polymarket URLs
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_report=$(<"$CURRENT_REPORT_PATH_FILE")
+          notification_rows="$RUNTIME_DIR/notification-items.ndjson"
+          verification_rows="$RUNTIME_DIR/url-verification.ndjson"
+          : > "$notification_rows"
+          : > "$verification_rows"
+
+          mapfile -t action_indexes < <(
+            jq -r '
+              .actions
+              | to_entries[]
+              | select(.value.action != "MAINTAIN")
+              | .key
+            ' "$current_report"
+          )
+          intent_count=$(jq -s 'length' "$TRADE_INTENTS_PATH")
+          if (( ${#action_indexes[@]} != intent_count )); then
+            echo "::error::Actionable report entries do not match the validated JSONL item count"
+            exit 1
+          fi
+
+          declare -A claimed_intents=()
+          for action_index in "${action_indexes[@]}"; do
+            action=$(jq -c --argjson index "$action_index" '.actions[$index]' "$current_report")
+            action_name=$(jq -r '.action' <<< "$action")
+            market_id=$(jq -r '.market_id | tostring' <<< "$action")
+            market_question=$(jq -r '.market_question' <<< "$action")
+            outcome=$(jq -r '.outcome | ascii_downcase' <<< "$action")
+            case "$action_name" in
+              BUY|ADD) expected_side=buy ;;
+              SELL|TRIM) expected_side=sell ;;
+              *)
+                echo "::error::Unsupported actionable report entry: $action_name"
+                exit 1
+                ;;
+            esac
+
+            analysis_count=$(jq --arg market_id "$market_id" '
+              [.current_positions[], .candidates[]]
+              | map(select((.market.id | tostring) == $market_id))
+              | length
+            ' "$current_report")
+            if [[ "$analysis_count" != "1" ]]; then
+              echo "::error::Action $action_index does not have exactly one matching market analysis"
+              exit 1
+            fi
+            analysis=$(jq -c --arg market_id "$market_id" '
+              [.current_positions[], .candidates[]]
+              | map(select((.market.id | tostring) == $market_id))[0]
+            ' "$current_report")
+            report_url=$(jq -r '.market.url' <<< "$analysis")
+
+            gamma_market="$RUNTIME_DIR/gamma-market-$action_index.json"
+            python3 skills/forecast-edge/scripts/polymarket_data.py \
+              --pretty market "$market_id" > "$gamma_market"
+            if ! jq -e \
+              --arg market_id "$market_id" \
+              --arg market_question "$market_question" \
+              '(.id | tostring) == $market_id
+               and .question == $market_question
+               and (.condition_id | type == "string" and length > 0)
+               and (.url | type == "string" and startswith("https://polymarket.com/event/"))' \
+              "$gamma_market" >/dev/null; then
+              echo "::error::Gamma market metadata does not match report action $action_index"
+              exit 1
+            fi
+
+            condition_id=$(jq -r '.condition_id' "$gamma_market")
+            canonical_url=$(jq -r '.url' "$gamma_market")
+            token_id=$(jq -r --arg outcome "$outcome" '
+              [.outcomes[] | select((.name | ascii_downcase) == $outcome)]
+              | if length == 1 and (.[0].token_id | type == "string" and length > 0)
+                then .[0].token_id
+                else error("market outcome does not map to exactly one token")
+                end
+            ' "$gamma_market")
+            if [[ "${report_url%%\?*}" != "${canonical_url%%\?*}" ]]; then
+              echo "::error::Report market URL does not use Gamma's canonical event slug"
+              exit 1
+            fi
+
+            matches=$(jq -s \
+              --arg condition_id "$condition_id" \
+              --arg token_id "$token_id" \
+              --arg outcome "$outcome" \
+              --arg side "$expected_side" '
+                to_entries
+                | map(select(
+                    .value.venue == "polymarket"
+                    and (.value.multi_market_identifier | ascii_downcase) == ($condition_id | ascii_downcase)
+                    and .value.instrument_identifier == $token_id
+                    and .value.outcome == $outcome
+                    and .value.side == $side
+                  ))
+              ' "$TRADE_INTENTS_PATH")
+            if [[ "$(jq 'length' <<< "$matches")" != "1" ]]; then
+              echo "::error::Action $action_index does not map to exactly one Polymarket JSONL item"
+              exit 1
+            fi
+            intent_index=$(jq -r '.[0].key' <<< "$matches")
+            if [[ -n "${claimed_intents[$intent_index]:-}" ]]; then
+              echo "::error::Multiple report actions map to JSONL item $intent_index"
+              exit 1
+            fi
+            claimed_intents[$intent_index]=1
+            intent=$(jq -c '.[0].value' <<< "$matches")
+
+            verification_result=$(
+              curl --location --fail-with-body --silent --show-error \
+                --retry 3 --retry-all-errors --retry-delay 2 --max-time 30 \
+                --output /dev/null \
+                --write-out $'%{http_code}\t%{url_effective}' \
+                "$canonical_url"
+            )
+            IFS=$'\t' read -r http_status effective_url <<< "$verification_result"
+            if [[ "$http_status" != "200" ]]; then
+              echo "::error::Published Polymarket URL did not return HTTP 200: $canonical_url"
+              exit 1
+            fi
+            verified_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+            jq -cn \
+              --arg market_id "$market_id" \
+              --arg condition_id "$condition_id" \
+              --arg original_report_url "$report_url" \
+              --arg canonical_url "$canonical_url" \
+              --arg effective_url "$effective_url" \
+              --arg verified_at "$verified_at" \
+              --argjson http_status "$http_status" \
+              '{
+                market_id: $market_id,
+                condition_id: $condition_id,
+                original_report_url: $original_report_url,
+                canonical_url: $canonical_url,
+                effective_url: $effective_url,
+                http_status: $http_status,
+                verified_at: $verified_at
+              }' >> "$verification_rows"
+            jq -cn \
+              --argjson action "$action" \
+              --argjson analysis "$analysis" \
+              --argjson intent "$intent" \
+              --arg url "$canonical_url" '
+                {
+                  venue: $intent.venue,
+                  multi_market_identifier: $intent.multi_market_identifier,
+                  instrument_identifier: $intent.instrument_identifier,
+                  market_question: $action.market_question,
+                  action: $action.action,
+                  outcome: $intent.outcome,
+                  side: $intent.side,
+                  reference_price: $intent.reference_price,
+                  notional: $intent.notional,
+                  quantity: $intent.quantity,
+                  currency: $intent.currency,
+                  model_value: ($analysis.model.model_value | tostring),
+                  net_edge: ($analysis.opportunity.net_edge | tostring),
+                  reason: $action.public_reason,
+                  url: $url
+                }
+              ' >> "$notification_rows"
+          done
+
+          if (( ${#claimed_intents[@]} != intent_count )); then
+            echo "::error::At least one JSONL item was not linked to a verified market URL"
+            exit 1
+          fi
+          jq -s '.' "$notification_rows" > "$NOTIFICATION_ITEMS_PATH"
+          jq -s '.' "$verification_rows" > "$URL_VERIFICATION_PATH"
+          if ! jq -e --argjson expected "$intent_count" '
+            type == "array"
+            and length == $expected
+            and all(.[]; .http_status == 200)
+          ' "$URL_VERIFICATION_PATH" >/dev/null; then
+            echo "::error::URL verification coverage is incomplete"
+            exit 1
+          fi
+          echo "Verified $intent_count published Polymarket URL(s)"
+
       - name: Build current-iteration research Release
         id: release-package
         shell: bash
@@ -795,11 +979,20 @@ jobs:
           body=${body//'{{ITEM_COUNT}}'/$item_count}
           body=${body//'{{RELEASE_TAG}}'/$RELEASE_TAG}
           printf '%s\n\n' "$body" > "$RUNTIME_DIR/issue.md"
-          if [[ -s "$TRADE_INTENTS_PATH" ]]; then
-            printf '| Venue | Market | Outcome | Side | Reference price | Notional | Quantity | Currency |\n' >> "$RUNTIME_DIR/issue.md"
-            printf '| --- | --- | --- | --- | ---: | ---: | ---: | --- |\n' >> "$RUNTIME_DIR/issue.md"
-            jq -r '"| \(.venue) | `\(.multi_market_identifier)` | \(.outcome) | \(.side) | \(.reference_price) | \(.notional) | \(.quantity) | \(.currency) |"' \
-              "$TRADE_INTENTS_PATH" >> "$RUNTIME_DIR/issue.md"
+          if [[ "$(jq 'length' "$NOTIFICATION_ITEMS_PATH")" -gt 0 ]]; then
+            jq -r '
+              .[]
+              | "**\(.action) \(.outcome | ascii_upcase)｜\(.market_question)**\n\n"
+                + "- 预测市场：Polymarket\n"
+                + "- 市场标识：`\(.multi_market_identifier)`\n"
+                + "- AI 模型价值：\(.model_value)\n"
+                + "- 参考价格：\(.reference_price)\n"
+                + "- 净优势：\(.net_edge)\n"
+                + "- 交易金额：\(.notional) \(.currency)\n"
+                + "- 交易份额：\(.quantity)\n"
+                + "- 理由：\(.reason)\n"
+                + "- [打开已验证的 Polymarket 盘口](\(.url))\n"
+            ' "$NOTIFICATION_ITEMS_PATH" >> "$RUNTIME_DIR/issue.md"
           else
             printf '_本轮没有通过策略门槛且需要执行的交易意图。_\n' >> "$RUNTIME_DIR/issue.md"
           fi
@@ -821,6 +1014,7 @@ jobs:
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
           FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}
+          GENERATED_AT: ${{ steps.release-package.outputs.generated-at }}
         shell: bash
         run: |
           set -euo pipefail
@@ -855,11 +1049,24 @@ jobs:
             jq -cn \
               --arg receive_id "$FEISHU_CHAT_ID" \
               --arg uuid "forecast-edge-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+              --arg title "Forecast Edge iteration — $GENERATED_AT" \
               --rawfile issue "$RUNTIME_DIR/issue.md" \
               '{
                 receive_id: $receive_id,
-                msg_type: "text",
-                content: ({text: $issue} | tojson),
+                msg_type: "interactive",
+                content: ({
+                  schema: "2.0",
+                  config: {wide_screen_mode: true},
+                  header: {
+                    title: {tag: "plain_text", content: $title},
+                    template: "blue"
+                  },
+                  body: {
+                    elements: [
+                      {tag: "markdown", content: $issue}
+                    ]
+                  }
+                } | tojson),
                 uuid: $uuid
               }'
           )
@@ -879,7 +1086,7 @@ jobs:
             echo "::error::Feishu message delivery failed"
             exit 1
           fi
-          echo "Feishu Issue notification delivered"
+          echo "Feishu Card 2.0 Issue notification delivered"
 
       - name: Report validation diagnostics on failure
         if: ${{ failure() }}
