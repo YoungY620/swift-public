@@ -131,6 +131,14 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         response["checks"][0]["evidence"] = ["release.missing"]
         audit_module.validate_response(response, self.rubric, self.evidence, self.schema)
 
+    def test_warning_may_explicitly_report_a_missing_expected_path(self) -> None:
+        response = self.response()
+        response["overall_status"] = "WARN"
+        response["checks"][0]["status"] = "WARN"
+        response["checks"][0]["evidence"] = ["release.missing"]
+        response["missing_evidence"] = ["release.missing"]
+        audit_module.validate_response(response, self.rubric, self.evidence, self.schema)
+
     def test_critical_failure_cannot_report_overall_pass(self) -> None:
         response = self.response()
         response["checks"][0]["status"] = "FAIL"

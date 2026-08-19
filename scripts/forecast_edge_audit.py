@@ -96,6 +96,14 @@ def validate_response(response: Any, rubric: dict[str, Any], evidence: dict[str,
     if actual != expected:
         raise AuditValidationError("response checks must contain each rubric check exactly once, in rubric order")
 
+    reported_missing = response.get("missing_evidence", [])
+
+    def reported_as_missing(key: str) -> bool:
+        return any(
+            key == missing or key.startswith(missing + ".") or missing.startswith(key + ".")
+            for missing in reported_missing
+        )
+
     for item, rubric_item in zip(response_checks, rubric_checks):
         status = item["status"]
         evidence_keys = item["evidence"]
@@ -105,7 +113,7 @@ def validate_response(response: Any, rubric: dict[str, Any], evidence: dict[str,
             raise AuditValidationError(f"{item['id']} has no evidence citation")
         for key in evidence_keys:
             exists, _ = resolve(evidence, key)
-            if not exists and status in {"PASS", "WARN"}:
+            if not exists and status in {"PASS", "WARN"} and not reported_as_missing(key):
                 raise AuditValidationError(f"{item['id']} cites a missing evidence path")
 
     statuses = [str(item["status"]) for item in response_checks]
@@ -129,10 +137,7 @@ def validate_response(response: Any, rubric: dict[str, Any], evidence: dict[str,
         for key in anomaly["evidence"]:
             exists, _ = resolve(evidence, key)
             if not exists:
-                missing_path_is_reported = any(
-                    key == missing or key.startswith(missing + ".") or missing.startswith(key + ".")
-                    for missing in response.get("missing_evidence", [])
-                )
+                missing_path_is_reported = reported_as_missing(key)
                 if not missing_path_is_reported:
                     raise AuditValidationError("anomaly cites an unreported missing evidence path")
 
