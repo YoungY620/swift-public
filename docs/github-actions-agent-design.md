@@ -205,7 +205,7 @@ Schema 使用 `additionalProperties: false`，并校验价格范围、正数金�
 2. 建议金额按保护限价最多可买的份额 `notional / limit_price`；
 3. 实时可用现金扣除最低现金储备、并为最大费用留足空间后最多可买的份额。
 
-执行器逐档模拟在保护限价内的订单簿成交，计算 VWAP。模拟 VWAP 与 `notional / quantity` 的绝对偏差超过唯一的 `POLYMARKET_MAX_PRICE_DEVIATION_BPS` 阈值时拒绝提交。名义金额偏差与该价格偏差在固定份额下是同一个比例，因此不再设置重复阈值。订单使用保护限价提交，部分成交后取消未成交余量，不自动追价补单。
+执行器逐档模拟在保护价格内的订单簿成交，计算 VWAP。模拟 VWAP 与 `notional / quantity` 的绝对偏差超过唯一的 `POLYMARKET_MAX_PRICE_DEVIATION_BPS` 阈值时拒绝提交。名义金额偏差与该价格偏差在固定份额下是同一个比例，因此不再设置重复阈值。执行开始前先取消账户全部未成交挂单并复查为空；新订单使用带 `max_price`/`min_price` 的 `FOK` 市价单，只允许立即全部成交或整笔不成交，不允许余量停留在订单簿，也不自动追价补单。
 
 ## 定时间隔 N
 

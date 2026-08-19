@@ -83,6 +83,28 @@ def command_preflight(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_cancel_open_orders(args: argparse.Namespace) -> int:
+    with LivePolymarketAdapter(Credentials.from_env()) as adapter:
+        summary = adapter.cancel_all_open_orders()
+    summary.update(
+        {
+            "schema_version": "1.0",
+            "completed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+    )
+    _write_json(args.output, summary)
+    print(
+        json.dumps(
+            {
+                "canceled_order_count": summary["canceled_order_count"],
+                "remaining_open_order_count": 0,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def command_plan(args: argparse.Namespace) -> int:
     intents = _load_intents(args.intents, args.schema)
     preflight = load_json_object(args.preflight, "preflight snapshot")
@@ -91,8 +113,8 @@ def command_plan(args: argparse.Namespace) -> int:
         raise PlanningError("preflight snapshot is bound to another intent file")
     if preflight.get("health", {}).get("geoblock", {}).get("blocked") is not False:
         raise PlanningError("preflight did not prove blocked=false")
-    if preflight.get("conflicting_open_order_count") != 0:
-        raise PlanningError("preflight account has conflicting target-token open orders")
+    if preflight.get("open_order_count") != 0:
+        raise PlanningError("preflight account still has open orders")
     collateral_asset = preflight.get("collateral_asset", {})
     if collateral_asset.get("asset") != "pUSD" or collateral_asset.get("decimals") != 6:
         raise PlanningError("preflight did not resolve the active six-decimal pUSD collateral")
@@ -179,6 +201,9 @@ def _parse_utc(value: str, label: str) -> datetime:
 
 def command_execute(args: argparse.Namespace) -> int:
     document = load_json_object(args.plan, "execution plan")
+    cancellations = load_json_object(args.cancellations, "pre-execution cancellation summary")
+    if cancellations.get("remaining_open_order_count") != 0:
+        raise ExecutionError("pre-execution cancellation did not prove an empty order book")
     if document.get("execution_id") != args.execution_id:
         raise ExecutionError("execution plan id does not match the workflow")
     if document.get("artifact_sha256") != args.artifact_sha256:
@@ -192,6 +217,7 @@ def command_execute(args: argparse.Namespace) -> int:
             "schema_version": "1.0",
             "status": "NO_ACTIONS",
             "execution_id": args.execution_id,
+            "pre_execution_cancellation": cancellations,
             "receipts": [],
         }
         _write_json(args.output, summary)
@@ -231,6 +257,7 @@ def command_execute(args: argparse.Namespace) -> int:
                 limits=limits,
                 ledger=ledger,
                 settlement_timeout_seconds=args.settlement_timeout_seconds,
+                pre_execution_cancellation=cancellations,
             )
         summary["execution_id"] = args.execution_id
         summary["claim"] = claim
@@ -275,6 +302,10 @@ def build_parser(root: Path) -> argparse.ArgumentParser:
     preflight.add_argument("--schema", type=Path, default=schema_default)
     preflight.set_defaults(function=command_preflight)
 
+    cancel = subparsers.add_parser("cancel-open-orders")
+    cancel.add_argument("--output", required=True, type=Path)
+    cancel.set_defaults(function=command_cancel_open_orders)
+
     plan = subparsers.add_parser("plan")
     plan.add_argument("--intents", required=True, type=Path)
     plan.add_argument("--preflight", required=True, type=Path)
@@ -287,6 +318,7 @@ def build_parser(root: Path) -> argparse.ArgumentParser:
 
     execute = subparsers.add_parser("execute")
     execute.add_argument("--plan", required=True, type=Path)
+    execute.add_argument("--cancellations", required=True, type=Path)
     execute.add_argument("--output", required=True, type=Path)
     execute.add_argument("--execution-id", required=True)
     execute.add_argument("--artifact-sha256", required=True)

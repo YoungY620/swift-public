@@ -8,6 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from execution.polymarket.artifact import ArtifactError, load_and_validate_jsonl
+from execution.polymarket.engine import _cap_to_signed_market_quantity
 from execution.polymarket.ledger import LedgerError, SQLiteLedger
 from execution.polymarket.models import (
     BookLevel,
@@ -20,7 +21,6 @@ from execution.polymarket.planner import PlanningError, build_execution_plan
 from execution.polymarket.sdk_adapter import (
     AdapterError,
     LivePolymarketAdapter,
-    open_buy_order_reserve,
 )
 
 
@@ -336,25 +336,152 @@ class SQLiteLedgerTests(unittest.TestCase):
             )
 
 
-class OpenOrderReserveTests(unittest.TestCase):
-    def test_reserves_remaining_buy_notional_with_fee_buffer(self) -> None:
-        reserve = open_buy_order_reserve(
+class MarketOrderClientFixture:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def create_market_order(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"signed": True}
+
+
+class ProtectedMarketOrderTests(unittest.TestCase):
+    def adapter(self) -> tuple[LivePolymarketAdapter, MarketOrderClientFixture]:
+        client = MarketOrderClientFixture()
+        adapter = LivePolymarketAdapter.__new__(LivePolymarketAdapter)
+        adapter.client = client
+        return adapter, client
+
+    def test_buy_is_fok_with_exact_protected_share_request_and_spend_cap(self) -> None:
+        adapter, client = self.adapter()
+        signed = adapter.create_market_order(
+            token_id=TOKEN,
+            price_limit=Decimal("0.52"),
+            quantity=Decimal("9.09"),
+            side="buy",
+            max_buy_spend=Decimal("4.90"),
+        )
+        self.assertEqual(signed, {"signed": True})
+        self.assertEqual(
+            client.calls,
             [
                 {
+                    "token_id": TOKEN,
                     "side": "BUY",
-                    "original_size": "40",
-                    "size_matched": "22.8",
-                    "price": "0.31",
-                },
+                    "amount": Decimal("4.7268"),
+                    "max_spend": Decimal("4.90"),
+                    "max_price": Decimal("0.52"),
+                    "order_type": "FOK",
+                }
+            ],
+        )
+
+    def test_sell_is_fok_with_share_quantity_and_price_floor(self) -> None:
+        adapter, client = self.adapter()
+        adapter.create_market_order(
+            token_id=TOKEN,
+            price_limit=Decimal("0.48"),
+            quantity=Decimal("7"),
+            side="sell",
+        )
+        self.assertEqual(
+            client.calls,
+            [
                 {
+                    "token_id": TOKEN,
                     "side": "SELL",
-                    "original_size": "50",
-                    "size_matched": "0",
-                    "price": "0.3",
-                },
+                    "shares": Decimal("7"),
+                    "min_price": Decimal("0.48"),
+                    "order_type": "FOK",
+                }
+            ],
+        )
+
+    def test_buy_requires_an_all_in_spend_cap(self) -> None:
+        adapter, _ = self.adapter()
+        with self.assertRaisesRegex(AdapterError, "max_buy_spend"):
+            adapter.create_market_order(
+                token_id=TOKEN,
+                price_limit=Decimal("0.52"),
+                quantity=Decimal("9.09"),
+                side="buy",
+            )
+
+    def test_reads_sdk_rounded_share_quantity_from_signed_amounts(self) -> None:
+        @dataclass
+        class SignedFixture:
+            maker_amount: int
+            taker_amount: int
+
+        signed = SignedFixture(maker_amount=4_720_000, taker_amount=9_077_000)
+        self.assertEqual(
+            LivePolymarketAdapter.signed_market_order_quantity(signed, side="buy"),
+            Decimal("9.077"),
+        )
+        self.assertEqual(
+            LivePolymarketAdapter.signed_market_order_quantity(signed, side="sell"),
+            Decimal("4.72"),
+        )
+
+    def test_sdk_rounding_caps_and_recomputes_the_durable_plan(self) -> None:
+        limits = RiskLimits(
+            max_price_deviation_bps=1000,
+            max_quantity_reduction_bps=2000,
+        )
+        planned = build_execution_plan(
+            intents=[intent(price="0.50", notional="5", quantity="10")],
+            markets={TOKEN: market(asks=(("0.52", "100"),))},
+            positions={},
+            available_cash=Decimal("100"),
+            limits=limits,
+        ).orders[0]
+        capped = _cap_to_signed_market_quantity(planned, Decimal("9.077"), limits)
+        self.assertEqual(capped.quantity, Decimal("9.077"))
+        self.assertEqual(sum(fill.quantity for fill in capped.fills), capped.quantity)
+        self.assertEqual(capped.gross_notional, capped.vwap * capped.quantity)
+        self.assertLessEqual(capped.worst_case_cash_effect, planned.worst_case_cash_effect)
+
+
+class CancellationAdapterFixture:
+    def __init__(self, snapshots: list[tuple[dict[str, object], ...]]) -> None:
+        self.snapshots = iter(snapshots)
+        self.canceled: list[str] = []
+
+    def open_orders(self):
+        return next(self.snapshots)
+
+    def cancel_order(self, order_id: str):
+        self.canceled.append(order_id)
+        return {"not_canceled": {}}
+
+    def order_if_open(self, order_id: str):
+        return None
+
+
+class CancelAllOpenOrdersTests(unittest.TestCase):
+    def test_cancels_every_order_and_verifies_account_is_empty(self) -> None:
+        fixture = CancellationAdapterFixture(
+            [
+                ({"id": "old-1"}, {"id": "old-2"}),
+                (),
             ]
         )
-        self.assertEqual(reserve, Decimal("5.59860"))
+        summary = LivePolymarketAdapter.cancel_all_open_orders(fixture)  # type: ignore[arg-type]
+        self.assertEqual(fixture.canceled, ["old-1", "old-2"])
+        self.assertEqual(summary["canceled_order_count"], 2)
+        self.assertEqual(summary["remaining_open_order_count"], 0)
+
+    def test_cancels_order_that_appears_during_the_sweep(self) -> None:
+        fixture = CancellationAdapterFixture(
+            [
+                ({"id": "old-1"},),
+                ({"id": "racing-2"},),
+                (),
+            ]
+        )
+        summary = LivePolymarketAdapter.cancel_all_open_orders(fixture)  # type: ignore[arg-type]
+        self.assertEqual(fixture.canceled, ["old-1", "racing-2"])
+        self.assertEqual(summary["canceled_order_count"], 2)
 
 
 @dataclass

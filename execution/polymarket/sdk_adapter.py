@@ -1,7 +1,8 @@
 """Thin production adapter over Polymarket's official unified Python SDK.
 
-The adapter deliberately uses ``create_limit_order`` plus ``post_order``.
-Unlike the convenience ``place_limit_order`` method, that path does not submit
+The adapter deliberately signs protected FOK market orders with
+``create_market_order`` and submits them separately through ``post_order``.
+Unlike the convenience ``place_market_order`` method, that path does not submit
 an on-chain approval transaction after an allowance rejection.  A scheduled
 executor must fail closed instead of unexpectedly spending gas or widening an
 allowance.
@@ -39,7 +40,6 @@ GEOBLOCK_URL = "https://polymarket.com/api/geoblock"
 ASSETS_URL = "https://api.perpetuals.polymarket.com/v1/info/assets"
 POLYGON_RPC_URL = "https://polygon.drpc.org"
 BASE_UNITS = Decimal("1000000")
-OPEN_BUY_RESERVE_MULTIPLIER = Decimal("1.05")
 PINNED_SDK_VERSION = "0.6.0"
 ORDER_PROTOCOL_VERSION = "2"
 SIGNATURE_TYPE_BY_WALLET = {
@@ -224,24 +224,6 @@ def _model_dict(value: Any) -> dict[str, Any]:
     raise AdapterError(f"cannot serialize SDK value {type(value).__name__}")
 
 
-def open_buy_order_reserve(orders: Iterable[dict[str, Any]]) -> Decimal:
-    """Reserve remaining BUY notional plus a fee buffer for unrelated live orders."""
-
-    reserve = ZERO
-    for order in orders:
-        if str(order.get("side", "")).casefold() != "buy":
-            continue
-        original = decimal_value(order.get("original_size", "0"), "open order original size")
-        matched = decimal_value(order.get("size_matched", "0"), "open order matched size")
-        price = decimal_value(order.get("price", "0"), "open order price")
-        if original < ZERO or matched < ZERO or matched > original:
-            raise AdapterError("open BUY order returned invalid size accounting")
-        if price <= ZERO or price > Decimal("1"):
-            raise AdapterError("open BUY order returned an invalid price")
-        reserve += (original - matched) * price
-    return reserve * OPEN_BUY_RESERVE_MULTIPLIER
-
-
 class LivePolymarketAdapter:
     def __init__(self, credentials: Credentials) -> None:
         try:
@@ -394,6 +376,46 @@ class LivePolymarketAdapter:
             raise AdapterError(f"open-order query failed for {token_id or 'account'}: {exc}") from exc
         return tuple(_model_dict(value) for value in values)
 
+    def cancel_all_open_orders(self) -> dict[str, Any]:
+        """Cancel every resting account order and prove that none remain open."""
+
+        before = self.open_orders()
+        canceled: list[str] = []
+        remaining = before
+        for _ in range(3):
+            if not remaining:
+                break
+            round_ids: list[str] = []
+            for order in remaining:
+                order_id = str(order.get("id", "")).strip()
+                if not order_id:
+                    raise AdapterError("open-order query returned an order without an id")
+                if order_id in round_ids:
+                    raise AdapterError(f"open-order query returned duplicate order {order_id}")
+                round_ids.append(order_id)
+            for order_id in round_ids:
+                result = self.cancel_order(order_id)
+                not_canceled = result.get("not_canceled", {})
+                if order_id in not_canceled and self.order_if_open(order_id) is not None:
+                    raise AdapterError(f"could not cancel pre-existing open order {order_id}")
+                if order_id not in canceled:
+                    canceled.append(order_id)
+            remaining = self.open_orders()
+        if remaining:
+            remaining_ids = sorted(
+                str(order.get("id", "<missing>")) for order in remaining
+            )
+            raise AdapterError(
+                "account still has open orders after the required cancellation sweep: "
+                + ", ".join(remaining_ids)
+            )
+        return {
+            "initial_open_order_count": len(before),
+            "canceled_order_count": len(canceled),
+            "canceled_order_ids": canceled,
+            "remaining_open_order_count": 0,
+        }
+
     def balance_allowance(self, *, asset_type: str, token_id: str | None = None) -> dict[str, Any]:
         try:
             value = self.client.get_balance_allowance(asset_type=asset_type, token_id=token_id)
@@ -484,16 +506,11 @@ class LivePolymarketAdapter:
         conditional: dict[str, Any] = {}
         all_open_orders = self.open_orders()
         open_order_count = len(all_open_orders)
-        target_tokens = {intent.instrument_identifier for intent in intents}
-        conflicting_open_orders = tuple(
-            order for order in all_open_orders if str(order.get("token_id", "")) in target_tokens
-        )
-        if conflicting_open_orders:
+        if all_open_orders:
             raise AdapterError(
-                "account has existing open orders for a target token; autonomous execution is paused"
+                "account has open orders after the required pre-execution cancellation sweep"
             )
-        open_buy_reserve = open_buy_order_reserve(all_open_orders)
-        effective_available_balance = max(ZERO, effective_balance - open_buy_reserve)
+        effective_available_balance = effective_balance
         for intent in intents:
             snapshot = self.market_snapshot(intent)
             markets[intent.instrument_identifier] = snapshot.to_dict()
@@ -528,7 +545,6 @@ class LivePolymarketAdapter:
                 **collateral,
                 "authenticated_balance": decimal_string(authenticated_balance),
                 "public_onchain_balance": decimal_string(public_balance),
-                "open_buy_order_reserve": decimal_string(open_buy_reserve),
                 "effective_available_balance": decimal_string(effective_available_balance),
             },
             "conditional": conditional,
@@ -537,32 +553,58 @@ class LivePolymarketAdapter:
             "allowance_policy": "preexisting-only; scheduled execution never submits approvals",
             "positions": list(positions),
             "open_order_count": open_order_count,
-            "conflicting_open_order_count": len(conflicting_open_orders),
-            "open_order_policy": (
-                "unrelated orders preserved; remaining BUY notional plus 5% is reserved"
-            ),
+            "open_order_policy": "all pre-existing orders canceled before preflight",
             "markets": markets,
         }
 
-    def create_limit_order(
+    def create_market_order(
         self,
         *,
         token_id: str,
-        price: Decimal,
+        price_limit: Decimal,
         quantity: Decimal,
         side: str,
-        expiration_epoch: int,
+        max_buy_spend: Decimal | None = None,
     ) -> Any:
         try:
-            return self.client.create_limit_order(
-                token_id=token_id,
-                price=price,
-                size=quantity,
-                side=side.upper(),
-                expiration=expiration_epoch,
-            )
+            if side == "buy":
+                if max_buy_spend is None:
+                    raise AdapterError("protected BUY market order is missing max_buy_spend")
+                return self.client.create_market_order(
+                    token_id=token_id,
+                    side="BUY",
+                    amount=price_limit * quantity,
+                    max_spend=max_buy_spend,
+                    max_price=price_limit,
+                    order_type="FOK",
+                )
+            if side == "sell":
+                return self.client.create_market_order(
+                    token_id=token_id,
+                    side="SELL",
+                    shares=quantity,
+                    min_price=price_limit,
+                    order_type="FOK",
+                )
+            raise AdapterError(f"unsupported market-order side {side!r}")
+        except AdapterError:
+            raise
         except Exception as exc:
-            raise AdapterError(f"limit-order signing failed: {exc}") from exc
+            raise AdapterError(f"protected FOK market-order signing failed: {exc}") from exc
+
+    @staticmethod
+    def signed_market_order_quantity(signed_order: Any, *, side: str) -> Decimal:
+        """Return the SDK-rounded share quantity encoded in a signed order."""
+
+        field_name = "taker_amount" if side == "buy" else "maker_amount"
+        if side not in {"buy", "sell"}:
+            raise AdapterError(f"unsupported market-order side {side!r}")
+        raw = getattr(signed_order, field_name, None)
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+            raise AdapterError(
+                f"signed protected market order has invalid {field_name}"
+            )
+        return Decimal(raw) / BASE_UNITS
 
     def post_order(self, signed_order: Any) -> Any:
         try:

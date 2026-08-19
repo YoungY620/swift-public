@@ -24,7 +24,7 @@ JSONL 的每一行都必须包含 `(venue, multi_market_identifier, instrument_i
 
 Polymarket signer private key、account wallet、wallet type 和 CLOB credentials 只保存在 EC2 的 `/home/ubuntu/poly-edge-live/runtime/secrets.json`（`0600`），不保存为 GitHub Secret。父图和执行子图都不读取或传递凭据值；workflow 交给 EC2 的业务输入只有逐次 handoff 路径及交易意图 SHA-256。
 
-买单以 `notional / quantity` 作为建议价格。安全份额取建议份额、建议金额按保护限价可买份额、可用现金在计入费用与现金储备后可买份额三者的最小值；实时逐档模拟 VWAP 相对建议价格的绝对偏差超过阈值时，整项拒绝提交。所有订单按保护限价提交，未成交余量会取消。
+买单以 `notional / quantity` 作为建议价格。安全份额取建议份额、建议金额按保护价格可买份额、可用现金在计入费用与现金储备后可买份额三者的最小值；实时逐档模拟 VWAP 相对建议价格的绝对偏差超过阈值时，整项拒绝提交。执行子图先取消账户全部未成交挂单并复查账户没有 open order，再提交带 `max_price`/`min_price` 的 `FOK` 市价单；订单要么按保护价格立即全部成交，要么整笔不成交，不在订单簿留下余量。
 
 执行器通过官方 SDK 自动识别 `EOA`、`POLY_PROXY`、`GNOSIS_SAFE` 和 `DEPOSIT_WALLET`，不能根据 Google/email 或浏览器钱包登录名称猜测签名类型。账户与 CLOB 凭证配置见 [Polymarket 账户认证与执行器配置](polymarket-authentication.md)。
 

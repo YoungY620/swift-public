@@ -125,7 +125,11 @@ class WorkflowContractTests(unittest.TestCase):
             "LEDGER_PATH: /home/ubuntu/poly-edge-live/runtime/execution-ledger.sqlite3",
             self.execution,
         )
-        self.assertIn("cancel remainders", self.execution)
+        self.assertIn("cancel-open-orders", self.execution)
+        adapter = (ROOT / "execution" / "polymarket" / "sdk_adapter.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('order_type="FOK"', adapter)
         self.assertNotIn("ssh ", self.execution)
         self.assertNotIn("scp ", self.execution)
         self.assertNotIn("aws ec2 run-instances", self.execution)
@@ -134,10 +138,12 @@ class WorkflowContractTests(unittest.TestCase):
     def test_execution_details_stay_out_of_actions_logs_until_release(self) -> None:
         execute = self.step(
             self.execution,
-            "Validate, price, execute, cancel remainders, and verify locally",
+            "Validate, cancel open orders, price, execute FOK market orders, and verify locally",
         )
-        for command in ("validate", "preflight", "plan", "execute", "verify"):
+        for command in ("validate", "cancel", "preflight", "plan", "execute", "verify"):
             self.assertIn(f'> "$RUNTIME_DIR/{command}-command.log" 2>&1', execute)
+        self.assertLess(execute.index("cancel-open-orders"), execute.index(" preflight "))
+        self.assertIn('--cancellations "$RUNTIME_DIR/cancellations.json"', execute)
 
     def test_polymarket_credentials_exist_only_in_server_local_file(self) -> None:
         self.assertIn(

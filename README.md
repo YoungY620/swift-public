@@ -20,7 +20,7 @@ scripts/validate_research_iteration.py 多 venue 单轮交付校验
 skills/forecast-edge/               核心研究 Skill
 ```
 
-执行 workflow 直接运行在长期 Ubuntu EC2 的 Linux/X64 self-hosted runner 上，并依赖 `execution/`、`scripts/polymarket_execution.py`、`scripts/run_with_polymarket_secrets.py` 和对应 requirements。Polymarket 私钥与 CLOB credentials 只保存在 EC2 本地 mode-0600 文件中，不进入 GitHub Secrets；workflow 只交接交易意图与摘要。
+执行 workflow 直接运行在长期 Ubuntu EC2 的 Linux/X64 self-hosted runner 上，并依赖 `execution/`、`scripts/polymarket_execution.py`、`scripts/run_with_polymarket_secrets.py` 和对应 requirements。每次执行先取消账户全部未成交挂单，再使用有价格保护的 FOK 市价单立即成交。Polymarket 私钥与 CLOB credentials 只保存在 EC2 本地 mode-0600 文件中，不进入 GitHub Secrets；workflow 只交接交易意图与摘要。
 
 Polymarket 的 Google/email、外部 wallet、legacy Proxy/Safe 与新 Deposit Wallet 认证映射、凭证初始化和 GitHub Environment 配置见 [docs/polymarket-authentication.md](docs/polymarket-authentication.md)。
 

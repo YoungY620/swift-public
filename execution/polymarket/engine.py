@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_UP
 from typing import Any, Iterable
 
 from .ledger import DynamoLedger, SQLiteLedger
@@ -13,6 +14,7 @@ from .models import (
     SHARE_QUANTUM,
     ZERO,
     MarketSnapshot,
+    PlannedFill,
     PlannedOrder,
     RiskLimits,
     TradeIntent,
@@ -22,7 +24,6 @@ from .models import (
 from .planner import build_execution_plan
 from .sdk_adapter import (
     LivePolymarketAdapter,
-    open_buy_order_reserve,
     required_exchange_allowance,
 )
 
@@ -57,11 +58,11 @@ def _replan_one(
     limits: RiskLimits,
 ) -> tuple[PlannedOrder, MarketSnapshot]:
     open_orders = adapter.open_orders()
-    if any(str(order.get("token_id", "")) == original.token_id for order in open_orders):
-        raise ExecutionError("account acquired a target-token open order after preflight")
+    if open_orders:
+        raise ExecutionError("account acquired an open order after the cancellation sweep")
     market = adapter.market_snapshot(original.intent)
     positions = _position_map(adapter)
-    cash = max(ZERO, adapter.collateral_balance() - open_buy_order_reserve(open_orders))
+    cash = adapter.collateral_balance()
     capped_intent = TradeIntent(
         schema_version=original.intent.schema_version,
         venue=original.intent.venue,
@@ -119,6 +120,76 @@ def _assert_allowance(
         raise ExecutionError(
             "preexisting exchange allowance is insufficient; scheduled execution will not approve"
         )
+
+
+def _cap_to_signed_market_quantity(
+    order: PlannedOrder,
+    signed_quantity: Decimal,
+    limits: RiskLimits,
+) -> PlannedOrder:
+    """Reconcile an SDK-rounded FOK share quantity with the protected plan."""
+
+    if signed_quantity > order.quantity:
+        raise UncertainExecutionError(
+            "signed market order exceeds the protected planned quantity"
+        )
+    if signed_quantity == order.quantity:
+        return order
+    if signed_quantity <= ZERO:
+        raise ExecutionError("SDK-rounded market order has no executable quantity")
+    reduction_bps = int(
+        (
+            (order.intent.quantity - signed_quantity)
+            / order.intent.quantity
+            * Decimal("10000")
+        ).to_integral_value(rounding=ROUND_UP)
+    )
+    if reduction_bps > limits.max_quantity_reduction_bps:
+        raise ExecutionError(
+            "SDK market-order rounding exceeds the configured quantity reduction limit"
+        )
+
+    remaining = signed_quantity
+    fills: list[PlannedFill] = []
+    for fill in order.fills:
+        if remaining <= ZERO:
+            break
+        quantity = min(fill.quantity, remaining)
+        fee_per_share = fill.fee / fill.quantity
+        fills.append(
+            PlannedFill(
+                price=fill.price,
+                quantity=quantity,
+                gross_notional=quantity * fill.price,
+                fee=quantity * fee_per_share,
+            )
+        )
+        remaining -= quantity
+    if remaining > ZERO:
+        raise UncertainExecutionError(
+            "SDK-rounded market quantity exceeds the simulated executable book"
+        )
+
+    gross = sum((fill.gross_notional for fill in fills), ZERO)
+    fee = sum((fill.fee for fill in fills), ZERO)
+    limit_gross = signed_quantity * order.limit_price
+    maximum_fee_per_share = order.worst_case_fee / order.quantity
+    worst_fee = signed_quantity * maximum_fee_per_share
+    return replace(
+        order,
+        quantity=signed_quantity,
+        gross_notional=gross,
+        fee=fee,
+        cash_effect=gross + fee if order.side == "buy" else gross - fee,
+        limit_gross_notional=limit_gross,
+        worst_case_fee=worst_fee,
+        worst_case_cash_effect=(
+            limit_gross + worst_fee if order.side == "buy" else limit_gross - worst_fee
+        ),
+        vwap=gross / signed_quantity,
+        quantity_reduction_bps=reduction_bps,
+        fills=tuple(fills),
+    )
 
 
 def _trade_ids_from_order(raw: dict[str, Any] | None) -> set[str]:
@@ -263,6 +334,8 @@ def _verify_fill(
         "market_id": order.market_id,
         "token_id": order.token_id,
         "side": order.side,
+        "order_type": "FOK",
+        "execution_style": "protected_market",
         "status": status,
         "planned_quantity": decimal_string(order.quantity),
         "filled_quantity": decimal_string(filled),
@@ -288,6 +361,7 @@ def execute_orders(
     settlement_timeout_seconds: int = 90,
     expected_account: dict[str, Any] | None = None,
     expires_at: datetime | None = None,
+    pre_execution_cancellation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     orders = tuple(orders)
     receipts: list[dict[str, Any]] = []
@@ -352,13 +426,26 @@ def execute_orders(
                 _assert_allowance(adapter, current, market)
                 before_token = adapter.conditional_balance(current.token_id)
                 before_cash = adapter.collateral_balance()
-                newly_signed = adapter.create_limit_order(
+                newly_signed = adapter.create_market_order(
                     token_id=current.token_id,
-                    price=current.limit_price,
+                    price_limit=current.limit_price,
                     quantity=current.quantity,
                     side=current.side,
-                    expiration_epoch=int(time.time()) + limits.order_expiration_seconds,
+                    max_buy_spend=(
+                        current.worst_case_cash_effect if current.side == "buy" else None
+                    ),
                 )
+                current = _cap_to_signed_market_quantity(
+                    current,
+                    adapter.signed_market_order_quantity(
+                        newly_signed, side=current.side
+                    ),
+                    limits,
+                )
+                if current.quantity < market.min_order_size:
+                    raise ExecutionError(
+                        "SDK-rounded market quantity is below the live minimum order size"
+                    )
                 ledger.save_signed_order(
                     current.intent_index,
                     newly_signed,
@@ -458,6 +545,7 @@ def execute_orders(
             "schema_version": "1.0",
             "completed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "status": "COMPLETED",
+            "pre_execution_cancellation": pre_execution_cancellation or {},
             "receipts": receipts,
         }
         ledger.complete(summary)
@@ -468,6 +556,7 @@ def execute_orders(
             "schema_version": "1.0",
             "completed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "status": "UNCERTAIN",
+            "pre_execution_cancellation": pre_execution_cancellation or {},
             "receipts": receipts,
         }
         ledger.fail(summary, uncertain=True)
@@ -478,6 +567,7 @@ def execute_orders(
             "schema_version": "1.0",
             "completed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "status": "UNCERTAIN" if uncertain else "FAILED",
+            "pre_execution_cancellation": pre_execution_cancellation or {},
             "receipts": receipts,
         }
         ledger.fail(summary, uncertain=uncertain)
@@ -488,6 +578,18 @@ def verify_receipts(
     *, adapter: LivePolymarketAdapter, summary: dict[str, Any]
 ) -> dict[str, Any]:
     health = adapter.health()
+    remaining_open_orders = adapter.open_orders()
+    if remaining_open_orders:
+        raise UncertainExecutionError(
+            "account has open orders after protected market execution"
+        )
+    cancellations = summary.get("pre_execution_cancellation")
+    if not isinstance(cancellations, dict) or cancellations.get(
+        "remaining_open_order_count"
+    ) != 0:
+        raise ExecutionError(
+            "execution receipt does not prove the pre-execution cancellation sweep"
+        )
     receipts = summary.get("receipts")
     if not isinstance(receipts, list):
         raise ExecutionError("execution summary has no receipts list")
@@ -529,5 +631,6 @@ def verify_receipts(
         "schema_version": "1.0",
         "verified_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "health": health,
+        "open_order_count": 0,
         "orders": checks,
     }

@@ -41,7 +41,6 @@ jobs:
       MAX_FEE_PER_SHARE: "0.02"
       MAX_INTENTS: "20"
       PLAN_TTL_SECONDS: "120"
-      ORDER_EXPIRATION_SECONDS: "300"
       SETTLEMENT_TIMEOUT_SECONDS: "90"
       LEDGER_PATH: /home/ubuntu/poly-edge-live/runtime/execution-ledger.sqlite3
 
@@ -136,7 +135,6 @@ jobs:
             --arg max_fee_per_share "$MAX_FEE_PER_SHARE" \
             --argjson max_intents "$MAX_INTENTS" \
             --argjson plan_ttl_seconds "$PLAN_TTL_SECONDS" \
-            --argjson order_expiration_seconds "$ORDER_EXPIRATION_SECONDS" \
             '{
               max_price_deviation_bps:$max_price_deviation_bps,
               max_quantity_reduction_bps:$max_quantity_reduction_bps,
@@ -146,8 +144,7 @@ jobs:
               minimum_cash_reserve:$minimum_cash_reserve,
               max_fee_per_share:$max_fee_per_share,
               max_intents:$max_intents,
-              plan_ttl_seconds:$plan_ttl_seconds,
-              order_expiration_seconds:$order_expiration_seconds
+              plan_ttl_seconds:$plan_ttl_seconds
             }' > "$LOCAL_LIMITS_PATH"
           chmod 600 "$LOCAL_LIMITS_PATH"
 
@@ -159,7 +156,7 @@ jobs:
           "$PYTHON_VENV_DIR/bin/python" -m pip install --disable-pip-version-check \
             --requirement automation/requirements-polymarket-execution.txt
 
-      - name: Validate, price, execute, cancel remainders, and verify locally
+      - name: Validate, cancel open orders, price, execute FOK market orders, and verify locally
         shell: bash
         run: |
           set -euo pipefail
@@ -168,6 +165,11 @@ jobs:
             --output "$RUNTIME_DIR/validated-intents.jsonl" \
             --summary "$RUNTIME_DIR/validation.json" \
             > "$RUNTIME_DIR/validate-command.log" 2>&1
+          "$PYTHON_VENV_DIR/bin/python" scripts/run_with_polymarket_secrets.py \
+            "$SERVER_SECRET_PATH" \
+            "$PYTHON_VENV_DIR/bin/python" scripts/polymarket_execution.py cancel-open-orders \
+            --output "$RUNTIME_DIR/cancellations.json" \
+            > "$RUNTIME_DIR/cancel-command.log" 2>&1
           "$PYTHON_VENV_DIR/bin/python" scripts/run_with_polymarket_secrets.py \
             "$SERVER_SECRET_PATH" \
             "$PYTHON_VENV_DIR/bin/python" scripts/polymarket_execution.py preflight \
@@ -186,6 +188,7 @@ jobs:
             "$SERVER_SECRET_PATH" \
             "$PYTHON_VENV_DIR/bin/python" scripts/polymarket_execution.py execute \
             --plan "$RUNTIME_DIR/plan.json" \
+            --cancellations "$RUNTIME_DIR/cancellations.json" \
             --output "$RUNTIME_DIR/receipt.json" \
             --execution-id "$EXECUTION_ID" \
             --artifact-sha256 "$TRADE_INTENTS_SHA256" \

@@ -254,7 +254,6 @@ class RiskLimits:
     max_fee_per_share: Decimal = Decimal("0.02")
     max_intents: int = 20
     plan_ttl_seconds: int = 90
-    order_expiration_seconds: int = 300
 
     def __post_init__(self) -> None:
         if not 0 <= self.max_price_deviation_bps <= 5000:
@@ -271,8 +270,6 @@ class RiskLimits:
             raise ModelError("max_fee_per_share must be between 0 and 0.10")
         if self.max_intents < 1 or self.plan_ttl_seconds < 15:
             raise ModelError("max_intents must be positive and plan_ttl_seconds at least 15")
-        if not 240 <= self.order_expiration_seconds <= 900:
-            raise ModelError("order_expiration_seconds must be between 240 and 900")
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "RiskLimits":
@@ -281,7 +278,6 @@ class RiskLimits:
             "max_quantity_reduction_bps",
             "max_intents",
             "plan_ttl_seconds",
-            "order_expiration_seconds",
         }
         decimal_fields = {
             "max_order_notional",
@@ -317,8 +313,6 @@ class RiskLimits:
             raise ModelError("max_fee_per_share must be between 0 and 0.10")
         if result.max_intents < 1 or result.plan_ttl_seconds < 15:
             raise ModelError("max_intents must be positive and plan_ttl_seconds at least 15")
-        if not 240 <= result.order_expiration_seconds <= 900:
-            raise ModelError("order_expiration_seconds must be between 240 and 900")
         return result
 
     def to_dict(self) -> dict[str, Any]:
@@ -332,7 +326,6 @@ class RiskLimits:
             "max_fee_per_share": decimal_string(self.max_fee_per_share),
             "max_intents": self.max_intents,
             "plan_ttl_seconds": self.plan_ttl_seconds,
-            "order_expiration_seconds": self.order_expiration_seconds,
         }
 
 
