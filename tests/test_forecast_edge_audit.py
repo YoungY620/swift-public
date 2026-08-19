@@ -43,7 +43,7 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         return {
             "schema_version": "1.0",
             "rubric_id": "forecast-edge-production-audit",
-            "rubric_version": "1.0",
+            "rubric_version": "1.1",
             "overall_status": "PASS",
             "confidence": "HIGH",
             "parent_run_id": "123",
@@ -73,13 +73,23 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertIn("Forecast Edge research and optional execution", self.workflow)
         self.assertIn("Select completed iterations that need agent review", self.workflow)
         self.assertIn("needs.select.outputs.audit-applicable == 'true'", self.workflow)
-        self.assertIn("Run read-only Kimi audit agent", self.workflow)
+        self.assertIn("Run tool-free Kimi Code Agent audit", self.workflow)
         self.assertIn('--agent-file "$AUDIT_AGENT_PROFILE_PATH"', self.workflow)
         profile = AGENT_PROFILE_PATH.read_text(encoding="utf-8")
         self.assertIn("tools: []", profile)
         self.assertIn("subagents: []", profile)
         self.assertNotIn("actions/upload-artifact", self.workflow)
         self.assertNotIn("actions/download-artifact", self.workflow)
+
+    def test_automatic_audits_trip_a_fail_closed_production_breaker(self) -> None:
+        self.assertIn("Trip production circuit breaker on serious findings", self.workflow)
+        self.assertIn("actions/workflows/forecast-edge.yml/disable", self.workflow)
+        self.assertIn("POLYMARKET_LIVE_TRADING_ENABLED", self.workflow)
+        self.assertIn("actions: write", self.workflow)
+        self.assertIn("github.event_name == 'workflow_run'", self.workflow)
+        self.assertIn("inputs['trip-circuit-breaker'] == true", self.workflow)
+        self.assertIn("(.status == \"FAIL\")", self.workflow)
+        self.assertIn("and .status == \"INSUFFICIENT_EVIDENCE\"", self.workflow)
 
     def test_audit_agent_receives_only_the_model_secret(self) -> None:
         import re
@@ -151,7 +161,7 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         with self.assertRaisesRegex(audit_module.AuditValidationError, "secret-like"):
             audit_module.validate_response(response, self.rubric, self.evidence, self.schema)
 
-    def test_extracts_last_json_object_from_cli_chatter(self) -> None:
+    def test_extracts_last_json_object_from_kimi_code_chatter(self) -> None:
         text = 'progress\n• {"old":true}\nNeed final JSON.\n' + json.dumps(self.response(), ensure_ascii=False)
         self.assertEqual(audit_module.extract_last_json_object(text), self.response())
 

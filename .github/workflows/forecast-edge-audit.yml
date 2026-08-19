@@ -12,6 +12,11 @@ on:
         description: Completed Forecast Edge parent workflow run id to audit
         required: true
         type: string
+      trip-circuit-breaker:
+        description: Allow this manual historical replay to disable production on a serious finding
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -67,11 +72,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      actions: read
+      actions: write
       contents: read
     env:
       PARENT_RUN_ID: ${{ github.event.workflow_run.id || inputs['parent-run-id'] }}
       EXPECTED_PARENT_WORKFLOW: Forecast Edge research and optional execution
+      CIRCUIT_BREAKER_ENABLED: ${{ github.event_name == 'workflow_run' || inputs['trip-circuit-breaker'] == true }}
       KIMI_CODE_VERSION: "0.37.0"
       KIMI_MODEL_NAME: kimi-for-coding
       KIMI_MODEL_PROVIDER_TYPE: kimi
@@ -134,7 +140,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-npm-kimi-code-audit-
 
-      - name: Install pinned audit agent and schema validator
+      - name: Install pinned Kimi Code Agent runtime and schema validator
         shell: bash
         run: |
           set -euo pipefail
@@ -190,10 +196,12 @@ jobs:
             --arg interval_hours "$CONFIGURED_INTERVAL_HOURS" \
             --arg anchor_utc_hour "$CONFIGURED_ANCHOR_UTC_HOUR" \
             --arg live_trading_enabled "$LIVE_TRADING_ENABLED" \
+            --arg circuit_breaker_enabled "$CIRCUIT_BREAKER_ENABLED" \
             '{
               interval_hours:($interval_hours|tonumber),
               anchor_utc_hour:($anchor_utc_hour|tonumber),
-              live_trading_enabled:($live_trading_enabled == "true")
+              live_trading_enabled:($live_trading_enabled == "true"),
+              circuit_breaker_enabled:($circuit_breaker_enabled == "true")
             }' > "$AUDIT_EVIDENCE_DIR/configuration.json"
 
       - name: Collect matching final Release evidence
@@ -297,7 +305,7 @@ jobs:
             '.run.id == $run_id and (.jobs | type == "array") and (.configuration.interval_hours | type == "number")' \
             "$AUDIT_EVIDENCE_PATH" >/dev/null
 
-      - name: Run read-only Kimi audit agent
+      - name: Run tool-free Kimi Code Agent audit
         id: audit-agent
         continue-on-error: true
         timeout-minutes: 10
@@ -371,6 +379,7 @@ jobs:
               "$PARENT_RUN_ID" "$(jq -r '.run.html_url' "$AUDIT_EVIDENCE_PATH")"
             printf -- '- Overall status: `%s`\n' "$(jq -r '.overall_status' "$AUDIT_RESULT_PATH")"
             printf -- '- Confidence: `%s`\n\n' "$(jq -r '.confidence' "$AUDIT_RESULT_PATH")"
+            printf -- '- Automatic circuit breaker armed: `%s`\n\n' "$CIRCUIT_BREAKER_ENABLED"
             printf '## Checks\n\n'
             printf '| Check | Severity | Status | Reason |\n'
             printf '|---|---|---|---|\n'
@@ -390,6 +399,53 @@ jobs:
               jq -r '.missing_evidence[] | "- " + (gsub("[\\r\\n]"; " "))' "$AUDIT_RESULT_PATH"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Trip production circuit breaker on serious findings
+        if: ${{ env.CIRCUIT_BREAKER_ENABLED == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          serious_findings=$(jq '[
+            .checks[]
+            | select(
+                (.status == "FAIL")
+                or (
+                  (.severity == "critical" or .severity == "high")
+                  and .status == "INSUFFICIENT_EVIDENCE"
+                )
+              )
+            | .id
+          ]' "$AUDIT_RESULT_PATH")
+          if [[ "$(jq 'length' <<< "$serious_findings")" -eq 0 ]]; then
+            echo "No serious rubric finding; production circuit breaker remains armed and idle."
+            exit 0
+          fi
+
+          breaker_failed=false
+          if ! gh variable set POLYMARKET_LIVE_TRADING_ENABLED \
+            --repo "$GITHUB_REPOSITORY" --body false; then
+            echo "::error::Could not disarm the persistent live-trading variable"
+            breaker_failed=true
+          fi
+          if ! gh api --method PUT \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/forecast-edge.yml/disable"; then
+            echo "::error::Could not disable the Forecast Edge parent workflow"
+            breaker_failed=true
+          fi
+          finding_ids=$(jq -r 'join(", ")' <<< "$serious_findings")
+          {
+            printf '\n## Production circuit breaker\n\n'
+            printf -- '- Triggered: `true`\n'
+            printf -- '- Serious checks: `%s`\n' "$finding_ids"
+            printf -- '- Live trading requested off: `true`\n'
+            printf -- '- Parent workflow disable requested: `true`\n'
+            printf -- '- Recovery requires explicit workflow enablement and live-trading re-arm.\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$breaker_failed" == "true" ]]; then
+            exit 1
+          fi
 
       - name: Enforce critical audit outcome
         shell: bash

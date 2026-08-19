@@ -92,6 +92,14 @@ def main() -> int:
             and "secrets.POLYMARKET_" not in execution
             and audit_secrets == ["KIMI_CODE_API_KEY"]
         ),
+        "audit_circuit_breaker": (
+            "Trip production circuit breaker on serious findings" in audit
+            and "POLYMARKET_LIVE_TRADING_ENABLED" in audit
+            and "actions/workflows/forecast-edge.yml/disable" in audit
+            and '(.status == "FAIL")' in audit
+            and 'and .status == "INSUFFICIENT_EVIDENCE"' in audit
+            and "github.event_name == 'workflow_run'" in audit
+        ),
         "execution_runner_labels": labels,
         "audit_agent_credential_count": len(audit_secrets),
     }

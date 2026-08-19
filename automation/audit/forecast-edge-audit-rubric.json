@@ -1,5 +1,6 @@
 {
   "schema_version": "1.0",
+  "rubric_version": "1.1",
   "rubric_id": "forecast-edge-production-audit",
   "description": "Forecast Edge 父工作流完成后的研究、真实执行、发布和安全审计。缺少必要证据时不得判定通过。",
   "statuses": [
@@ -10,6 +11,15 @@
     "NOT_APPLICABLE"
   ],
   "checks": [
+    {
+      "id": "CONTROL-001",
+      "severity": "critical",
+      "title": "严重异常触发生产熔断",
+      "applies_when": "automatic workflow_run audit",
+      "expected": "任何 FAIL，或 critical/high 的 INSUFFICIENT_EVIDENCE，都关闭 live-trading 变量并禁用父 workflow；手工历史回放默认不熔断。",
+      "evidence_required": ["source_contract.audit_circuit_breaker", "configuration"],
+      "pass_condition": "源码熔断合约成立；自动审计严重异常时必须执行熔断，手工回放只有显式启用后才允许熔断。"
+    },
     {
       "id": "SCHED-001",
       "severity": "critical",

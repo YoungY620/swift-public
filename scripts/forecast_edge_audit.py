@@ -58,7 +58,7 @@ def reject_secret_like_text(document: Any) -> None:
 
 
 def extract_last_json_object(text: str) -> dict[str, Any]:
-    """Extract the last complete JSON object from a CLI stream."""
+    """Extract the last complete JSON object from a Kimi Code output stream."""
     for pattern in SECRET_PATTERNS:
         if pattern.search(text):
             raise AuditValidationError("audit output contains secret-like text")
@@ -109,7 +109,7 @@ def validate_response(response: Any, rubric: dict[str, Any], evidence: dict[str,
         evidence_keys = item["evidence"]
         if status not in ALLOWED_STATUSES:
             raise AuditValidationError(f"unknown status for {item['id']}")
-        if status != "NOT_APPLICABLE" and not evidence_keys:
+        if status in {"PASS", "WARN"} and not evidence_keys:
             raise AuditValidationError(f"{item['id']} has no evidence citation")
         for key in evidence_keys:
             exists, _ = resolve(evidence, key)
@@ -156,7 +156,7 @@ def fallback_response(rubric: dict[str, Any], parent_run_id: str, reason: str) -
     return {
         "schema_version": "1.0",
         "rubric_id": rubric["rubric_id"],
-        "rubric_version": rubric["schema_version"],
+        "rubric_version": rubric["rubric_version"],
         "overall_status": "INSUFFICIENT_EVIDENCE",
         "confidence": "LOW",
         "parent_run_id": str(parent_run_id),
