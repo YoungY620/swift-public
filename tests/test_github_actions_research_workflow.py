@@ -42,7 +42,7 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         )
         validate = self.step("Validate workflow configuration")
         self.assertIn("BASH_VERSINFO[0] < 4", validate)
-        self.assertIn("gh jq npm python3 sha256sum tar timeout", validate)
+        self.assertIn("curl gh jq npm python3 sha256sum tar timeout", validate)
 
     def test_each_release_contains_one_report_and_restores_a_rolling_window(self) -> None:
         restore = self.step("Restore recent research Releases")
@@ -122,7 +122,27 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
             },
         )
 
-    def test_feishu_receives_the_exact_issue_body_after_issue_creation(self) -> None:
+    def test_published_polymarket_urls_are_canonical_and_verified(self) -> None:
+        verify = self.step("Resolve and verify published Polymarket URLs")
+        format_issue = self.step("Format Issue notification")
+
+        self.assertLess(
+            self.workflow.index("      - name: Resolve and verify published Polymarket URLs\n"),
+            self.workflow.index("      - name: Build current-iteration research Release\n"),
+        )
+        self.assertIn("polymarket_data.py", verify)
+        self.assertIn('market "$market_id"', verify)
+        self.assertIn("Gamma's canonical event slug", verify)
+        self.assertIn("https://polymarket.com/event/", verify)
+        self.assertIn("--location --fail-with-body", verify)
+        self.assertIn("%{http_code}", verify)
+        self.assertIn('[[ "$http_status" != "200" ]]', verify)
+        self.assertIn('echo "URL_VERIFICATION_PATH=$runtime_dir/url_verification.json"', self.workflow)
+        self.assertIn('all(.[]; .http_status == 200)', verify)
+        self.assertIn("NOTIFICATION_ITEMS_PATH", format_issue)
+        self.assertIn("[打开已验证的 Polymarket 盘口]", format_issue)
+
+    def test_feishu_receives_the_exact_issue_body_as_a_card_after_issue_creation(self) -> None:
         send = self.step("Send Issue notification to Feishu")
 
         self.assertLess(
@@ -130,8 +150,13 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
             self.workflow.index("      - name: Send Issue notification to Feishu\n"),
         )
         self.assertIn('--rawfile issue "$RUNTIME_DIR/issue.md"', send)
-        self.assertIn('msg_type: "text"', send)
-        self.assertIn("content: ({text: $issue} | tojson)", send)
+        self.assertIn('msg_type: "interactive"', send)
+        self.assertIn('schema: "2.0"', send)
+        self.assertIn('tag: "markdown", content: $issue', send)
+        self.assertIn('tag: "plain_text", content: $title', send)
+        self.assertIn('template: "blue"', send)
+        self.assertNotIn('msg_type: "text"', send)
+        self.assertNotIn("lark_md", send)
         self.assertIn('uuid: $uuid', send)
         self.assertIn("receive_id_type=chat_id", send)
         self.assertNotIn("FEISHU_RECEIVE_ID_TYPE", send)
