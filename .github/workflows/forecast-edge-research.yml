@@ -64,11 +64,7 @@ jobs:
   research:
     needs: schedule-gate
     if: ${{ needs.schedule-gate.outputs.should-run == 'true' }}
-    runs-on:
-      - self-hosted
-      - macOS
-      - ARM64
-      - forecast-edge
+    runs-on: ubuntu-latest
     timeout-minutes: 350
     permissions:
       actions: read
@@ -85,7 +81,7 @@ jobs:
       ALLOW_PUBLIC_TRADE_INTENTS: ${{ vars.ALLOW_PUBLIC_TRADE_INTENTS || 'false' }}
       ALLOW_PUBLIC_RESEARCH_RELEASES: ${{ vars.ALLOW_PUBLIC_RESEARCH_RELEASES || 'false' }}
       KIMI_CODE_VERSION: "0.37.0"
-      KIMI_MODEL_NAME: kimi-k3-highspeed
+      KIMI_MODEL_NAME: kimi-for-coding
       KIMI_MODEL_PROVIDER_TYPE: kimi
       KIMI_MODEL_BASE_URL: https://api.kimi.com/coding/v1
       KIMI_DISABLE_TELEMETRY: "1"
@@ -201,45 +197,6 @@ jobs:
             exit 1
           fi
           echo "Kimi provider exposes the configured model"
-
-      - name: Probe Polymarket runner trade availability
-        id: polymarket-readiness
-        shell: bash
-        run: |
-          set -euo pipefail
-          geoblock=$(curl --fail --silent --show-error --max-time 20 \
-            https://polymarket.com/api/geoblock)
-          if ! jq -e '.blocked | type == "boolean"' <<< "$geoblock" >/dev/null; then
-            echo "::error::Polymarket geoblock response does not contain a boolean blocked field"
-            exit 1
-          fi
-          blocked=$(jq -r '.blocked' <<< "$geoblock")
-          country=$(jq -r '.country // "unknown"' <<< "$geoblock")
-          region=$(jq -r '.region // ""' <<< "$geoblock")
-
-          clob_health=$(curl --fail --silent --show-error --max-time 20 \
-            https://clob.polymarket.com/)
-          if ! jq -e 'select(. == "OK")' <<< "$clob_health" >/dev/null; then
-            echo "::error::Polymarket CLOB health endpoint did not return OK"
-            exit 1
-          fi
-
-          echo "blocked=$blocked" >> "$GITHUB_OUTPUT"
-          echo "country=$country" >> "$GITHUB_OUTPUT"
-          echo "region=$region" >> "$GITHUB_OUTPUT"
-          {
-            echo '### Polymarket runner trade-availability probe'
-            echo "- Official geoblock result: \`blocked=$blocked\`"
-            echo "- Detected country/region: \`$country${region:+/$region}\`"
-            echo '- Public CLOB health: `OK`'
-            echo '- Scope: read-only network probe; no authentication, signing, allowance check, or order submission'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          if [[ "$blocked" == "true" ]]; then
-            echo "::warning::Polymarket reports this runner location as blocked for order placement; research may continue, but this runner must not be used for trading"
-          else
-            echo "::notice::This runner passed the public geoblock probe; that is necessary but not sufficient proof that an authenticated order can execute"
-          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -666,7 +623,7 @@ jobs:
           fi
           exit 1
 
-      - name: Resolve and verify published Polymarket URLs
+      - name: Resolve and verify published market URLs
         shell: bash
         run: |
           set -euo pipefail
@@ -719,90 +676,101 @@ jobs:
               [.current_positions[], .candidates[]]
               | map(select((.market.id | tostring) == $market_id))[0]
             ' "$current_report")
-            report_url=$(jq -r '.market.url' <<< "$analysis")
+            market_url=$(jq -r '.market.url' <<< "$analysis")
+            if ! python3 - "$market_url" <<'PY'
+          import sys
+          from urllib.parse import urlsplit
 
-            gamma_market="$RUNTIME_DIR/gamma-market-$action_index.json"
-            python3 skills/forecast-edge/scripts/polymarket_data.py \
-              --pretty market "$market_id" > "$gamma_market"
-            if ! jq -e \
-              --arg market_id "$market_id" \
-              --arg market_question "$market_question" \
-              '(.id | tostring) == $market_id
-               and .question == $market_question
-               and (.condition_id | type == "string" and length > 0)
-               and (.url | type == "string" and startswith("https://polymarket.com/event/"))' \
-              "$gamma_market" >/dev/null; then
-              echo "::error::Gamma market metadata does not match report action $action_index"
-              exit 1
-            fi
-
-            condition_id=$(jq -r '.condition_id' "$gamma_market")
-            canonical_url=$(jq -r '.url' "$gamma_market")
-            token_id=$(jq -r --arg outcome "$outcome" '
-              [.outcomes[] | select((.name | ascii_downcase) == $outcome)]
-              | if length == 1 and (.[0].token_id | type == "string" and length > 0)
-                then .[0].token_id
-                else error("market outcome does not map to exactly one token")
-                end
-            ' "$gamma_market")
-            if [[ "${report_url%%\?*}" != "${canonical_url%%\?*}" ]]; then
-              echo "::error::Report market URL does not use Gamma's canonical event slug"
+          url = sys.argv[1]
+          parsed = urlsplit(url)
+          if (
+              url != url.strip()
+              or any(character.isspace() for character in url)
+              or parsed.scheme != "https"
+              or not parsed.hostname
+              or parsed.username is not None
+              or parsed.password is not None
+          ):
+              raise SystemExit("published market URL must be an absolute credential-free HTTPS URL")
+          PY
+            then
+              echo "::error::Report action $action_index contains an unsafe market URL"
               exit 1
             fi
 
             matches=$(jq -s \
-              --arg condition_id "$condition_id" \
-              --arg token_id "$token_id" \
               --arg outcome "$outcome" \
-              --arg side "$expected_side" '
+              --arg side "$expected_side" \
+              --arg reference_price "$(jq -r '.execution.vwap | tostring' <<< "$action")" \
+              --arg notional "$(jq -r '.execution.gross_cash | tostring' <<< "$action")" \
+              --arg quantity "$(jq -r '.execution.shares | tostring' <<< "$action")" '
                 to_entries
                 | map(select(
-                    .value.venue == "polymarket"
-                    and (.value.multi_market_identifier | ascii_downcase) == ($condition_id | ascii_downcase)
-                    and .value.instrument_identifier == $token_id
-                    and .value.outcome == $outcome
+                    .value.outcome == $outcome
                     and .value.side == $side
+                    and (.value.reference_price | tonumber) == ($reference_price | tonumber)
+                    and (.value.quantity | tonumber) == ($quantity | tonumber)
+                    and ((.value.notional | tonumber) - ($notional | tonumber)) <= 0.01
+                    and ((.value.notional | tonumber) - ($notional | tonumber)) >= -0.01
                   ))
               ' "$TRADE_INTENTS_PATH")
-            if [[ "$(jq 'length' <<< "$matches")" != "1" ]]; then
-              echo "::error::Action $action_index does not map to exactly one Polymarket JSONL item"
+
+            mapfile -t unclaimed_matches < <(
+              while IFS= read -r candidate_index; do
+                if [[ -z "${claimed_intents[$candidate_index]:-}" ]]; then
+                  printf '%s\n' "$candidate_index"
+                fi
+              done < <(jq -r '.[].key' <<< "$matches")
+            )
+            if (( ${#unclaimed_matches[@]} != 1 )); then
+              echo "::error::Action $action_index does not map unambiguously to one JSONL item"
               exit 1
             fi
-            intent_index=$(jq -r '.[0].key' <<< "$matches")
-            if [[ -n "${claimed_intents[$intent_index]:-}" ]]; then
-              echo "::error::Multiple report actions map to JSONL item $intent_index"
-              exit 1
-            fi
+            intent_index=${unclaimed_matches[0]}
             claimed_intents[$intent_index]=1
-            intent=$(jq -c '.[0].value' <<< "$matches")
+            intent=$(jq -cs --argjson index "$intent_index" '.[$index]' "$TRADE_INTENTS_PATH")
 
             verification_result=$(
               curl --location --fail-with-body --silent --show-error \
                 --retry 3 --retry-all-errors --retry-delay 2 --max-time 30 \
                 --output /dev/null \
                 --write-out $'%{http_code}\t%{url_effective}' \
-                "$canonical_url"
+                "$market_url"
             )
             IFS=$'\t' read -r http_status effective_url <<< "$verification_result"
             if [[ "$http_status" != "200" ]]; then
-              echo "::error::Published Polymarket URL did not return HTTP 200: $canonical_url"
+              echo "::error::Published market URL did not return HTTP 200: $market_url"
+              exit 1
+            fi
+            if ! python3 - "$effective_url" <<'PY'
+          import sys
+          from urllib.parse import urlsplit
+
+          parsed = urlsplit(sys.argv[1])
+          if parsed.scheme != "https" or not parsed.hostname:
+              raise SystemExit("effective market URL is not HTTPS")
+          PY
+            then
+              echo "::error::Published market URL redirected outside HTTPS"
               exit 1
             fi
             verified_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
             jq -cn \
+              --arg venue "$(jq -r '.venue' <<< "$intent")" \
               --arg market_id "$market_id" \
-              --arg condition_id "$condition_id" \
-              --arg original_report_url "$report_url" \
-              --arg canonical_url "$canonical_url" \
+              --arg multi_market_identifier "$(jq -r '.multi_market_identifier' <<< "$intent")" \
+              --arg instrument_identifier "$(jq -r '.instrument_identifier' <<< "$intent")" \
+              --arg market_url "$market_url" \
               --arg effective_url "$effective_url" \
               --arg verified_at "$verified_at" \
               --argjson http_status "$http_status" \
               '{
-                market_id: $market_id,
-                condition_id: $condition_id,
-                original_report_url: $original_report_url,
-                canonical_url: $canonical_url,
+                venue: $venue,
+                research_market_id: $market_id,
+                multi_market_identifier: $multi_market_identifier,
+                instrument_identifier: $instrument_identifier,
+                market_url: $market_url,
                 effective_url: $effective_url,
                 http_status: $http_status,
                 verified_at: $verified_at
@@ -811,7 +779,7 @@ jobs:
               --argjson action "$action" \
               --argjson analysis "$analysis" \
               --argjson intent "$intent" \
-              --arg url "$canonical_url" '
+              --arg url "$market_url" '
                 {
                   venue: $intent.venue,
                   multi_market_identifier: $intent.multi_market_identifier,
@@ -846,7 +814,7 @@ jobs:
             echo "::error::URL verification coverage is incomplete"
             exit 1
           fi
-          echo "Verified $intent_count published Polymarket URL(s)"
+          echo "Verified $intent_count published market URL(s)"
 
       - name: Build current-iteration research Release
         id: release-package
@@ -983,7 +951,7 @@ jobs:
             jq -r '
               .[]
               | "**\(.action) \(.outcome | ascii_upcase)｜\(.market_question)**\n\n"
-                + "- 预测市场：Polymarket\n"
+                + "- 预测市场：\(.venue)\n"
                 + "- 市场标识：`\(.multi_market_identifier)`\n"
                 + "- AI 模型价值：\(.model_value)\n"
                 + "- 参考价格：\(.reference_price)\n"
@@ -991,7 +959,7 @@ jobs:
                 + "- 交易金额：\(.notional) \(.currency)\n"
                 + "- 交易份额：\(.quantity)\n"
                 + "- 理由：\(.reason)\n"
-                + "- [打开已验证的 Polymarket 盘口](\(.url))\n"
+                + "- [打开已验证的市场页面](\(.url))\n"
             ' "$NOTIFICATION_ITEMS_PATH" >> "$RUNTIME_DIR/issue.md"
           else
             printf '_本轮没有通过策略门槛且需要执行的交易意图。_\n' >> "$RUNTIME_DIR/issue.md"
