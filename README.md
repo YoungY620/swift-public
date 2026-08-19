@@ -5,8 +5,6 @@ Poly-edge 是面向多预测市场的长期概率优势研究与交易意图生�
 ## 自动化入口
 
 - `.github/workflows/forecast-edge-research.yml`：定时研究、报告归档、交易意图校验、Release、Issue 与飞书通知。
-- `.github/workflows/execute-polymarket.yml`：在显式启用并配置生产环境后消费已验证的交易意图。
-- `.github/workflows/pages.yml`：按要求保留原实现；当前仓库未配置 `ENABLE_FORECAST_EDGE_PAGES`，不会执行。
 
 研究 workflow 在 GitHub 托管的 `ubuntu-latest` runner 上，通过 `kimi --skills-dir "$GITHUB_WORKSPACE/skills"` 直接加载 `skills/forecast-edge`。它依赖：
 
@@ -19,8 +17,6 @@ scripts/validate_trade_intents.py   研究产物校验
 scripts/validate_research_iteration.py 多 venue 单轮交付校验
 skills/forecast-edge/               核心研究 Skill
 ```
-
-执行 workflow 还依赖 `execution/`、`scripts/polymarket_execution.py`、`scripts/run_with_polymarket_secrets.py` 和对应 requirements。
 
 ## 本机定时任务
 

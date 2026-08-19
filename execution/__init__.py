@@ -1,2 +1,0 @@
-"""Prediction-market execution adapters."""
-
