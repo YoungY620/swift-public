@@ -1051,7 +1051,7 @@ def render_report(report: dict[str, Any]) -> str:
         "",
         f"- 运行 ID：`{run['id']}`",
         f"- 数据截止：{run['data_cutoff']}",
-        f"- 预测市场：`{run['account'].get('adapter', 'legacy-polymarket')}`",
+        f"- 预测市场：`{run['account'].get('adapter', 'legacy-unknown')}`",
         f"- 账户：`{run['account'].get('identifier', run['account'].get('address'))}`",
         f"- 可用抵押资金：{portfolio['available_collateral']}",
         f"- 保守总资金：{portfolio['estimated_bankroll']}",
@@ -1175,8 +1175,6 @@ def previous_reports(
             continue
         account = report["run"]["account"]
         report_adapter = account.get("adapter")
-        if report_adapter is None and account.get("address"):
-            report_adapter = "polymarket"
         if adapter is not None and report_adapter != adapter:
             continue
         results.append(

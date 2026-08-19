@@ -74,6 +74,8 @@ class TradeIntentTests(unittest.TestCase):
                 str(jsonl),
                 "--schema",
                 str(ROOT / "schemas" / "trade-intent.schema.json"),
+                "--enabled-venues",
+                "polymarket",
             ]
             snapshot_path = directory / "account.json"
             snapshot_path.write_text(

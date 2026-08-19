@@ -21,8 +21,11 @@ def sample() -> dict:
 
 
 class TradeMathTests(unittest.TestCase):
-    def test_fee_formula_is_applied_per_filled_price(self) -> None:
-        self.assertAlmostEqual(trade_math.fee_per_share(0.5, 0.04), 0.01)
+    def test_requires_adapter_normalized_fee_per_unit(self) -> None:
+        document = sample()
+        del document["book"]["asks"][0]["fee_per_unit"]
+        with self.assertRaisesRegex(trade_math.TradeMathError, "fee_per_unit"):
+            trade_math.evaluate_trade(document)
 
     def test_new_position_uses_fractional_kelly_and_preserves_edge(self) -> None:
         result = trade_math.evaluate_trade(sample())
@@ -66,7 +69,9 @@ class TradeMathTests(unittest.TestCase):
     def test_trim_fires_when_position_share_drifts_above_threshold(self) -> None:
         document = sample()
         document["current_position"] = {"shares": 400, "cost": 200}
-        document["book"]["bids"] = [{"price": 0.60, "size": 1000}]
+        document["book"]["bids"] = [
+            {"price": 0.60, "size": 1000, "fee_per_unit": 0.0096}
+        ]
         result = trade_math.evaluate_trade(document)
         self.assertEqual(result["signal"], "TRIM")
         self.assertEqual(result["recommended_target_cash"], 200)
@@ -82,7 +87,9 @@ class TradeMathTests(unittest.TestCase):
     def test_trim_stays_off_below_threshold(self) -> None:
         document = sample()
         document["current_position"] = {"shares": 20, "cost": 10}
-        document["book"]["bids"] = [{"price": 0.60, "size": 1000}]
+        document["book"]["bids"] = [
+            {"price": 0.60, "size": 1000, "fee_per_unit": 0.0096}
+        ]
         result = trade_math.evaluate_trade(document)
         self.assertFalse(result["trim"]["trigger"])
         self.assertEqual(result["trim"]["trim_shares"], 0.0)
@@ -92,7 +99,9 @@ class TradeMathTests(unittest.TestCase):
     def test_trim_skips_dust_below_minimum_order_size(self) -> None:
         document = sample()
         document["current_position"] = {"shares": 255.76, "cost": 130}
-        document["book"]["bids"] = [{"price": 0.60, "size": 1000}]
+        document["book"]["bids"] = [
+            {"price": 0.60, "size": 1000, "fee_per_unit": 0.0096}
+        ]
         result = trade_math.evaluate_trade(document)
         trim = result["trim"]
         self.assertGreater(trim["share"], trim["threshold"])
@@ -105,7 +114,9 @@ class TradeMathTests(unittest.TestCase):
         document = sample()
         document["model_probability"] = 0.50
         document["current_position"] = {"shares": 400, "cost": 200}
-        document["book"]["bids"] = [{"price": 0.60, "size": 1000}]
+        document["book"]["bids"] = [
+            {"price": 0.60, "size": 1000, "fee_per_unit": 0.0096}
+        ]
         result = trade_math.evaluate_trade(document)
         self.assertEqual(result["signal"], "SELL")
         self.assertFalse(result["trim"]["trigger"])
@@ -130,7 +141,9 @@ class TradeMathTests(unittest.TestCase):
         document = sample()
         document["model_probability"] = 0.60
         document["current_position"] = {"shares": 10, "cost": 9}
-        document["book"]["bids"] = [{"price": 0.70, "size": 10}]
+        document["book"]["bids"] = [
+            {"price": 0.70, "size": 10, "fee_per_unit": 0.0084}
+        ]
         result = trade_math.evaluate_trade(document)
         self.assertEqual(result["signal"], "SELL")
         self.assertTrue(result["sell"]["fill"]["fully_filled"])
@@ -139,7 +152,9 @@ class TradeMathTests(unittest.TestCase):
         document = sample()
         document["model_probability"] = 0.55
         document["current_position"] = {"shares": 300, "cost": 200}
-        document["book"]["bids"] = [{"price": 0.40, "size": 500}]
+        document["book"]["bids"] = [
+            {"price": 0.40, "size": 500, "fee_per_unit": 0.0096}
+        ]
         result = trade_math.evaluate_trade(document)
         self.assertEqual(result["signal"], "MAINTAIN")
         self.assertEqual(result["buy"]["suggested_shares"], 0.0)

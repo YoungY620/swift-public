@@ -37,7 +37,7 @@ class PreviouslyResearchedTests(unittest.TestCase):
         payload = json.loads(proc.stdout) if proc.stdout.strip() else {}
         return proc.returncode, payload, proc.stderr
 
-    def test_collects_market_ids_and_event_slugs_from_positions_and_candidates(self) -> None:
+    def test_collects_market_ids_without_interpreting_venue_urls(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             reports = Path(tmp)
             write_report(reports, "run-a", {
@@ -52,10 +52,8 @@ class PreviouslyResearchedTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(payload["reports_scanned"], 2)
             self.assertEqual(payload["researched_market_ids"], ["111", "222", "333"])
-            self.assertEqual(
-                payload["researched_event_slugs"],
-                ["fed-july", "venezuela-leader"],
-            )
+            self.assertEqual(payload["researched_event_identifiers"], [])
+            self.assertNotIn("researched_event_slugs", payload)
 
     def test_adapter_filter_keeps_identifiers_venue_local(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -125,16 +123,6 @@ class PreviouslyResearchedTests(unittest.TestCase):
             code, _, stderr = self.run_script(reports)
             self.assertEqual(code, 2)
             self.assertIn("unreadable report", stderr)
-
-    def test_novel_quota_config_present(self) -> None:
-        config = json.loads((ROOT / "config" / "defaults.json").read_text())
-        scan = config["scan"]
-        self.assertEqual(scan["min_novel_deep_research_events"], 10)
-        self.assertGreaterEqual(
-            scan["candidate_research_attempt_threshold_per_tier"],
-            scan["min_novel_deep_research_events"],
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

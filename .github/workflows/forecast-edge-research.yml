@@ -74,9 +74,8 @@ jobs:
       group: forecast-edge-research-${{ github.repository }}
       cancel-in-progress: false
     env:
-      ENABLED_PREDICTION_MARKETS: ${{ vars.FORECAST_EDGE_MARKET_ADAPTERS || 'polymarket' }}
-      MARKET_ACCOUNTS_JSON: ${{ vars.FORECAST_EDGE_MARKET_ACCOUNTS_JSON || '' }}
-      LEGACY_POLYMARKET_ACCOUNT: ${{ vars.POLYMARKET_ACCOUNT }}
+      ENABLED_PREDICTION_MARKETS: ${{ vars.FORECAST_EDGE_MARKET_ADAPTERS }}
+      MARKET_ACCOUNTS_JSON: ${{ vars.FORECAST_EDGE_MARKET_ACCOUNTS_JSON }}
       HISTORY_RELEASE_COUNT: ${{ vars.FORECAST_EDGE_HISTORY_RELEASE_COUNT || '2' }}
       REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
       ALLOW_PUBLIC_TRADE_INTENTS: ${{ vars.ALLOW_PUBLIC_TRADE_INTENTS || 'false' }}
@@ -134,6 +133,14 @@ jobs:
               exit 1
             fi
           done
+          if [[ -z "$ENABLED_PREDICTION_MARKETS" ]]; then
+            echo "::error::Required repository variable FORECAST_EDGE_MARKET_ADAPTERS is not configured"
+            exit 1
+          fi
+          if [[ -z "$MARKET_ACCOUNTS_JSON" ]]; then
+            echo "::error::Required repository variable FORECAST_EDGE_MARKET_ACCOUNTS_JSON is not configured"
+            exit 1
+          fi
           enabled_adapters=${ENABLED_PREDICTION_MARKETS//[[:space:]]/}
           if [[ ! "$enabled_adapters" =~ ^[a-z][a-z0-9-]*(,[a-z][a-z0-9-]*)*$ ]]; then
             echo "::error::FORECAST_EDGE_MARKET_ADAPTERS must be a comma-separated adapter list"
@@ -152,15 +159,7 @@ jobs:
               exit 1
             fi
           done
-
           accounts_json=$MARKET_ACCOUNTS_JSON
-          if [[ -z "$accounts_json" ]]; then
-            if [[ "$enabled_adapters" != "polymarket" || -z "$LEGACY_POLYMARKET_ACCOUNT" ]]; then
-              echo "::error::FORECAST_EDGE_MARKET_ACCOUNTS_JSON must map every enabled adapter to its public account input"
-              exit 1
-            fi
-            accounts_json=$(jq -cn --arg account "$LEGACY_POLYMARKET_ACCOUNT" '{polymarket: $account}')
-          fi
           if ! jq -e --argjson expected "${#adapter_rows[@]}" '
             type == "object"
             and length == $expected

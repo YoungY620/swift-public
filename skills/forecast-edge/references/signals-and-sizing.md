@@ -9,13 +9,7 @@ YES: v = p
 NO:  v = 1 - p
 ```
 
-Use fresh executable order-book prices, not a displayed last trade or midpoint. Use the selected adapter's executable instrument, fee metadata, and fee calculation at every filled price level. The currently registered adapter normalizes its fee as:
-
-```text
-fee = shares × fee_rate × price × (1 - price)
-```
-
-An adapter whose native fee rule differs must provide the corresponding tested calculation; never apply another venue's formula by analogy.
+Use fresh executable order-book prices, not a displayed last trade or midpoint. Use the selected adapter's executable instrument and its `fee_per_unit` value at every filled price level. The adapter must calculate that normalized amount from the venue's native fee rule; shared research and `trade_math.py` must never derive or select a venue fee formula.
 
 ## Crossing rules
 
@@ -128,7 +122,7 @@ After calculating standalone caps for all retained opportunities, send them toge
 A held position can grow past its intended share of bankroll when its price rises. Measure the position at its complete executable exit value and trim the drift without waiting for a sell crossing:
 
 ```text
-best_bid_net = best_bid - sell_fee_per_share(best_bid)
+best_bid_net = best_bid - sell_fee_per_unit(best_bid)
 t = kelly_fraction × max(0, (v - best_bid_net) / (1 - best_bid_net))
 share = liquidation_value(all held shares at bid VWAP after sell fees) / bankroll
 T = max(trim_band_multiplier × t, trim_ceiling_fraction)

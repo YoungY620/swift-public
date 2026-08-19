@@ -19,21 +19,11 @@ class ResearchHistoryError(ValueError):
     """Raised when the reports archive is unavailable or malformed."""
 
 
-def legacy_event_slug_from_url(url: str) -> str:
-    """Extract a legacy Polymarket event slug for pre-adapter report compatibility."""
-    marker = "/event/"
-    if marker not in url:
-        return ""
-    slug = url.split(marker, 1)[1].split("?", 1)[0].split("/", 1)[0].strip()
-    return slug
-
-
 def collect_researched(reports_dir: Path, adapter: str | None = None) -> dict[str, Any]:
     if not reports_dir.is_dir():
         raise ResearchHistoryError(f"reports directory not found: {reports_dir}")
     market_ids: set[str] = set()
     event_identifiers: set[str] = set()
-    legacy_event_slugs: set[str] = set()
     scanned = 0
     for path in sorted(reports_dir.glob("*/report.json")):
         try:
@@ -45,8 +35,6 @@ def collect_researched(reports_dir: Path, adapter: str | None = None) -> dict[st
         run = document.get("run")
         account = run.get("account") if isinstance(run, dict) else None
         report_adapter = account.get("adapter") if isinstance(account, dict) else None
-        if report_adapter is None and isinstance(account, dict) and account.get("address"):
-            report_adapter = "polymarket"
         if adapter is not None and report_adapter != adapter:
             continue
         scanned += 1
@@ -68,11 +56,6 @@ def collect_researched(reports_dir: Path, adapter: str | None = None) -> dict[st
                 event_identifier = str(market.get("event_identifier") or "").strip()
                 if event_identifier:
                     event_identifiers.add(event_identifier)
-                slug = legacy_event_slug_from_url(str(market.get("url", "")))
-                if slug:
-                    legacy_event_slugs.add(slug)
-                    if not event_identifier:
-                        event_identifiers.add(slug)
     def sort_key(value: str) -> tuple[int, object]:
         return (0, int(value)) if value.isdigit() else (1, value)
 
@@ -83,9 +66,8 @@ def collect_researched(reports_dir: Path, adapter: str | None = None) -> dict[st
         "researched_event_count": len(event_identifiers),
         "researched_market_identifiers": sorted(market_ids, key=sort_key),
         "researched_event_identifiers": sorted(event_identifiers),
-        # Compatibility aliases for reports produced before the adapter contract.
+        # Compatibility alias for the pre-adapter market-id field name.
         "researched_market_ids": sorted(market_ids, key=sort_key),
-        "researched_event_slugs": sorted(legacy_event_slugs),
     }
 
 

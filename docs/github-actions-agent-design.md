@@ -1,50 +1,30 @@
 # GitHub Actions Agent 工作流设计记录
 
-状态：第一阶段正在按多市场 adapter 架构验收；Polymarket 执行 workflow 已存在但默认不启用真实交易。
+状态：多市场 adapter 研究架构已实现；仓库只负责研究、交易意图、归档和通知。
 
-本文件记录基于 GitHub Actions 运行 Forecast Edge Agent 的已确定需求、建议设计和待确认事项。第一阶段只实现跨市场研究、生成交易意图、校验、归档和通知；真实交易由各预测市场独立的第二阶段工作流完成。
+本文件记录基于 GitHub Actions 运行 Forecast Edge Agent 的研究 workflow 设计。每次 research 必须生成交易意图 JSONL，并完成校验、归档和通知；仓库不包含真实下单实现。
 
 ## 安全边界
 
-- 第一工作流只读取已启用预测市场的公开账户、市场、订单簿和持仓数据，不保存或使用交易凭据，不提交订单。
-- 各市场的第二阶段工作流才允许接触该市场自己的交易凭据。它必须重新校验 artifact 中唯一的 JSONL 文件、市场、持仓、价格、金额、数量和成交后状态，不能把第一工作流的结果直接当成可信订单。
-- Kimi Code API Key、交易凭据和通知凭据只通过 GitHub Actions Secrets 注入；fork 不继承任何 Repository Secrets。
-- 不使用 VPN 绕过交易平台的地域、条款或法律限制。真实交易只能运行在操作者依法获准使用 Polymarket 的网络和司法辖区中。
+- 研究 workflow 只读取已启用预测市场的公开账户、市场、订单簿和持仓数据，不保存或使用交易凭据，不提交订单。
+- Kimi Code API Key 和通知凭据只通过 GitHub Actions Secrets 注入；fork 不继承任何 Repository Secrets。
+- 交易意图是研究产物而不是订单。workflow 不认证 venue、不签名、不提交订单，也不注入任何交易凭据。
 
-## 总体架构：统一研究，分市场执行
+## 总体架构：统一研究，adapter 隔离
 
-### 阶段一：统一研究工作流
+### 统一研究工作流
 
-第一阶段使用一个统一 workflow。它可以根据不同市场的参考文档和公开 API 获取数据，但对下游只发布统一的、经过校验的交易意图协议。
+研究阶段使用一个统一 workflow。它可以根据不同市场的 adapter 和参考文档获取数据，并发布统一的、经过校验的交易意图协议。
 
-- Workflow 从 `FORECAST_EDGE_MARKET_ADAPTERS` 读取已启用 adapter，未配置时兼容现有部署并默认使用 `polymarket`。只有登记在 `config/adapters.json` 且实现完整只读契约的 adapter 才能启用。
+- Workflow 从必须显式配置的 `FORECAST_EDGE_MARKET_ADAPTERS` 读取已启用 adapter。只有登记在 `config/adapters.json` 且实现完整只读契约的 adapter 才能启用。
 - 每个平台在仓库内提供自己的 API、标识、价格单位、订单簿、持仓和结算规则文档；必要时提供只读 adapter/helper。
 - Agent 只能输出已启用且已登记的平台；未知平台必须使 Schema 校验失败。
 - 组合筛选和资金分配发生在统一研究阶段，但每个 venue 使用真实、独立的账户快照和可用资金，不能假设资金可以在平台之间即时转移。
 - 统一 artifact 仅包含一个 `trade-intents.jsonl` 文件，该文件可以同时包含多个 venue 的 item；研究报告、Manifest、校验摘要和其他中间结果禁止放入 artifact。
 
-当前注册表只内置 Polymarket adapter，因此默认部署仍只产生 Polymarket 条目；支持 Kalshi 时必须同时补充 venue 文档、只读 adapter、标识约束和测试，不能仅在 Schema 中写入一个平台名。
+当前注册表只内置一个 venue adapter，但这只是已安装实现清单，不是核心默认值。增加任何新 venue 时，必须补充 venue 文档、只读 adapter、标识约束和测试，不能修改共享 workflow 来增加 venue 分支，也不能仅在 Schema 中写入平台名。
 
-### 阶段二：按市场拆分的执行工作流
-
-每个预测市场拥有独立 workflow，例如：
-
-- `execute-polymarket.yml` 下载统一 artifact，只保留 `venue == "polymarket"` 的 item，使用 Polymarket Environment Secrets 和执行逻辑。
-- `execute-kalshi.yml` 下载同一个统一 artifact，只保留 `venue == "kalshi"` 的 item，使用 Kalshi Environment Secrets 和执行逻辑。
-
-多个执行 workflow 可以监听同一个研究 workflow 的 `workflow_run: completed`。它们都使用同一个上游 `workflow_run.id` 下载该次运行的精确 artifact，然后各自过滤、重新校验和执行；不存在“取最新文件”的竞态。
-
-每个执行器必须：
-
-1. 通过上游 `workflow_run.id` 下载精确 artifact，并重新校验其中唯一的 `trade-intents.jsonl`；如需核对 provenance 和 digest，再读取同一 run 对应的研究 Release Manifest；
-2. 再按固定 venue 过滤，禁止通过输入参数临时切换 venue；
-3. 对过滤后的每项执行 venue 专属的市场、账户、持仓和价格复核；
-4. 没有本 venue 指令时安全跳过；
-5. 使用独立的 GitHub Environment、Secrets、并发锁和幂等记录。
-
-独立执行 workflow 不提供跨 venue 的原子成交保证。如果未来策略要求 Polymarket 与 Kalshi 两条腿必须同时成交，需要新增跨市场执行协调器和 leg-risk 处理，不能依赖两个并行 workflow 自然实现原子套利。
-
-## 第一工作流：定时研究与交易意图
+## 定时研究与交易意图
 
 ### 已确定需求
 
@@ -54,7 +34,7 @@
 4. 工作流用多个可观察的 step 完成安装、配置检查、滚动历史 Release 恢复、账户快照、Agent 运行、Schema 校验、卖单持仓校验、重试、Release 发布、artifact 上传和 Issue 通知；不由一个总控脚本隐藏全部流程。
 5. Agent 生成可同时包含多个预测市场的 JSONL 交易意图。每一行必须是一个 JSON object，禁止 Schema 未声明的字段。
 6. 初次结果不合格时，使用仓库内固定的修复 prompt 再次运行 Kimi Code。重试次数达到约定上限后 workflow 失败。
-7. 只有通过全部校验的 JSONL 才能上传为下游 artifact 或发布通知。
+7. 只有通过全部校验的 JSONL 才能上传为 artifact 或发布通知。
 8. 同一仓库的定时 iteration 不允许重叠运行。
 
 ### 建议的分步结构
@@ -69,7 +49,7 @@
 8. 对所有 `sell` 项，按 item 的 venue 使用对应账户快照，确认对应 outcome 的真实可卖持仓不少于建议数量。
 9. 校验失败时保存机器可读的错误信息，使用固定修复 prompt 让 Kimi Code 重写同一个输出文件，然后重复步骤 7 和 8。
 10. 按配置的滚动窗口恢复最近若干个研究 Release，供 Agent 比较历史证据和近期机会；本轮报告仍只描述本轮重新研究的持仓和候选市场。
-11. artifact 仅上传验证通过的 `trade-intents.jsonl`。校验摘要和 provenance manifest 进入研究 Release；账户快照和 Kimi session 不进入 artifact，未来执行器必须重新获取实时账户状态。
+11. artifact 仅上传验证通过的 `trade-intents.jsonl`。校验摘要和 provenance manifest 进入研究 Release；账户快照和 Kimi session 不进入 artifact。
 12. 用固定 Markdown 模板生成通知，在本仓库创建 Issue，并把同一份 `issue.md` 原文作为 Feishu Card 2.0 markdown 发送到飞书私聊。
 
 ### Kimi Code 已确认能力
@@ -109,9 +89,9 @@ Workflow 声明 `contents: write` 以创建 Release 和对应 tag。仓库的 `S
 
 GitHub Release 继承仓库可见性。private repository 中的 Release 受仓库权限控制；public repository 会公开本轮研究报告，因此除 `ALLOW_PUBLIC_TRADE_INTENTS=true` 外还必须显式设置 `ALLOW_PUBLIC_RESEARCH_RELEASES=true` 才允许运行。
 
-## 第一阶段配置与 Secret 边界
+## 研究配置与 Secret 边界
 
-第一阶段需要用户配置四个 Secret；其中三个仅用于飞书通知：
+研究 workflow 需要用户配置四个 Secret；其中三个仅用于飞书通知：
 
 | 名称 | 类型 | 原因 |
 | --- | --- | --- |
@@ -124,9 +104,8 @@ GitHub Release 继承仓库可见性。private repository 中的 Release 受仓�
 
 | 名称 | 默认值 | 用途 |
 | --- | --- | --- |
-| `POLYMARKET_ACCOUNT` | 无 | 仅启用 Polymarket 且未设置通用账户 JSON 时使用的兼容 profile/address。 |
-| `FORECAST_EDGE_MARKET_ADAPTERS` | `polymarket` | 逗号分隔的已注册 adapter 列表。 |
-| `FORECAST_EDGE_MARKET_ACCOUNTS_JSON` | 空 | adapter 到公开账户输入的 JSON object；未设置且仅启用 Polymarket 时自动使用旧变量。 |
+| `FORECAST_EDGE_MARKET_ADAPTERS` | 无，必需 | 逗号分隔的已注册 adapter 列表。 |
+| `FORECAST_EDGE_MARKET_ACCOUNTS_JSON` | 无，必需 | adapter 到公开账户输入的 JSON object，必须与启用列表精确对应。 |
 | `FORECAST_EDGE_INTERVAL_HOURS` | `12` | 定时 iteration 间隔，整数且至少 6。 |
 | `FORECAST_EDGE_ANCHOR_UTC_HOUR` | `2` | 定时窗口的 UTC 锚点。 |
 | `FORECAST_EDGE_HISTORY_RELEASE_COUNT` | `2` | 恢复多少个最近单轮 Release，允许 2–20。 |
@@ -134,13 +113,13 @@ GitHub Release 继承仓库可见性。private repository 中的 Release 受仓�
 | `ALLOW_PUBLIC_TRADE_INTENTS` | `false` | public repository 中对公开 JSONL 的显式风险确认。 |
 | `ALLOW_PUBLIC_RESEARCH_RELEASES` | `false` | public repository 中对公开研究报告的显式风险确认。 |
 
-稳定且公开的实现参数直接写在 Workflow：默认 adapter 为 `polymarket`、Kimi Code CLI 为 `0.37.0`、模型名为 `kimi-for-coding`、provider URL 与类型、telemetry 开关、重试次数、timeout 和文件名。它们不是部署凭据，不需要 Repository Secret。`${{ github.token }}` 是 GitHub 为每次 Run 自动生成的短期 token，也不需要用户设置。
+稳定且公开的实现参数直接写在 Workflow：Kimi Code CLI 为 `0.37.0`、模型名为 `kimi-for-coding`、provider URL 与类型、telemetry 开关、重试次数、timeout 和文件名。venue 和账户不是实现常量，必须通过上述通用 Repository Variables 显式配置。`${{ github.token }}` 是 GitHub 为每次 Run 自动生成的短期 token，也不需要用户设置。
 
-第一阶段不配置任何 Polymarket 交易凭据、钱包私钥、签名 Secret、VPN Secret 或 Kalshi Secret；这些只可能属于未来独立的第二阶段执行 Workflow。
+研究 workflow 不配置任何 venue 交易凭据、钱包私钥、签名 Secret 或 VPN Secret。
 
 ## Research runner 网络边界
 
-第一阶段只需要访问各 adapter 声明的公开市场、订单簿、账户和证据来源，不执行 venue 的交易地域探针，也不注入交易凭据。真实交易的网络与司法辖区检查属于对应的第二阶段执行 workflow。
+研究 workflow 只需要访问各 adapter 声明的公开市场、订单簿、账户和证据来源，不执行 venue 的交易地域探针，也不注入交易凭据。
 
 ## JSONL 交易意图契约
 
@@ -156,10 +135,10 @@ GitHub Release 继承仓库可见性。private repository 中的 Release 受仓�
 - `side`：`buy` 或 `sell`。
 - `reference_price`：统一为每份 outcome 合约 `0 < price <= 1` 的研究时参考价格。
 - `notional`：以 item 声明的结算/抵押资产计价的预估名义金额。
-- `quantity`：选择 outcome 的合约数量；Polymarket shares 和 Kalshi contracts 在协议层统一称为 quantity。
+- `quantity`：选择 outcome 的合约数量；各 venue 的原生单位在协议层统一称为 quantity。
 - `currency`：`notional` 的计价资产/货币，避免跨 venue 时把 USD、USDC 或其他抵押资产静默混用。
 
-Schema 应使用 `additionalProperties: false`，并校验价格范围、正数金额、正数数量以及 `notional ≈ reference_price × quantity`。最终执行工作流仍需用新订单簿重新计算，不能依赖研究时的参考价格。
+Schema 使用 `additionalProperties: false`，并校验价格范围、正数金额、正数数量以及 `notional ≈ reference_price × quantity`。`reference_price` 明确只是研究快照，不代表已提交或保证成交的价格。
 
 不同平台的原生 ID 可能碰撞，同一市场的 YES/NO instrument 也不同，因此全局交易路由 key 定义为：
 
@@ -171,22 +150,12 @@ Schema 应使用 `additionalProperties: false`，并校验价格范围、正数�
 
 ### market 与 instrument 的区别
 
-一个 market ID 不一定足以执行订单，因此统一协议必须区分：
+一个 market ID 不一定足以唯一确定 outcome instrument，因此统一协议必须区分：
 
 - `multi_market_identifier`：具体二元市场本身的 ID；
 - `instrument_identifier`：所选 outcome 的可交易 instrument。
 
-例如：
-
-- Polymarket 同时存在 Gamma market `id`、`conditionId`、event ID 和每个 outcome 的 CLOB token/asset ID。执行 CLOB 订单最终需要 outcome 的 token ID。
-- Kalshi 区分 event ticker 与 market ticker。具体 market ticker 才是可交易市场标识；其执行 API 再结合 `outcome` 解释订单方向。
-
-v1 采用以下 venue 映射：
-
-1. Polymarket 的 `multi_market_identifier` 使用 `conditionId`；
-2. Polymarket 的 `instrument_identifier` 固定为所选 outcome 的 CLOB token ID；
-3. Kalshi 的映射在实现 Kalshi adapter 时再确定；
-4. 人类可核查的 market URL 不进入交易协议，通知层可以独立补充。URL 对下单不是必需字段。
+具体平台有哪些原生 ID、哪个 ID 对应 market、哪个 ID 对应 outcome instrument，全部由 `config/adapters.json`、venue adapter 和其 reference 文档共同定义。共享研究文档、Schema 和 workflow 不包含平台专属映射。人类可核查的 market URL 不进入交易协议；通知层通过对应 adapter 独立解析并验证 URL。
 
 ### 待确认：价格、金额和份额
 
@@ -194,9 +163,9 @@ v1 采用以下 venue 映射：
 
 - `reference_price`：研究时估计的平均成交价，范围 `(0, 1]`；
 - `notional`：`currency` 计价的总金额；
-- `quantity`：统一 outcome 合约数量，执行器再映射为 venue 的 shares/contracts。
+- `quantity`：统一 outcome 合约数量；venue 原生单位语义由 adapter 文档解释。
 
-第一阶段使用最多 18 位小数的普通十进制字符串，禁止指数记数法；`notional` 与 `reference_price × quantity` 的绝对误差最多为 `0.01`。第二工作流可接受的实时滑点阈值仍待确认。
+研究阶段使用最多 18 位小数的普通十进制字符串，禁止指数记数法；`notional` 与 `reference_price × quantity` 的绝对误差最多为 `0.01`。
 
 ## 定时间隔 N
 
@@ -204,15 +173,15 @@ v1 采用以下 venue 映射：
 
 `on.schedule.cron` 是静态 YAML，不能引用 `${{ vars.* }}`。此外，Cron 的 `*/7` 小时会在每天午夜重置，并不能保证跨天严格每 7 小时运行。
 
-第一阶段采用任意整数 N：Workflow 每小时第 `23` 分钟触发一次，首个 gate step 校验 `FORECAST_EDGE_INTERVAL_HOURS` 是不小于 6 的整数，并按 UTC epoch hour 与可配置 anchor 决定是否开始 iteration。未命中的 run 很快结束，但 Actions 页面会出现按小时的跳过记录。研究 job 使用 `concurrency` 防止长时间 Agent iteration 重叠；`workflow_dispatch` 手动运行绕过时间 gate。
+研究 workflow 采用任意整数 N：Workflow 每小时第 `23` 分钟触发一次，首个 gate step 校验 `FORECAST_EDGE_INTERVAL_HOURS` 是不小于 6 的整数，并按 UTC epoch hour 与可配置 anchor 决定是否开始 iteration。未命中的 run 很快结束，但 Actions 页面会出现按小时的跳过记录。研究 job 使用 `concurrency` 防止长时间 Agent iteration 重叠；`workflow_dispatch` 手动运行绕过时间 gate。
 
 ## 重试语义
 
-第一阶段采用初次运行加 3 次修复，共最多 4 次 Kimi 调用。每次修复启动新 session，读取滚动窗口内恢复的单轮历史报告、原 JSONL 与校验错误；Workflow 同时提供本轮开始前的历史报告路径清单，清单内报告只能作为滚动上下文，不能被误判为本轮新增报告。若本轮有效私有报告已经存在，修复不得重复研究或归档第二份报告。
+研究阶段采用初次运行加 3 次修复，共最多 4 次 Kimi 调用。每次修复启动新 session，读取滚动窗口内恢复的单轮历史报告、原 JSONL 与校验错误；Workflow 同时提供本轮开始前的历史报告路径清单，清单内报告只能作为滚动上下文，不能被误判为本轮新增报告。若本轮有效私有报告已经存在，修复不得重复研究或归档第二份报告。
 
 ## Issue 与飞书通知
 
-第一阶段在 private repository 中默认每个成功 iteration 创建一个新 Issue。将 Repository Variable `CREATE_TRADE_INTENT_ISSUE` 设为 `false` 可以关闭 Issue，仅保留本轮研究 Release 和只含 JSONL 的交易 artifact；public repository 不创建包含交易数量的 Issue。
+研究 workflow 在 private repository 中默认每个成功 iteration 创建一个新 Issue。将 Repository Variable `CREATE_TRADE_INTENT_ISSUE` 设为 `false` 可以关闭 Issue，仅保留本轮研究 Release 和只含 JSONL 的交易 artifact；public repository 不创建包含交易数量的 Issue。
 
 无论是否通过配置关闭 GitHub Issue，成功 iteration 都会把为 Issue 生成的同一个临时 `issue.md` 原样放进 Feishu Card 2.0 的 markdown element，并发送到 `FEISHU_CHAT_ID`。Workflow 使用 App ID 与 App Secret 获取短期 tenant token，不保存该 token；发送请求带有基于 GitHub run 和 attempt 的幂等键。飞书应用只需机器人发送消息权限，不引入 receive ID 类型、机器人名称或 webhook 等额外配置。
 
@@ -220,34 +189,7 @@ v1 采用以下 venue 映射：
 
 GitHub Artifact 和 Release 都不是应用层加密存储。统一交易意图 artifact 包含方向和数量，本轮研究 Release 还可能包含账户研究、证据和仓位线索。public repository 默认拒绝运行；只有同时设置 `ALLOW_PUBLIC_TRADE_INTENTS=true` 和 `ALLOW_PUBLIC_RESEARCH_RELEASES=true` 接受两类披露后才放行，并且仍不会创建包含数量的 Issue。
 
-## 第二阶段工作流：真实交易（延期实现）
-
-### 精确绑定第一工作流的一次运行
-
-每个 venue workflow 都可以使用 `workflow_run`：
-
-- 只监听第一工作流的 `completed` 事件；
-- 要求 `conclusion == success`；
-- 如果只接受定时 iteration，要求上游事件是 `schedule`；
-- 使用 `github.event.workflow_run.id` 下载该次运行上传的精确 artifact，而不是“最新 artifact”；artifact 中必须恰好只有 `trade-intents.jsonl`；
-- 由上游 run ID 和 run attempt 构造对应 Release tag，读取 `research-release-manifest.json` 核对源 commit 和 JSONL digest；即使不读取 Release，执行器仍必须独立完成 JSONL Schema、市场、持仓和实时报价校验。
-
-这样每个 venue 的执行工作流都锚定到唯一的研究 run，不会误取其他定时或手动运行的文件。多个 venue workflow 可以锚定同一个研究 run，各自只处理自己的 item。
-
-不要把第二阶段改成依赖 `on: release`：第一阶段使用默认 `GITHUB_TOKEN` 创建 Release 时，该写操作通常不会递归触发新的 workflow。`workflow_run` 才是执行阶段的触发源；Release 只提供本轮研究报告、滚动历史来源和可核对的 provenance。
-
-### 待确认和延期项
-
-- 标准 GitHub-hosted runner 不能保证位于爱尔兰或印度，也不能把某个共享出口 IP 当作稳定交易地域。真实交易应使用位于合规地区、由操作者控制的 self-hosted runner，并用专用 label/runner group 锁定。
-- 交易 Secret 的具体清单、钱包类型、签名方式和最小权限。
-- 最大允许价格偏差、金额偏差、最小订单、余额保护和单次/单日风险上限。
-- buy 与 sell 分别以 notional 还是 quantity 为权威输入，以及二者不一致时的舍入规则。
-- 部分成交后的取消、补单、退出和人工介入策略。
-- 是否在真实交易 environment 上启用 GitHub required reviewers，形成最终人工批准门。
-- 交易后的持仓核对、审计日志、告警和幂等键设计。
-
 ## 后续需要确认的决策
 
-1. 第二阶段执行器的价格偏差、金额偏差和风险阈值。
-2. Kalshi 的 market/instrument 映射和账户数据契约。
-3. Issue 在公开仓库中的降敏策略。
+1. 新 venue adapter 的 market/instrument 映射和账户数据契约。
+2. Issue 在公开仓库中的降敏策略。

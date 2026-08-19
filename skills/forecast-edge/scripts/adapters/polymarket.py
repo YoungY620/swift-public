@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -169,6 +170,50 @@ def normalize_candidate_events(raw: Any) -> dict[str, Any]:
     return result
 
 
+def normalize_book_response(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise NormalizationError("book response must be an object")
+    book = raw.get("book")
+    fee = raw.get("fee")
+    if not isinstance(book, dict) or not isinstance(fee, dict):
+        raise NormalizationError("book response is missing book or fee metadata")
+    try:
+        fee_rate = float(fee["fee_rate"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise NormalizationError("book response has no valid fee rate") from exc
+    if not math.isfinite(fee_rate) or fee_rate < 0:
+        raise NormalizationError("book response has no valid fee rate")
+
+    normalized_book = dict(book)
+    for side in ("bids", "asks"):
+        levels = book.get(side)
+        if not isinstance(levels, list):
+            raise NormalizationError(f"book {side} must be a list")
+        normalized_levels = []
+        for index, level in enumerate(levels):
+            if not isinstance(level, dict):
+                raise NormalizationError(f"book {side}[{index}] must be an object")
+            try:
+                price = float(level["price"])
+                size = float(level["size"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise NormalizationError(
+                    f"book {side}[{index}] has invalid price or size"
+                ) from exc
+            if not math.isfinite(price) or not 0 <= price <= 1:
+                raise NormalizationError(f"book {side}[{index}] has invalid price")
+            if not math.isfinite(size) or size < 0:
+                raise NormalizationError(f"book {side}[{index}] has invalid size")
+            normalized_level = dict(level)
+            normalized_level["fee_per_unit"] = fee_rate * price * (1.0 - price)
+            normalized_levels.append(normalized_level)
+        normalized_book[side] = normalized_levels
+
+    result = dict(raw)
+    result["book"] = normalized_book
+    return result
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pretty", action="store_true")
@@ -191,10 +236,11 @@ def main() -> int:
         elif args.command == "candidate-events":
             result = normalize_candidate_events(native("candidate-events", args.arguments))
         elif args.command == "book":
-            raw = native("book", args.arguments)
-            if not isinstance(raw, dict):
-                raise NormalizationError("book response must be an object")
-            result = {"schema_version": "1.0", "adapter": ADAPTER, **raw}
+            result = {
+                "schema_version": "1.0",
+                "adapter": ADAPTER,
+                **normalize_book_response(native("book", args.arguments)),
+            }
         else:
             if len(args.arguments) != 1:
                 raise NormalizationError("canonical-url requires exactly one market identifier or id")

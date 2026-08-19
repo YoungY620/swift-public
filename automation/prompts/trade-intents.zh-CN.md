@@ -20,7 +20,7 @@
 - `reference_price` 是研究时订单簿给出的该 outcome 预估平均成交价，按每份合约 `0 < price <= 1` 表示，不包含费用。
 - `reference_price` 必须等于私有报告对应 action 的 `execution.vwap`。
 - `notional` 是 `reference_price × quantity` 的预估名义金额，不包含费用，并与私有报告对应 action 的 `execution.gross_cash` 一致。
-- `quantity` 是该 outcome 的合约数量；执行器再解释为 venue 的 shares/contracts。
+- `quantity` 是该 outcome 的合约数量；venue 原生单位语义由对应 adapter 文档解释。
 - `currency` 必须使用对应 adapter 标准化账户快照中的真实 `portfolio.currency`，不得假设固定抵押资产或跨 venue 复用币种。
 - `reference_price`、`notional` 和 `quantity` 必须使用普通十进制字符串，禁止指数记数法。
 

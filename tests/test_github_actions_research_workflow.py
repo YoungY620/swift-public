@@ -159,11 +159,28 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("FEISHU_RECEIVE_ID_TYPE", send)
         self.assertNotIn("FEISHU_EXPECTED_BOT_NAME", send)
 
-    def test_stable_public_options_are_workflow_constants(self) -> None:
+    def test_market_adapters_and_accounts_are_explicit_deployment_variables(self) -> None:
         self.assertIn(
-            "ENABLED_PREDICTION_MARKETS: ${{ vars.FORECAST_EDGE_MARKET_ADAPTERS || 'polymarket' }}",
+            "ENABLED_PREDICTION_MARKETS: ${{ vars.FORECAST_EDGE_MARKET_ADAPTERS }}",
             self.workflow,
         )
+        self.assertIn(
+            "MARKET_ACCOUNTS_JSON: ${{ vars.FORECAST_EDGE_MARKET_ACCOUNTS_JSON }}",
+            self.workflow,
+        )
+        self.assertIn(
+            "Required repository variable FORECAST_EDGE_MARKET_ADAPTERS is not configured",
+            self.workflow,
+        )
+        self.assertIn(
+            "Required repository variable FORECAST_EDGE_MARKET_ACCOUNTS_JSON is not configured",
+            self.workflow,
+        )
+        self.assertNotIn("|| 'polymarket'", self.workflow)
+        self.assertNotIn("LEGACY_POLYMARKET_ACCOUNT", self.workflow)
+        self.assertNotIn("vars.POLYMARKET_ACCOUNT", self.workflow)
+
+    def test_stable_public_options_are_workflow_constants(self) -> None:
         self.assertIn('KIMI_CODE_VERSION: "0.37.0"', self.workflow)
         self.assertIn("KIMI_MODEL_NAME: kimi-for-coding", self.workflow)
         self.assertIn(

@@ -398,7 +398,7 @@ def build_parser(root: Path) -> argparse.ArgumentParser:
         type=Path,
         default=root / "schemas" / "trade-intent.schema.json",
     )
-    parser.add_argument("--enabled-venues", default="polymarket")
+    parser.add_argument("--enabled-venues", required=True)
     parser.add_argument("--account-snapshots-manifest", type=Path, required=True)
     parser.add_argument(
         "--adapter-registry",

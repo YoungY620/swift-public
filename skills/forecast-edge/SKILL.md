@@ -11,6 +11,7 @@ Estimate final settlement probabilities more accurately than the market, compare
 
 - Use only the venue adapters registered in `config/adapters.json`. Never branch on a venue inside the research method.
 - Use public, read-only data. Never request credentials, authenticate, sign, or submit orders.
+- For every automated research iteration, always write and validate the required trade-intent JSONL. Write a valid empty file when there are no actionable intents; never omit the artifact or weaken the strategy gates merely to populate it.
 - Estimate the probability of the exact settlement outcome, not the next short-term price move.
 - Express every model as `P(market settles YES)`. Derive the `NO` direction value as `1 - P(YES)`.
 - Use a point estimate. Do not introduce probability distributions or confidence intervals.
@@ -85,7 +86,7 @@ Treat script results as deterministic calculations, not research judgments. The 
 
 ## Read resources progressively
 
-- Read [market-adapters.md](references/market-adapters.md) before any account, market, URL, fee, or order-book retrieval. Then read only the selected adapter's venue-specific reference document; for the registered Polymarket adapter this is [polymarket-data.md](references/polymarket-data.md).
+- Read [market-adapters.md](references/market-adapters.md) before any account, market, URL, fee, or order-book retrieval. Then read only the selected adapter's venue-specific reference document declared by `config/adapters.json`.
 - Read [research-method.md](references/research-method.md) whenever estimating or updating a settlement probability.
 - Read [evidence-policy.md](references/evidence-policy.md) whenever collecting, evaluating, or citing evidence.
 - Read [market-selection.md](references/market-selection.md) for candidate screening, horizon, cadence, relative quality, and qualitative correlation checks.

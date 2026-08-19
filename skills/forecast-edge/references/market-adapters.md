@@ -41,8 +41,11 @@ are informational. The core and generic validator use only normalized fields.
 - an `outcomes` array whose items contain `name`, `price`, and
   `instrument_identifier`.
 
-`book INSTRUMENT_IDENTIFIER` returns normalized bids/asks and fee metadata. The adapter
-owns fee interpretation, URL construction, native pagination, and identifier mapping.
+`book INSTRUMENT_IDENTIFIER` returns normalized bids/asks and fee metadata. Every bid and
+ask level must contain `price`, `size`, and the adapter-calculated `fee_per_unit` for that
+exact level. The shared sizing code consumes this amount directly and never implements a
+venue fee formula. The adapter owns fee interpretation, URL construction, native
+pagination, order-book normalization, and identifier mapping.
 
 `canonical-url MARKET_IDENTIFIER_OR_ID` returns an adapter-produced HTTPS URL. Delivery
 steps still request the final URL and require HTTP 200 before publishing it.
