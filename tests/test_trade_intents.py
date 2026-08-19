@@ -40,15 +40,17 @@ def intent(**overrides: object) -> dict[str, object]:
 
 def snapshot() -> dict[str, object]:
     return {
-        "collateral": {"asset": "pUSD"},
+        "schema_version": "1.0",
+        "adapter": "polymarket",
+        "portfolio": {"currency": "pUSD"},
         "positions": {
             "count": 1,
             "positions": [
                 {
-                    "conditionId": CONDITION_B,
-                    "asset": "987654321",
-                    "outcome": "No",
-                    "size": 4,
+                    "market_identifier": CONDITION_B,
+                    "instrument_identifier": "987654321",
+                    "outcome": "no",
+                    "quantity": 4,
                 }
             ],
         },
@@ -73,10 +75,22 @@ class TradeIntentTests(unittest.TestCase):
                 "--schema",
                 str(ROOT / "schemas" / "trade-intent.schema.json"),
             ]
-            if account_snapshot is not None:
-                snapshot_path = directory / "account.json"
-                snapshot_path.write_text(json.dumps(account_snapshot), encoding="utf-8")
-                arguments.extend(["--polymarket-account-snapshot", str(snapshot_path)])
+            snapshot_path = directory / "account.json"
+            snapshot_path.write_text(
+                json.dumps(account_snapshot if account_snapshot is not None else snapshot()),
+                encoding="utf-8",
+            )
+            manifest_path = directory / "account-snapshots.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "snapshots": {"polymarket": str(snapshot_path)},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            arguments.extend(["--account-snapshots-manifest", str(manifest_path)])
             try:
                 with redirect_stdout(io.StringIO()):
                     code = trade_intents.main(arguments)
@@ -136,14 +150,27 @@ class TradeIntentTests(unittest.TestCase):
     def test_aligns_items_with_actionable_private_report_entries(self) -> None:
         report = {
             "schema_version": "3.0",
+            "run": {"account": {"adapter": "polymarket"}},
+            "current_positions": [],
+            "candidates": [
+                {
+                    "market": {
+                        "id": "market-a",
+                        "multi_market_identifier": CONDITION_A,
+                        "instrument_identifier": "123456789",
+                    }
+                }
+            ],
             "actions": [
                 {
                     "action": "BUY",
+                    "market_id": "market-a",
                     "outcome": "YES",
                     "execution": {"vwap": 0.5, "gross_cash": 5, "shares": 10},
                 },
                 {
                     "action": "MAINTAIN",
+                    "market_id": "market-b",
                     "outcome": "NO",
                     "execution": None,
                 },
@@ -157,9 +184,94 @@ class TradeIntentTests(unittest.TestCase):
     def test_empty_items_require_an_actionless_private_report(self) -> None:
         report = {
             "schema_version": "3.0",
-            "actions": [{"action": "MAINTAIN", "outcome": "YES", "execution": None}],
+            "run": {"account": {"adapter": "polymarket"}},
+            "current_positions": [],
+            "candidates": [],
+            "actions": [
+                {
+                    "action": "MAINTAIN",
+                    "market_id": "market-a",
+                    "outcome": "YES",
+                    "execution": None,
+                }
+            ],
         }
         trade_intents.validate_report_alignment([], report)
+
+    def test_same_native_identifiers_are_distinct_across_venues(self) -> None:
+        values = [
+            intent(),
+            intent(venue="kalshi", currency="USD"),
+        ]
+        schema = json.loads(
+            (ROOT / "schemas" / "trade-intent.schema.json").read_text(encoding="utf-8")
+        )
+        snapshots = {
+            "polymarket": snapshot(),
+            "kalshi": {
+                "schema_version": "1.0",
+                "adapter": "kalshi",
+                "portfolio": {"currency": "USD"},
+                "positions": {"count": 0, "positions": []},
+            },
+        }
+        adapters = {
+            "polymarket": {
+                "market_identifier_pattern": r"^0x[a-fA-F0-9]{64}$",
+                "instrument_identifier_pattern": r"^[0-9]+$",
+            },
+            "kalshi": {
+                "market_identifier_pattern": r"^0x[a-fA-F0-9]{64}$",
+                "instrument_identifier_pattern": r"^[0-9]+$",
+            },
+        }
+
+        summary = trade_intents.validate_items(
+            values,
+            schema,
+            {"polymarket", "kalshi"},
+            snapshots,
+            adapters,
+        )
+
+        self.assertEqual(summary["venues"], {"kalshi": 1, "polymarket": 1})
+
+    def test_report_alignment_rejects_wrong_market_routing_target(self) -> None:
+        report = {
+            "schema_version": "3.0",
+            "run": {"account": {"adapter": "polymarket"}},
+            "current_positions": [],
+            "candidates": [
+                {
+                    "market": {
+                        "id": "market-a",
+                        "multi_market_identifier": CONDITION_B,
+                        "instrument_identifier": "123456789",
+                    }
+                }
+            ],
+            "actions": [
+                {
+                    "action": "BUY",
+                    "market_id": "market-a",
+                    "outcome": "YES",
+                    "execution": {"vwap": 0.5, "gross_cash": 5, "shares": 10},
+                }
+            ],
+        }
+
+        with self.assertRaisesRegex(trade_intents.TradeIntentError, "no matching JSONL item"):
+            trade_intents.validate_report_alignment([intent()], report)
+
+    def test_rejects_unregistered_venue_even_when_common_schema_accepts_it(self) -> None:
+        code, _ = self.run_validator([intent(venue="kalshi")], snapshot())
+        self.assertEqual(code, 2)
+
+    def test_rejects_identifier_outside_adapter_contract(self) -> None:
+        code, _ = self.run_validator(
+            [intent(multi_market_identifier="not-a-polymarket-condition")], snapshot()
+        )
+        self.assertEqual(code, 2)
 
 
 if __name__ == "__main__":

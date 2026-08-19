@@ -8,9 +8,12 @@
 
 1. 校验仓库变量、Secrets 与模型可用性。
 2. 恢复近期研究 Release 并验证来源和摘要。
-3. 用 `skills/forecast-edge` 获取账户快照并运行完整研究。
-4. 用 `schemas/trade-intent.schema.json` 和 `scripts/validate_trade_intents.py` 校验交易意图。
-5. 归档当前报告、上传精确 artifact、创建通知并发送飞书消息。
+3. 按启用的只读 adapter 获取各 venue 的标准化账户快照，并在 GitHub 托管的 Linux runner 上运行完整研究。
+4. 要求每个启用的 venue 恰好生成一份本轮报告，并用统一 Schema、adapter 标识规则和对应账户快照校验合并后的交易意图。
+5. 将本轮各 venue 报告归档到同一个 GitHub Release；Artifact 仅上传一个 `trade-intents.jsonl`。
+6. 创建 Issue，并把完全相同的正文作为 Feishu Card 2.0 发送。
+
+JSONL 的每一行都必须包含 `(venue, multi_market_identifier, instrument_identifier)` 路由元组。后续每个执行 workflow 只消费自己固定 `venue` 的条目。
 
 该 workflow 的提示词位于 `automation/prompts/`，通知模板位于 `automation/templates/`。不要把账户、凭据或聊天目标写入这些文件。
 

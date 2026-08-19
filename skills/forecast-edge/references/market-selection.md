@@ -4,10 +4,10 @@
 
 1. Research every current position first; none may be omitted because it appears unchanged.
 2. Exclude current holdings from new-market discovery.
-3. Use `scripts/polymarket_data.py candidate-events --account-snapshot account.json` to follow the active Gamma event feed's opaque keyset cursor until exhaustion. Require `scan.complete=true`; never use a single API page as the candidate universe.
+3. Use `scripts/market_data.py --adapter ADAPTER candidate-events --account-snapshot account.json` to follow the selected venue's registered active-event traversal until exhaustion. Require `scan.complete=true`; never use a single API page as the candidate universe.
 4. Let the script remove events containing current holdings, sports/esports, duplicates, and events without mechanically usable markets. Do not apply these exclusions to the separate current-position review.
 5. Continue cheap semantic screening through the complete remaining sequence until about 100 events qualify, or until the sequence is exhausted. Reject events where public information, causal attribution, or exact settlement-rule analysis gives the Agent no plausible advantage. The target is about 100 qualified events after exclusions, not 100 raw API rows or 100 contracts from a few large events.
-6. Derive the already-researched market and event set with `scripts/previously_researched.py REPORTS_DIR` from the archived reports. Fetch each selected event with `scripts/polymarket_data.py event EVENT_ID_OR_SLUG` and expand its child markets. Apply the resolution-clarity gate below, then compare deadlines, thresholds, prices, criteria, and instrument redundancy before ranking contracts.
+6. Derive the already-researched market and event set with `scripts/previously_researched.py REPORTS_DIR` from the archived reports. Fetch each selected event with `scripts/market_data.py --adapter ADAPTER event EVENT_ID_OR_SLUG` and expand its child markets. Apply the resolution-clarity gate below, then compare deadlines, thresholds, prices, criteria, and instrument redundancy before ranking contracts.
 7. Apply the first pass in `portfolio-management.md` to the passing contracts and build a varied deep-research queue. Follow the descending raw-edge search below and treat about ten distinct fully researched markets per tier as the attempt threshold. Continue beyond a tier's threshold only when a small amount of additional research is likely to satisfy the operation needs. Independently of the tier stop rules, satisfy the novel-event research quota below.
 
 ## Novel-event research quota

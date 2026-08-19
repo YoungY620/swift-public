@@ -74,8 +74,9 @@ jobs:
       group: forecast-edge-research-${{ github.repository }}
       cancel-in-progress: false
     env:
-      ENABLED_PREDICTION_MARKETS: polymarket
-      POLYMARKET_ACCOUNT: ${{ vars.POLYMARKET_ACCOUNT }}
+      ENABLED_PREDICTION_MARKETS: ${{ vars.FORECAST_EDGE_MARKET_ADAPTERS || 'polymarket' }}
+      MARKET_ACCOUNTS_JSON: ${{ vars.FORECAST_EDGE_MARKET_ACCOUNTS_JSON || '' }}
+      LEGACY_POLYMARKET_ACCOUNT: ${{ vars.POLYMARKET_ACCOUNT }}
       HISTORY_RELEASE_COUNT: ${{ vars.FORECAST_EDGE_HISTORY_RELEASE_COUNT || '2' }}
       REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
       ALLOW_PUBLIC_TRADE_INTENTS: ${{ vars.ALLOW_PUBLIC_TRADE_INTENTS || 'false' }}
@@ -86,6 +87,8 @@ jobs:
       KIMI_MODEL_BASE_URL: https://api.kimi.com/coding/v1
       KIMI_DISABLE_TELEMETRY: "1"
       TRADE_INTENT_SCHEMA_PATH: ${{ github.workspace }}/schemas/trade-intent.schema.json
+      MARKET_ADAPTER_REGISTRY: ${{ github.workspace }}/skills/forecast-edge/config/adapters.json
+      MARKET_ADAPTER_GUIDE: ${{ github.workspace }}/skills/forecast-edge/references/market-adapters.md
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -131,10 +134,49 @@ jobs:
               exit 1
             fi
           done
-          if [[ -z "$POLYMARKET_ACCOUNT" ]]; then
-            echo "::error::Required repository variable POLYMARKET_ACCOUNT is not configured"
+          enabled_adapters=${ENABLED_PREDICTION_MARKETS//[[:space:]]/}
+          if [[ ! "$enabled_adapters" =~ ^[a-z][a-z0-9-]*(,[a-z][a-z0-9-]*)*$ ]]; then
+            echo "::error::FORECAST_EDGE_MARKET_ADAPTERS must be a comma-separated adapter list"
             exit 1
           fi
+          mapfile -t adapter_rows < <(tr ',' '\n' <<< "$enabled_adapters")
+          if (( ${#adapter_rows[@]} != $(printf '%s\n' "${adapter_rows[@]}" | sort -u | wc -l) )); then
+            echo "::error::FORECAST_EDGE_MARKET_ADAPTERS must not contain duplicates"
+            exit 1
+          fi
+          registered_adapters=$(python3 skills/forecast-edge/scripts/market_data.py adapters)
+          for adapter in "${adapter_rows[@]}"; do
+            if ! jq -e --arg adapter "$adapter" '.adapters | index($adapter) != null' \
+              <<< "$registered_adapters" >/dev/null; then
+              echo "::error::Enabled prediction-market adapter is not registered: $adapter"
+              exit 1
+            fi
+          done
+
+          accounts_json=$MARKET_ACCOUNTS_JSON
+          if [[ -z "$accounts_json" ]]; then
+            if [[ "$enabled_adapters" != "polymarket" || -z "$LEGACY_POLYMARKET_ACCOUNT" ]]; then
+              echo "::error::FORECAST_EDGE_MARKET_ACCOUNTS_JSON must map every enabled adapter to its public account input"
+              exit 1
+            fi
+            accounts_json=$(jq -cn --arg account "$LEGACY_POLYMARKET_ACCOUNT" '{polymarket: $account}')
+          fi
+          if ! jq -e --argjson expected "${#adapter_rows[@]}" '
+            type == "object"
+            and length == $expected
+            and all(to_entries[];
+              (.value | type) == "string" and (.value | length) > 0
+            )
+          ' <<< "$accounts_json" >/dev/null; then
+            echo "::error::FORECAST_EDGE_MARKET_ACCOUNTS_JSON must contain exactly one non-empty string per enabled adapter"
+            exit 1
+          fi
+          for adapter in "${adapter_rows[@]}"; do
+            if ! jq -e --arg adapter "$adapter" 'has($adapter)' <<< "$accounts_json" >/dev/null; then
+              echo "::error::No public account input is configured for adapter $adapter"
+              exit 1
+            fi
+          done
           if [[ ! "$HISTORY_RELEASE_COUNT" =~ ^[0-9]+$ ]]; then
             echo "::error::FORECAST_EDGE_HISTORY_RELEASE_COUNT must be an integer from 2 through 20"
             exit 1
@@ -155,11 +197,16 @@ jobs:
           runtime_dir="$RUNNER_TEMP/forecast-edge-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           reports_dir="$runtime_dir/reports"
           release_assets_dir="$runtime_dir/release-assets"
-          mkdir -p "$runtime_dir" "$reports_dir" "$release_assets_dir"
+          account_snapshots_dir="$runtime_dir/account-snapshots"
+          mkdir -p "$runtime_dir" "$reports_dir" "$release_assets_dir" "$account_snapshots_dir"
+          printf '%s\n' "$accounts_json" > "$runtime_dir/market-accounts.json"
           {
+            echo "ENABLED_PREDICTION_MARKETS=$enabled_adapters"
             echo "RUNTIME_DIR=$runtime_dir"
             echo "REPORTS_DIR=$reports_dir"
-            echo "ACCOUNT_SNAPSHOT_PATH=$runtime_dir/polymarket-account.json"
+            echo "MARKET_ACCOUNTS_PATH=$runtime_dir/market-accounts.json"
+            echo "ACCOUNT_SNAPSHOTS_DIR=$account_snapshots_dir"
+            echo "ACCOUNT_SNAPSHOTS_MANIFEST=$runtime_dir/account-snapshots-manifest.json"
             echo "TRADE_INTENTS_PATH=$runtime_dir/trade-intents.jsonl"
             echo "ORIGINAL_PROMPT_PATH=$runtime_dir/prompt.md"
             echo "REPAIR_PROMPT_PATH=$runtime_dir/repair-prompt.md"
@@ -169,7 +216,7 @@ jobs:
             echo "NOTIFICATION_ITEMS_PATH=$runtime_dir/notification-items.json"
             echo "URL_VERIFICATION_PATH=$runtime_dir/url_verification.json"
             echo "BASELINE_REPORTS_PATH=$runtime_dir/baseline-reports.txt"
-            echo "CURRENT_REPORT_PATH_FILE=$runtime_dir/current-report-path.txt"
+            echo "CURRENT_REPORTS_MANIFEST=$runtime_dir/current-reports-manifest.json"
             echo "HISTORY_RELEASE_TAGS_PATH=$runtime_dir/history-release-tags.json"
             echo "RELEASE_ASSETS_DIR=$release_assets_dir"
             echo "REPORT_ARCHIVE_PATH=$release_assets_dir/forecast-edge-research-report.tar.gz"
@@ -250,6 +297,7 @@ jobs:
           printf '%s\n' "${previous_tags[@]}" |
             jq -Rsc 'split("\n") | map(select(length > 0))' > "$HISTORY_RELEASE_TAGS_PATH"
 
+          total_expected_reports=0
           for index in "${!previous_tags[@]}"; do
             previous_tag=${previous_tags[$index]}
             restore_dir="$RUNNER_TEMP/forecast-edge-release-$GITHUB_RUN_ID-$index"
@@ -267,8 +315,6 @@ jobs:
             manifest_tag=$(jq -er '.release_tag' "$restore_dir/research-release-manifest.json")
             manifest_commit=$(jq -er '.commit_sha' "$restore_dir/research-release-manifest.json")
             manifest_report_count=$(jq -er '.report_count' "$restore_dir/research-release-manifest.json")
-            manifest_report_path=$(jq -er '.current_report_path' "$restore_dir/research-release-manifest.json")
-            expected_report_digest=$(jq -er '.current_report_sha256' "$restore_dir/research-release-manifest.json")
             tag_commit=$(
               gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$previous_tag" --jq '.object.sha'
             )
@@ -276,7 +322,8 @@ jobs:
               echo "::error::Research report archive digest does not match Release $previous_tag"
               exit 1
             fi
-            if [[ "$manifest_schema" != "1.0" || "$manifest_lineage" != "forecast-edge-production" ]]; then
+            if [[ "$manifest_schema" != "1.0" && "$manifest_schema" != "2.0" ]] || \
+              [[ "$manifest_lineage" != "forecast-edge-production" ]]; then
               echo "::error::Research Release $previous_tag uses an unsupported manifest schema or lineage"
               exit 1
             fi
@@ -288,23 +335,68 @@ jobs:
               echo "::error::Research Release tag does not point to its declared source commit"
               exit 1
             fi
-            if [[ "$manifest_report_count" != "1" ]]; then
-              echo "::error::Research Release $previous_tag must contain exactly one iteration report"
-              exit 1
+            restored_report_rows="$restore_dir/report-rows.json"
+            if [[ "$manifest_schema" == "1.0" ]]; then
+              if [[ "$manifest_report_count" != "1" ]]; then
+                echo "::error::Legacy research Release $previous_tag must contain exactly one report"
+                exit 1
+              fi
+              if ! jq -e '
+                select(
+                  (.current_report_path | type) == "string"
+                  and (.current_report_path | test("^reports/[^/]+/report[.]json$"))
+                  and (.current_report_sha256 | type) == "string"
+                  and (.current_report_sha256 | test("^[a-f0-9]{64}$"))
+                )
+                | [{
+                    adapter: null,
+                    path: .current_report_path,
+                    sha256: .current_report_sha256
+                  }]
+              ' "$restore_dir/research-release-manifest.json" > "$restored_report_rows"; then
+                echo "::error::Legacy research Release $previous_tag has an invalid report manifest"
+                exit 1
+              fi
+            else
+              if ! jq -e '
+                .reports as $reports
+                | ($reports | type == "array" and length > 0)
+                  and (.report_count == ($reports | length))
+                  and ([$reports[].adapter] | length == (unique | length))
+                  and all($reports[];
+                    (.adapter | type) == "string"
+                    and (.adapter | test("^[a-z][a-z0-9-]{0,31}$"))
+                    and (.path | type) == "string"
+                    and (.path | test("^reports/[^/]+/report[.]json$"))
+                    and (.sha256 | type) == "string"
+                    and (.sha256 | test("^[a-f0-9]{64}$"))
+                  )
+                | select(.)
+                | $reports
+              ' "$restore_dir/research-release-manifest.json" > "$restored_report_rows"; then
+                echo "::error::Research Release $previous_tag has an invalid multi-report manifest"
+                exit 1
+              fi
             fi
+            total_expected_reports=$((total_expected_reports + manifest_report_count))
 
             reports_before=$(find "$REPORTS_DIR/reports" -type f -name report.json | wc -l | tr -d ' ')
             ARCHIVE_PATH="$restore_dir/forecast-edge-research-report.tar.gz" \
             DESTINATION="$REPORTS_DIR" \
-            EXPECTED_REPORT_PATH="$manifest_report_path" \
+            REPORT_ROWS="$restored_report_rows" \
               python3 - <<'PY'
+          import json
           import os
           import tarfile
           from pathlib import PurePosixPath
 
+          with open(os.environ["REPORT_ROWS"], encoding="utf-8") as handle:
+              rows = json.load(handle)
+          expected_reports = {row["path"] for row in rows}
+          expected_roots = {PurePosixPath(path).parts[1] for path in expected_reports}
           with tarfile.open(os.environ["ARCHIVE_PATH"], "r:gz") as archive:
               roots = set()
-              report_roots = set()
+              report_paths = set()
               for member in archive.getmembers():
                   parts = PurePosixPath(member.name).parts
                   if len(parts) < 2 or parts[0] != "reports" or ".." in parts:
@@ -313,33 +405,32 @@ jobs:
                       raise SystemExit(f"unsupported entry in research archive: {member.name}")
                   roots.add(parts[1])
                   if member.isfile() and len(parts) == 3 and parts[2] == "report.json":
-                      report_roots.add(parts[1])
-              if len(roots) != 1 or report_roots != roots:
-                  raise SystemExit("research archive must contain exactly one report directory")
-              report_root = next(iter(roots))
-              expected_report = PurePosixPath(os.environ["EXPECTED_REPORT_PATH"]).parts
-              if expected_report != ("reports", report_root, "report.json"):
-                  raise SystemExit("research archive does not match the manifest report path")
-              destination = os.path.join(os.environ["DESTINATION"], "reports", report_root)
-              if os.path.exists(destination):
-                  raise SystemExit(f"refusing to overwrite restored report: {report_root}")
+                      report_paths.add(member.name)
+              if roots != expected_roots or report_paths != expected_reports:
+                  raise SystemExit("research archive does not match its report manifest")
+              for report_root in roots:
+                  destination = os.path.join(os.environ["DESTINATION"], "reports", report_root)
+                  if os.path.exists(destination):
+                      raise SystemExit(f"refusing to overwrite restored report: {report_root}")
               archive.extractall(os.environ["DESTINATION"])
           PY
 
             reports_after=$(find "$REPORTS_DIR/reports" -type f -name report.json | wc -l | tr -d ' ')
-            if (( reports_after != reports_before + 1 )); then
-              echo "::error::Research Release $previous_tag did not restore exactly one report"
+            if (( reports_after != reports_before + manifest_report_count )); then
+              echo "::error::Research Release $previous_tag restored an unexpected report count"
               exit 1
             fi
-            actual_report_digest=$(sha256sum "$REPORTS_DIR/$manifest_report_path" | cut -d ' ' -f 1)
-            if [[ "$actual_report_digest" != "$expected_report_digest" ]]; then
-              echo "::error::Research report digest does not match Release $previous_tag"
-              exit 1
-            fi
+            while IFS=$'\t' read -r report_path expected_report_digest; do
+              actual_report_digest=$(sha256sum "$REPORTS_DIR/$report_path" | cut -d ' ' -f 1)
+              if [[ "$actual_report_digest" != "$expected_report_digest" ]]; then
+                echo "::error::Research report digest does not match Release $previous_tag"
+                exit 1
+              fi
+            done < <(jq -r '.[] | [.path, .sha256] | @tsv' "$restored_report_rows")
           done
 
           restored_reports=$(find "$REPORTS_DIR/reports" -type f -name report.json | wc -l | tr -d ' ')
-          if (( restored_reports != ${#previous_tags[@]} )); then
+          if (( restored_reports != total_expected_reports )); then
             echo "::error::Restored report count does not match selected Release count"
             exit 1
           fi
@@ -348,12 +439,46 @@ jobs:
           done < <(find "$REPORTS_DIR/reports" -type f -name report.json | sort)
           find "$REPORTS_DIR/reports" -type f -name report.json | sort > "$BASELINE_REPORTS_PATH"
 
-      - name: Capture trusted Polymarket account snapshot
+      - name: Capture normalized account snapshots
+        id: account-snapshots
         shell: bash
         run: |
           set -euo pipefail
-          python3 skills/forecast-edge/scripts/polymarket_data.py \
-            --pretty account "$POLYMARKET_ACCOUNT" > "$ACCOUNT_SNAPSHOT_PATH"
+          snapshot_rows="$RUNTIME_DIR/account-snapshot-rows.ndjson"
+          : > "$snapshot_rows"
+          IFS=',' read -ra adapters <<< "$ENABLED_PREDICTION_MARKETS"
+          for adapter in "${adapters[@]}"; do
+            account=$(jq -er --arg adapter "$adapter" '.[$adapter]' "$MARKET_ACCOUNTS_PATH")
+            snapshot_path="$ACCOUNT_SNAPSHOTS_DIR/$adapter.json"
+            python3 skills/forecast-edge/scripts/market_data.py \
+              --adapter "$adapter" --pretty account "$account" > "$snapshot_path"
+            if ! jq -e --arg adapter "$adapter" '
+              .schema_version == "1.0"
+              and .adapter == $adapter
+              and (.account.identifier | type == "string" and length > 0)
+              and (.portfolio.currency | type == "string" and length > 0)
+              and (.positions.positions | type == "array")
+            ' "$snapshot_path" >/dev/null; then
+              echo "::error::Adapter $adapter returned an invalid normalized account snapshot"
+              exit 1
+            fi
+            jq -cn --arg adapter "$adapter" --arg path "$snapshot_path" \
+              '{key: $adapter, value: $path}' >> "$snapshot_rows"
+          done
+          jq -s '{schema_version: "1.0", snapshots: (from_entries)}' \
+            "$snapshot_rows" > "$ACCOUNT_SNAPSHOTS_MANIFEST"
+          snapshot_digest=$(
+            python3 - "$ACCOUNT_SNAPSHOTS_MANIFEST" <<'PY'
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, "scripts")
+          from validate_research_iteration import account_snapshot_bundle_sha256
+
+          print(account_snapshot_bundle_sha256(Path(sys.argv[1])))
+          PY
+          )
+          echo "sha256=$snapshot_digest" >> "$GITHUB_OUTPUT"
 
       - name: Render initial and repair prompts
         shell: bash
@@ -363,12 +488,14 @@ jobs:
             local source=$1
             local text
             text=$(<"$source")
-            text=${text//'{{ACCOUNT_PROFILE}}'/$POLYMARKET_ACCOUNT}
             text=${text//'{{OUTPUT_ROOT}}'/$REPORTS_DIR}
             text=${text//'{{REPOSITORY_ROOT}}'/$GITHUB_WORKSPACE}
             text=${text//'{{PUBLIC_BRIEF_PATH}}'/DISABLED}
             text=${text//'{{ENABLED_PREDICTION_MARKETS}}'/$ENABLED_PREDICTION_MARKETS}
-            text=${text//'{{ACCOUNT_SNAPSHOT_PATH}}'/$ACCOUNT_SNAPSHOT_PATH}
+            text=${text//'{{ACCOUNT_SNAPSHOTS_MANIFEST}}'/$ACCOUNT_SNAPSHOTS_MANIFEST}
+            text=${text//'{{MARKET_ADAPTER_REGISTRY}}'/$MARKET_ADAPTER_REGISTRY}
+            text=${text//'{{MARKET_ADAPTER_GUIDE}}'/$MARKET_ADAPTER_GUIDE}
+            text=${text//'{{EXPECTED_REPORT_COUNT}}'/$(awk -F, '{print NF}' <<< "$ENABLED_PREDICTION_MARKETS")}
             text=${text//'{{TRADE_INTENTS_PATH}}'/$TRADE_INTENTS_PATH}
             text=${text//'{{TRADE_INTENT_SCHEMA_PATH}}'/$TRADE_INTENT_SCHEMA_PATH}
             text=${text//'{{ORIGINAL_PROMPT_PATH}}'/$ORIGINAL_PROMPT_PATH}
@@ -416,24 +543,20 @@ jobs:
             echo "Kimi initial attempt exited unsuccessfully." > "$VALIDATION_ERRORS_PATH"
             exit 1
           fi
-          find "$REPORTS_DIR/reports" -type f -name report.json | sort > "$RUNTIME_DIR/all-reports.txt"
-          mapfile -t reports < <(comm -13 "$BASELINE_REPORTS_PATH" "$RUNTIME_DIR/all-reports.txt")
-          if (( ${#reports[@]} != 1 )); then
-            echo "Expected exactly one newly archived private report; found ${#reports[@]}." > "$VALIDATION_ERRORS_PATH"
-            exit 1
-          fi
-          printf '%s\n' "${reports[0]}" > "$CURRENT_REPORT_PATH_FILE"
-          if ! python3 skills/forecast-edge/scripts/report_tool.py validate "${reports[0]}" \
-            > "$REPORT_VALIDATION_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
-            cat "$VALIDATION_ERRORS_PATH" >&2
-            exit 1
-          fi
-          if ! python3 scripts/validate_trade_intents.py "$TRADE_INTENTS_PATH" \
-            --schema "$TRADE_INTENT_SCHEMA_PATH" \
+          if ! python3 scripts/validate_research_iteration.py \
+            --reports-root "$REPORTS_DIR" \
+            --baseline-reports "$BASELINE_REPORTS_PATH" \
             --enabled-venues "$ENABLED_PREDICTION_MARKETS" \
-            --polymarket-account-snapshot "$ACCOUNT_SNAPSHOT_PATH" \
-            --report "${reports[0]}" \
-            > "$VALIDATION_SUMMARY_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
+            --trade-intents "$TRADE_INTENTS_PATH" \
+            --trade-schema "$TRADE_INTENT_SCHEMA_PATH" \
+            --account-snapshots-manifest "$ACCOUNT_SNAPSHOTS_MANIFEST" \
+            --expected-account-snapshots-sha256 "${{ steps.account-snapshots.outputs.sha256 }}" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --adapter-registry "$MARKET_ADAPTER_REGISTRY" \
+            --current-reports-manifest "$CURRENT_REPORTS_MANIFEST" \
+            --report-validation "$REPORT_VALIDATION_PATH" \
+            --validation-summary "$VALIDATION_SUMMARY_PATH" \
+            > "$RUNTIME_DIR/iteration-validation.stdout" 2> "$VALIDATION_ERRORS_PATH"; then
             cat "$VALIDATION_ERRORS_PATH" >&2
             exit 1
           fi
@@ -470,24 +593,20 @@ jobs:
             echo "Kimi repair 1 exited unsuccessfully." > "$VALIDATION_ERRORS_PATH"
             exit 1
           fi
-          find "$REPORTS_DIR/reports" -type f -name report.json | sort > "$RUNTIME_DIR/all-reports.txt"
-          mapfile -t reports < <(comm -13 "$BASELINE_REPORTS_PATH" "$RUNTIME_DIR/all-reports.txt")
-          if (( ${#reports[@]} != 1 )); then
-            echo "Expected exactly one newly archived private report; found ${#reports[@]}." > "$VALIDATION_ERRORS_PATH"
-            exit 1
-          fi
-          printf '%s\n' "${reports[0]}" > "$CURRENT_REPORT_PATH_FILE"
-          if ! python3 skills/forecast-edge/scripts/report_tool.py validate "${reports[0]}" \
-            > "$REPORT_VALIDATION_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
-            cat "$VALIDATION_ERRORS_PATH" >&2
-            exit 1
-          fi
-          if ! python3 scripts/validate_trade_intents.py "$TRADE_INTENTS_PATH" \
-            --schema "$TRADE_INTENT_SCHEMA_PATH" \
+          if ! python3 scripts/validate_research_iteration.py \
+            --reports-root "$REPORTS_DIR" \
+            --baseline-reports "$BASELINE_REPORTS_PATH" \
             --enabled-venues "$ENABLED_PREDICTION_MARKETS" \
-            --polymarket-account-snapshot "$ACCOUNT_SNAPSHOT_PATH" \
-            --report "${reports[0]}" \
-            > "$VALIDATION_SUMMARY_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
+            --trade-intents "$TRADE_INTENTS_PATH" \
+            --trade-schema "$TRADE_INTENT_SCHEMA_PATH" \
+            --account-snapshots-manifest "$ACCOUNT_SNAPSHOTS_MANIFEST" \
+            --expected-account-snapshots-sha256 "${{ steps.account-snapshots.outputs.sha256 }}" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --adapter-registry "$MARKET_ADAPTER_REGISTRY" \
+            --current-reports-manifest "$CURRENT_REPORTS_MANIFEST" \
+            --report-validation "$REPORT_VALIDATION_PATH" \
+            --validation-summary "$VALIDATION_SUMMARY_PATH" \
+            > "$RUNTIME_DIR/iteration-validation.stdout" 2> "$VALIDATION_ERRORS_PATH"; then
             cat "$VALIDATION_ERRORS_PATH" >&2
             exit 1
           fi
@@ -524,24 +643,20 @@ jobs:
             echo "Kimi repair 2 exited unsuccessfully." > "$VALIDATION_ERRORS_PATH"
             exit 1
           fi
-          find "$REPORTS_DIR/reports" -type f -name report.json | sort > "$RUNTIME_DIR/all-reports.txt"
-          mapfile -t reports < <(comm -13 "$BASELINE_REPORTS_PATH" "$RUNTIME_DIR/all-reports.txt")
-          if (( ${#reports[@]} != 1 )); then
-            echo "Expected exactly one newly archived private report; found ${#reports[@]}." > "$VALIDATION_ERRORS_PATH"
-            exit 1
-          fi
-          printf '%s\n' "${reports[0]}" > "$CURRENT_REPORT_PATH_FILE"
-          if ! python3 skills/forecast-edge/scripts/report_tool.py validate "${reports[0]}" \
-            > "$REPORT_VALIDATION_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
-            cat "$VALIDATION_ERRORS_PATH" >&2
-            exit 1
-          fi
-          if ! python3 scripts/validate_trade_intents.py "$TRADE_INTENTS_PATH" \
-            --schema "$TRADE_INTENT_SCHEMA_PATH" \
+          if ! python3 scripts/validate_research_iteration.py \
+            --reports-root "$REPORTS_DIR" \
+            --baseline-reports "$BASELINE_REPORTS_PATH" \
             --enabled-venues "$ENABLED_PREDICTION_MARKETS" \
-            --polymarket-account-snapshot "$ACCOUNT_SNAPSHOT_PATH" \
-            --report "${reports[0]}" \
-            > "$VALIDATION_SUMMARY_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
+            --trade-intents "$TRADE_INTENTS_PATH" \
+            --trade-schema "$TRADE_INTENT_SCHEMA_PATH" \
+            --account-snapshots-manifest "$ACCOUNT_SNAPSHOTS_MANIFEST" \
+            --expected-account-snapshots-sha256 "${{ steps.account-snapshots.outputs.sha256 }}" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --adapter-registry "$MARKET_ADAPTER_REGISTRY" \
+            --current-reports-manifest "$CURRENT_REPORTS_MANIFEST" \
+            --report-validation "$REPORT_VALIDATION_PATH" \
+            --validation-summary "$VALIDATION_SUMMARY_PATH" \
+            > "$RUNTIME_DIR/iteration-validation.stdout" 2> "$VALIDATION_ERRORS_PATH"; then
             cat "$VALIDATION_ERRORS_PATH" >&2
             exit 1
           fi
@@ -578,24 +693,20 @@ jobs:
             echo "Kimi repair 3 exited unsuccessfully." > "$VALIDATION_ERRORS_PATH"
             exit 1
           fi
-          find "$REPORTS_DIR/reports" -type f -name report.json | sort > "$RUNTIME_DIR/all-reports.txt"
-          mapfile -t reports < <(comm -13 "$BASELINE_REPORTS_PATH" "$RUNTIME_DIR/all-reports.txt")
-          if (( ${#reports[@]} != 1 )); then
-            echo "Expected exactly one newly archived private report; found ${#reports[@]}." > "$VALIDATION_ERRORS_PATH"
-            exit 1
-          fi
-          printf '%s\n' "${reports[0]}" > "$CURRENT_REPORT_PATH_FILE"
-          if ! python3 skills/forecast-edge/scripts/report_tool.py validate "${reports[0]}" \
-            > "$REPORT_VALIDATION_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
-            cat "$VALIDATION_ERRORS_PATH" >&2
-            exit 1
-          fi
-          if ! python3 scripts/validate_trade_intents.py "$TRADE_INTENTS_PATH" \
-            --schema "$TRADE_INTENT_SCHEMA_PATH" \
+          if ! python3 scripts/validate_research_iteration.py \
+            --reports-root "$REPORTS_DIR" \
+            --baseline-reports "$BASELINE_REPORTS_PATH" \
             --enabled-venues "$ENABLED_PREDICTION_MARKETS" \
-            --polymarket-account-snapshot "$ACCOUNT_SNAPSHOT_PATH" \
-            --report "${reports[0]}" \
-            > "$VALIDATION_SUMMARY_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
+            --trade-intents "$TRADE_INTENTS_PATH" \
+            --trade-schema "$TRADE_INTENT_SCHEMA_PATH" \
+            --account-snapshots-manifest "$ACCOUNT_SNAPSHOTS_MANIFEST" \
+            --expected-account-snapshots-sha256 "${{ steps.account-snapshots.outputs.sha256 }}" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --adapter-registry "$MARKET_ADAPTER_REGISTRY" \
+            --current-reports-manifest "$CURRENT_REPORTS_MANIFEST" \
+            --report-validation "$REPORT_VALIDATION_PATH" \
+            --validation-summary "$VALIDATION_SUMMARY_PATH" \
+            > "$RUNTIME_DIR/iteration-validation.stdout" 2> "$VALIDATION_ERRORS_PATH"; then
             cat "$VALIDATION_ERRORS_PATH" >&2
             exit 1
           fi
@@ -627,122 +738,119 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          current_report=$(<"$CURRENT_REPORT_PATH_FILE")
           notification_rows="$RUNTIME_DIR/notification-items.ndjson"
           verification_rows="$RUNTIME_DIR/url-verification.ndjson"
           : > "$notification_rows"
           : > "$verification_rows"
-
-          mapfile -t action_indexes < <(
-            jq -r '
-              .actions
-              | to_entries[]
-              | select(.value.action != "MAINTAIN")
-              | .key
-            ' "$current_report"
-          )
           intent_count=$(jq -s 'length' "$TRADE_INTENTS_PATH")
-          if (( ${#action_indexes[@]} != intent_count )); then
-            echo "::error::Actionable report entries do not match the validated JSONL item count"
-            exit 1
-          fi
-
           declare -A claimed_intents=()
-          for action_index in "${action_indexes[@]}"; do
-            action=$(jq -c --argjson index "$action_index" '.actions[$index]' "$current_report")
-            action_name=$(jq -r '.action' <<< "$action")
-            market_id=$(jq -r '.market_id | tostring' <<< "$action")
-            market_question=$(jq -r '.market_question' <<< "$action")
-            outcome=$(jq -r '.outcome | ascii_downcase' <<< "$action")
-            case "$action_name" in
-              BUY|ADD) expected_side=buy ;;
-              SELL|TRIM) expected_side=sell ;;
-              *)
-                echo "::error::Unsupported actionable report entry: $action_name"
+          actionable_count=0
+          while IFS=$'\t' read -r venue current_report; do
+            mapfile -t action_indexes < <(
+              jq -r '
+                .actions
+                | to_entries[]
+                | select(.value.action != "MAINTAIN")
+                | .key
+              ' "$current_report"
+            )
+            actionable_count=$((actionable_count + ${#action_indexes[@]}))
+
+            for action_index in "${action_indexes[@]}"; do
+              action=$(jq -c --argjson index "$action_index" '.actions[$index]' "$current_report")
+              action_name=$(jq -r '.action' <<< "$action")
+              market_id=$(jq -r '.market_id | tostring' <<< "$action")
+              outcome=$(jq -r '.outcome | ascii_downcase' <<< "$action")
+              case "$action_name" in
+                BUY|ADD) expected_side=buy ;;
+                SELL|TRIM) expected_side=sell ;;
+                *)
+                  echo "::error::Unsupported actionable report entry: $action_name"
+                  exit 1
+                  ;;
+              esac
+
+              analysis_count=$(jq --arg market_id "$market_id" '
+                [.current_positions[], .candidates[]]
+                | map(select((.market.id | tostring) == $market_id))
+                | length
+              ' "$current_report")
+              if [[ "$analysis_count" != "1" ]]; then
+                echo "::error::$venue action $action_index does not have exactly one matching market analysis"
                 exit 1
-                ;;
-            esac
+              fi
+              analysis=$(jq -c --arg market_id "$market_id" '
+                [.current_positions[], .candidates[]]
+                | map(select((.market.id | tostring) == $market_id))[0]
+              ' "$current_report")
+              market_identifier=$(jq -er '.market.multi_market_identifier' <<< "$analysis")
+              instrument_identifier=$(jq -er '.market.instrument_identifier' <<< "$analysis")
 
-            analysis_count=$(jq --arg market_id "$market_id" '
-              [.current_positions[], .candidates[]]
-              | map(select((.market.id | tostring) == $market_id))
-              | length
-            ' "$current_report")
-            if [[ "$analysis_count" != "1" ]]; then
-              echo "::error::Action $action_index does not have exactly one matching market analysis"
-              exit 1
-            fi
-            analysis=$(jq -c --arg market_id "$market_id" '
-              [.current_positions[], .candidates[]]
-              | map(select((.market.id | tostring) == $market_id))[0]
-            ' "$current_report")
-            market_url=$(jq -r '.market.url' <<< "$analysis")
-            if ! python3 - "$market_url" <<'PY'
-          import sys
-          from urllib.parse import urlsplit
+              matches=$(jq -s \
+                --arg venue "$venue" \
+                --arg market_identifier "$market_identifier" \
+                --arg instrument_identifier "$instrument_identifier" \
+                --arg outcome "$outcome" \
+                --arg side "$expected_side" \
+                --arg reference_price "$(jq -r '.execution.vwap | tostring' <<< "$action")" \
+                --arg notional "$(jq -r '.execution.gross_cash | tostring' <<< "$action")" \
+                --arg quantity "$(jq -r '.execution.shares | tostring' <<< "$action")" '
+                  to_entries
+                  | map(select(
+                      .value.venue == $venue
+                      and .value.multi_market_identifier == $market_identifier
+                      and .value.instrument_identifier == $instrument_identifier
+                      and .value.outcome == $outcome
+                      and .value.side == $side
+                      and (.value.reference_price | tonumber) == ($reference_price | tonumber)
+                      and (.value.quantity | tonumber) == ($quantity | tonumber)
+                      and ((.value.notional | tonumber) - ($notional | tonumber) | fabs) <= 0.01
+                    ))
+                ' "$TRADE_INTENTS_PATH")
 
-          url = sys.argv[1]
-          parsed = urlsplit(url)
-          if (
-              url != url.strip()
-              or any(character.isspace() for character in url)
-              or parsed.scheme != "https"
-              or not parsed.hostname
-              or parsed.username is not None
-              or parsed.password is not None
-          ):
-              raise SystemExit("published market URL must be an absolute credential-free HTTPS URL")
-          PY
-            then
-              echo "::error::Report action $action_index contains an unsafe market URL"
-              exit 1
-            fi
+              mapfile -t unclaimed_matches < <(
+                while IFS= read -r candidate_index; do
+                  if [[ -z "${claimed_intents[$candidate_index]:-}" ]]; then
+                    printf '%s\n' "$candidate_index"
+                  fi
+                done < <(jq -r '.[].key' <<< "$matches")
+              )
+              if (( ${#unclaimed_matches[@]} != 1 )); then
+                echo "::error::$venue action $action_index does not map unambiguously to one JSONL routing target"
+                exit 1
+              fi
+              intent_index=${unclaimed_matches[0]}
+              claimed_intents[$intent_index]=1
+              intent=$(jq -cs --argjson index "$intent_index" '.[$index]' "$TRADE_INTENTS_PATH")
 
-            matches=$(jq -s \
-              --arg outcome "$outcome" \
-              --arg side "$expected_side" \
-              --arg reference_price "$(jq -r '.execution.vwap | tostring' <<< "$action")" \
-              --arg notional "$(jq -r '.execution.gross_cash | tostring' <<< "$action")" \
-              --arg quantity "$(jq -r '.execution.shares | tostring' <<< "$action")" '
-                to_entries
-                | map(select(
-                    .value.outcome == $outcome
-                    and .value.side == $side
-                    and (.value.reference_price | tonumber) == ($reference_price | tonumber)
-                    and (.value.quantity | tonumber) == ($quantity | tonumber)
-                    and ((.value.notional | tonumber) - ($notional | tonumber)) <= 0.01
-                    and ((.value.notional | tonumber) - ($notional | tonumber)) >= -0.01
-                  ))
-              ' "$TRADE_INTENTS_PATH")
-
-            mapfile -t unclaimed_matches < <(
-              while IFS= read -r candidate_index; do
-                if [[ -z "${claimed_intents[$candidate_index]:-}" ]]; then
-                  printf '%s\n' "$candidate_index"
-                fi
-              done < <(jq -r '.[].key' <<< "$matches")
-            )
-            if (( ${#unclaimed_matches[@]} != 1 )); then
-              echo "::error::Action $action_index does not map unambiguously to one JSONL item"
-              exit 1
-            fi
-            intent_index=${unclaimed_matches[0]}
-            claimed_intents[$intent_index]=1
-            intent=$(jq -cs --argjson index "$intent_index" '.[$index]' "$TRADE_INTENTS_PATH")
-
-            verification_result=$(
-              curl --location --fail-with-body --silent --show-error \
-                --retry 3 --retry-all-errors --retry-delay 2 --max-time 30 \
-                --output /dev/null \
-                --write-out $'%{http_code}\t%{url_effective}' \
-                "$market_url"
-            )
-            IFS=$'\t' read -r http_status effective_url <<< "$verification_result"
-            if [[ "$http_status" != "200" ]]; then
-              echo "::error::Published market URL did not return HTTP 200: $market_url"
-              exit 1
-            fi
-            if ! python3 - "$effective_url" <<'PY'
+              canonical=$(
+                python3 skills/forecast-edge/scripts/market_data.py \
+                  --adapter "$venue" canonical-url "$market_identifier"
+              )
+              if ! jq -e \
+                --arg venue "$venue" \
+                --arg market_identifier "$market_identifier" '
+                  .adapter == $venue
+                  and .market_identifier == $market_identifier
+                  and (.url | type == "string" and length > 0)
+                ' <<< "$canonical" >/dev/null; then
+                echo "::error::$venue adapter returned a canonical URL for a different market"
+                exit 1
+              fi
+              market_url=$(jq -r '.url' <<< "$canonical")
+              verification_result=$(
+                curl --location --fail-with-body --silent --show-error \
+                  --retry 3 --retry-all-errors --retry-delay 2 --max-time 30 \
+                  --output /dev/null \
+                  --write-out $'%{http_code}\t%{url_effective}' \
+                  "$market_url"
+              )
+              IFS=$'\t' read -r http_status effective_url <<< "$verification_result"
+              if [[ "$http_status" != "200" ]]; then
+                echo "::error::Published market URL did not return HTTP 200: $market_url"
+                exit 1
+              fi
+              if ! python3 - "$effective_url" <<'PY'
           import sys
           from urllib.parse import urlsplit
 
@@ -750,55 +858,61 @@ jobs:
           if parsed.scheme != "https" or not parsed.hostname:
               raise SystemExit("effective market URL is not HTTPS")
           PY
-            then
-              echo "::error::Published market URL redirected outside HTTPS"
-              exit 1
-            fi
-            verified_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+              then
+                echo "::error::Published market URL redirected outside HTTPS"
+                exit 1
+              fi
+              verified_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-            jq -cn \
-              --arg venue "$(jq -r '.venue' <<< "$intent")" \
-              --arg market_id "$market_id" \
-              --arg multi_market_identifier "$(jq -r '.multi_market_identifier' <<< "$intent")" \
-              --arg instrument_identifier "$(jq -r '.instrument_identifier' <<< "$intent")" \
-              --arg market_url "$market_url" \
-              --arg effective_url "$effective_url" \
-              --arg verified_at "$verified_at" \
-              --argjson http_status "$http_status" \
-              '{
-                venue: $venue,
-                research_market_id: $market_id,
-                multi_market_identifier: $multi_market_identifier,
-                instrument_identifier: $instrument_identifier,
-                market_url: $market_url,
-                effective_url: $effective_url,
-                http_status: $http_status,
-                verified_at: $verified_at
-              }' >> "$verification_rows"
-            jq -cn \
-              --argjson action "$action" \
-              --argjson analysis "$analysis" \
-              --argjson intent "$intent" \
-              --arg url "$market_url" '
-                {
-                  venue: $intent.venue,
-                  multi_market_identifier: $intent.multi_market_identifier,
-                  instrument_identifier: $intent.instrument_identifier,
-                  market_question: $action.market_question,
-                  action: $action.action,
-                  outcome: $intent.outcome,
-                  side: $intent.side,
-                  reference_price: $intent.reference_price,
-                  notional: $intent.notional,
-                  quantity: $intent.quantity,
-                  currency: $intent.currency,
-                  model_value: ($analysis.model.model_value | tostring),
-                  net_edge: ($analysis.opportunity.net_edge | tostring),
-                  reason: $action.public_reason,
-                  url: $url
-                }
-              ' >> "$notification_rows"
-          done
+              jq -cn \
+                --arg venue "$venue" \
+                --arg market_id "$market_id" \
+                --arg multi_market_identifier "$market_identifier" \
+                --arg instrument_identifier "$instrument_identifier" \
+                --arg market_url "$market_url" \
+                --arg effective_url "$effective_url" \
+                --arg verified_at "$verified_at" \
+                --argjson http_status "$http_status" \
+                '{
+                  venue: $venue,
+                  research_market_id: $market_id,
+                  multi_market_identifier: $multi_market_identifier,
+                  instrument_identifier: $instrument_identifier,
+                  market_url: $market_url,
+                  effective_url: $effective_url,
+                  http_status: $http_status,
+                  verified_at: $verified_at
+                }' >> "$verification_rows"
+              jq -cn \
+                --argjson action "$action" \
+                --argjson analysis "$analysis" \
+                --argjson intent "$intent" \
+                --arg url "$market_url" '
+                  {
+                    venue: $intent.venue,
+                    multi_market_identifier: $intent.multi_market_identifier,
+                    instrument_identifier: $intent.instrument_identifier,
+                    market_question: $action.market_question,
+                    action: $action.action,
+                    outcome: $intent.outcome,
+                    side: $intent.side,
+                    reference_price: $intent.reference_price,
+                    notional: $intent.notional,
+                    quantity: $intent.quantity,
+                    currency: $intent.currency,
+                    model_value: ($analysis.model.model_value | tostring),
+                    net_edge: ($analysis.opportunity.net_edge | tostring),
+                    reason: $action.public_reason,
+                    url: $url
+                  }
+                ' >> "$notification_rows"
+            done
+          done < <(jq -r '.reports[] | [.adapter, .path] | @tsv' "$CURRENT_REPORTS_MANIFEST")
+
+          if (( actionable_count != intent_count )); then
+            echo "::error::Actionable report entries do not match the validated JSONL item count"
+            exit 1
+          fi
 
           if (( ${#claimed_intents[@]} != intent_count )); then
             echo "::error::At least one JSONL item was not linked to a verified market URL"
@@ -831,22 +945,53 @@ jobs:
           fi
           generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           release_tag="forecast-edge-research/run-$GITHUB_RUN_ID-attempt-$GITHUB_RUN_ATTEMPT"
-          current_report=$(<"$CURRENT_REPORT_PATH_FILE")
-          current_report_dir=$(dirname "$current_report")
-          current_report_relative=${current_report#"$REPORTS_DIR/"}
-          current_report_dir_relative=${current_report_dir#"$REPORTS_DIR/"}
           history_releases_used=$(jq 'length' "$HISTORY_RELEASE_TAGS_PATH")
+          report_count=$(jq '.reports | length' "$CURRENT_REPORTS_MANIFEST")
+          release_report_rows="$RUNTIME_DIR/release-report-rows.ndjson"
+          : > "$release_report_rows"
+          declare -a current_report_directories=()
 
-          cp "$current_report" "$RELEASE_ASSETS_DIR/report.json"
-          cp "$current_report_dir/report.md" "$RELEASE_ASSETS_DIR/report.md"
+          while IFS=$'\t' read -r adapter current_report current_report_dir; do
+            current_report_relative=${current_report#"$REPORTS_DIR/"}
+            current_report_dir_relative=${current_report_dir#"$REPORTS_DIR/"}
+            if [[ "$current_report_relative" == "$current_report" || \
+                  "$current_report_dir_relative" == "$current_report_dir" ]]; then
+              echo "::error::Current report is outside the runtime report root"
+              exit 1
+            fi
+            current_report_directories+=("$current_report_dir_relative")
+            json_asset="report-$adapter.json"
+            markdown_asset="report-$adapter.md"
+            cp "$current_report" "$RELEASE_ASSETS_DIR/$json_asset"
+            cp "$current_report_dir/report.md" "$RELEASE_ASSETS_DIR/$markdown_asset"
+            report_digest=$(sha256sum "$current_report" | cut -d ' ' -f 1)
+            jq -cn \
+              --arg adapter "$adapter" \
+              --arg path "$current_report_relative" \
+              --arg sha256 "$report_digest" \
+              --arg json_asset "$json_asset" \
+              --arg markdown_asset "$markdown_asset" \
+              '{
+                adapter: $adapter,
+                path: $path,
+                sha256: $sha256,
+                json_asset: $json_asset,
+                markdown_asset: $markdown_asset
+              }' >> "$release_report_rows"
+          done < <(
+            jq -r '.reports | sort_by(.adapter)[] | [.adapter, .path, .directory] | @tsv' \
+              "$CURRENT_REPORTS_MANIFEST"
+          )
+
           cp "$VALIDATION_SUMMARY_PATH" "$RELEASE_ASSETS_DIR/validation-summary.json"
-          tar -C "$REPORTS_DIR" -czf "$REPORT_ARCHIVE_PATH" "$current_report_dir_relative"
+          tar -C "$REPORTS_DIR" -czf "$REPORT_ARCHIVE_PATH" \
+            "${current_report_directories[@]}"
+          jq -s '.' "$release_report_rows" > "$RUNTIME_DIR/release-reports.json"
 
           report_archive_digest=$(sha256sum "$REPORT_ARCHIVE_PATH" | cut -d ' ' -f 1)
-          report_digest=$(sha256sum "$current_report" | cut -d ' ' -f 1)
           trade_intents_digest=$(sha256sum "$TRADE_INTENTS_PATH" | cut -d ' ' -f 1)
           jq -n \
-            --arg schema_version "1.0" \
+            --arg schema_version "2.0" \
             --arg lineage_id "forecast-edge-production" \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg release_tag "$release_tag" \
@@ -854,15 +999,14 @@ jobs:
             --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
             --arg commit_sha "$GITHUB_SHA" \
             --arg generated_at "$generated_at" \
-            --arg current_report_path "$current_report_relative" \
             --arg report_archive_asset "forecast-edge-research-report.tar.gz" \
             --arg report_archive_sha256 "$report_archive_digest" \
-            --arg current_report_sha256 "$report_digest" \
             --arg trade_intents_sha256 "$trade_intents_digest" \
             --argjson history_release_count_requested "$HISTORY_RELEASE_COUNT" \
-            --argjson report_count "1" \
+            --argjson report_count "$report_count" \
             --argjson successful_kimi_attempt "$successful_attempt" \
             --slurpfile history_releases "$HISTORY_RELEASE_TAGS_PATH" \
+            --slurpfile reports "$RUNTIME_DIR/release-reports.json" \
             --slurpfile validation "$VALIDATION_SUMMARY_PATH" \
             '{
               schema_version: $schema_version,
@@ -874,10 +1018,9 @@ jobs:
               commit_sha: $commit_sha,
               generated_at: $generated_at,
               report_count: $report_count,
-              current_report_path: $current_report_path,
+              reports: $reports[0],
               report_archive_asset: $report_archive_asset,
               report_archive_sha256: $report_archive_sha256,
-              current_report_sha256: $current_report_sha256,
               history_release_count_requested: $history_release_count_requested,
               history_releases_used: $history_releases[0],
               successful_kimi_attempt: $successful_kimi_attempt,
@@ -889,7 +1032,7 @@ jobs:
             printf 'Forecast Edge research for this iteration.\n\n'
             printf -- '- Source commit: `%s`\n' "$GITHUB_SHA"
             printf -- '- Workflow run: `%s`, attempt `%s`\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
-            printf -- '- Reports in this Release: `1`\n'
+            printf -- '- Reports in this Release: `%s`\n' "$report_count"
             printf -- '- Prior Releases loaded for rolling context: `%s`\n' "$history_releases_used"
           } > "$RUNTIME_DIR/release-notes.md"
 
@@ -912,6 +1055,10 @@ jobs:
             echo "::error::Refusing to publish research on an existing tag $RELEASE_TAG"
             exit 1
           fi
+          mapfile -t direct_report_assets < <(
+            find "$RELEASE_ASSETS_DIR" -maxdepth 1 -type f \
+              \( -name 'report-*.json' -o -name 'report-*.md' \) | sort
+          )
           gh release create "$RELEASE_TAG" \
             --target "$GITHUB_SHA" \
             --title "Forecast Edge research — $GENERATED_AT" \
@@ -919,9 +1066,8 @@ jobs:
             --latest=false \
             "$REPORT_ARCHIVE_PATH" \
             "$RELEASE_MANIFEST_PATH" \
-            "$RELEASE_ASSETS_DIR/report.json" \
-            "$RELEASE_ASSETS_DIR/report.md" \
-            "$RELEASE_ASSETS_DIR/validation-summary.json"
+            "$RELEASE_ASSETS_DIR/validation-summary.json" \
+            "${direct_report_assets[@]}"
 
       - name: Upload validated trade-intent artifact
         uses: actions/upload-artifact@v4

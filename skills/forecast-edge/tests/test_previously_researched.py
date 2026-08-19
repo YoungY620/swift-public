@@ -25,9 +25,12 @@ def entry(market_id: str, url: str = "") -> dict:
 
 
 class PreviouslyResearchedTests(unittest.TestCase):
-    def run_script(self, reports_dir: Path) -> tuple[int, dict, str]:
+    def run_script(self, reports_dir: Path, adapter: str | None = None) -> tuple[int, dict, str]:
+        command = [sys.executable, str(SCRIPT), str(reports_dir)]
+        if adapter is not None:
+            command.extend(["--adapter", adapter])
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT), str(reports_dir)],
+            command,
             capture_output=True,
             text=True,
         )
@@ -53,6 +56,51 @@ class PreviouslyResearchedTests(unittest.TestCase):
                 payload["researched_event_slugs"],
                 ["fed-july", "venezuela-leader"],
             )
+
+    def test_adapter_filter_keeps_identifiers_venue_local(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            reports = Path(tmp)
+            write_report(
+                reports,
+                "run-poly",
+                {
+                    "run": {"account": {"adapter": "polymarket"}},
+                    "current_positions": [],
+                    "candidates": [
+                        {
+                            "market": {
+                                "id": "local-id",
+                                "multi_market_identifier": "poly-market",
+                                "event_identifier": "poly-event",
+                            }
+                        }
+                    ],
+                },
+            )
+            write_report(
+                reports,
+                "run-kalshi",
+                {
+                    "run": {"account": {"adapter": "kalshi"}},
+                    "current_positions": [],
+                    "candidates": [
+                        {
+                            "market": {
+                                "id": "local-id",
+                                "multi_market_identifier": "kalshi-market",
+                                "event_identifier": "kalshi-event",
+                            }
+                        }
+                    ],
+                },
+            )
+
+            code, payload, _ = self.run_script(reports, "kalshi")
+
+            self.assertEqual(code, 0)
+            self.assertEqual(payload["reports_scanned"], 1)
+            self.assertEqual(payload["researched_market_identifiers"], ["kalshi-market"])
+            self.assertEqual(payload["researched_event_identifiers"], ["kalshi-event"])
 
     def test_empty_archive_returns_empty_sets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

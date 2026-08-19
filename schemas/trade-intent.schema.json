@@ -21,15 +21,16 @@
       "const": "1.0"
     },
     "venue": {
-      "enum": ["polymarket"]
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,31}$"
     },
     "multi_market_identifier": {
       "type": "string",
-      "pattern": "^0x[a-fA-F0-9]{64}$"
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
     },
     "instrument_identifier": {
       "type": "string",
-      "pattern": "^[0-9]+$"
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
     },
     "outcome": {
       "enum": ["yes", "no"]

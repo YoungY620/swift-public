@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "adapters": {
+    "polymarket": {
+      "script": "scripts/adapters/polymarket.py",
+      "reference": "references/polymarket-data.md",
+      "commands": [
+        "account",
+        "book",
+        "candidate-events",
+        "canonical-url",
+        "event",
+        "market"
+      ],
+      "market_identifier_pattern": "^0x[a-fA-F0-9]{64}$",
+      "instrument_identifier_pattern": "^[0-9]+$"
+    }
+  }
+}

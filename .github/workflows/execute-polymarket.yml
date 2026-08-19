@@ -141,7 +141,7 @@ jobs:
             --arg commit_sha "$UPSTREAM_HEAD_SHA" \
             --arg release_tag "$release_tag" \
             --arg digest "$artifact_sha" \
-            '.schema_version == "1.0" and
+            '(.schema_version == "1.0" or .schema_version == "2.0") and
              .lineage_id == "forecast-edge-production" and
              .repository == $repository and
              .workflow_run_id == $run_id and
@@ -668,4 +668,3 @@ jobs:
             fi
             echo '- EC2 cleanup and temporary-ingress revocation were attempted unconditionally.'
           } >> "$GITHUB_STEP_SUMMARY"
-

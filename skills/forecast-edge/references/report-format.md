@@ -34,8 +34,8 @@ Keep JSON keys, signal enums, outcome enums, IDs, URLs, exact market questions, 
 
 ## Required run sections
 
-- Run identity, timestamps, account input, resolved address, data cutoff, and previous report IDs.
-- Effective available pUSD cash, conservative bankroll, and reserve cash. Preserve the discovered asset symbol, token address, and raw public balance in the unchanged account snapshot; record any lower authenticated available-to-trade cap separately with its runtime provenance.
+- Run identity, timestamps, selected adapter, account input, resolved account identifier, data cutoff, and previous report IDs.
+- Effective available cash in the adapter-reported currency, conservative bankroll, and reserve cash. Preserve the currency, native collateral/account provenance, and raw public balance in the immutable normalized account snapshot; record any lower authenticated available-to-trade cap separately with its runtime provenance.
 - Holdings liquidation value, deployable cash, allocated cash, remaining cash, cold-start state, and new-position limit.
 - Candidate-discovery audit: whether event keyset pagination completed, fetched/excluded event counts by reason, the number of semantically qualified events, the number of selected events expanded into child markets, deep-research attempt counts for the 30pp, 20pp, and greater-than-10pp tiers, each tier-relaxation reason, and whether the operation needs were satisfied. Keep the exact candidate-event and selected-event JSON as immutable snapshots.
 - Every current position with complete new research.
@@ -47,7 +47,11 @@ Keep JSON keys, signal enums, outcome enums, IDs, URLs, exact market questions, 
 
 For current positions and candidates, include:
 
-- Market ID, question, verified event URL, researched outcome, exact resolution criteria, and end date.
+- Research market ID, adapter-native parent `event_identifier`, concrete
+  `multi_market_identifier`, directly tradable `instrument_identifier`, question, verified
+  market URL, researched outcome, exact resolution criteria, and end date. The market and
+  instrument identifiers must describe the same outcome on the report's
+  `run.account.adapter`.
 - A `PASS` resolution review with explicit YES/NO conditions, deadline, source, edge cases, reason, and evidence IDs.
 - Market YES point estimate, held-outcome model value, the complete recursive weighted tree, canonical tree hash, calculation result, and conclusion.
 - Real position shares and cost for current holdings; zero position fields for candidates.
@@ -98,4 +102,4 @@ Use report schema version `3.0` for new runs. Older versions may remain readable
 
 Reject inconsistent or non-Chinese narrative reports. Do not archive them with explanatory labels such as “theoretical” or “nominal.” Include a concise private Simplified-Chinese portfolio-diversification conclusion, but no formal risk-cluster structure.
 
-Before archival and delivery, verify every published market URL opens and that gamma market ID and resolution criteria match the researched market. A `PASS` review note must be market-specific; repeated boilerplate is invalid.
+Before archival and delivery, resolve every published market URL through the selected adapter, verify that it opens, and confirm its native market identifier and resolution criteria match the researched market. A `PASS` review note must be market-specific; repeated boilerplate is invalid.

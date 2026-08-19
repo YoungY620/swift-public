@@ -1,6 +1,6 @@
 # Poly-edge
 
-Poly-edge 是面向 Polymarket 的长期概率优势研究与交易意图生成项目。仓库只保留自动化 workflow 所需的研究 Skill、提示词、数据/报告工具、交易意图协议与执行代码。
+Poly-edge 是面向多预测市场的长期概率优势研究与交易意图生成项目。研究方法通过只读 venue adapter 获取市场数据；当前内置 Polymarket adapter，后续可以在不修改共享交易意图 envelope 的前提下增加其他市场。
 
 ## 自动化入口
 
@@ -8,7 +8,7 @@ Poly-edge 是面向 Polymarket 的长期概率优势研究与交易意图生成�
 - `.github/workflows/execute-polymarket.yml`：在显式启用并配置生产环境后消费已验证的交易意图。
 - `.github/workflows/pages.yml`：按要求保留原实现；当前仓库未配置 `ENABLE_FORECAST_EDGE_PAGES`，不会执行。
 
-研究 workflow 通过 `kimi --skills-dir "$GITHUB_WORKSPACE/skills"` 直接加载 `skills/forecast-edge`，完整研究固定运行在带有 `forecast-edge` 标签的 macOS ARM64 self-hosted runner 上。它依赖：
+研究 workflow 在 GitHub 托管的 `ubuntu-latest` runner 上，通过 `kimi --skills-dir "$GITHUB_WORKSPACE/skills"` 直接加载 `skills/forecast-edge`。它依赖：
 
 ```text
 automation/prompts/                 扫描与修复提示词
@@ -16,6 +16,7 @@ automation/templates/               通知模板
 automation/requirements-*.txt       workflow Python 依赖
 schemas/trade-intent.schema.json    交易意图协议
 scripts/validate_trade_intents.py   研究产物校验
+scripts/validate_research_iteration.py 多 venue 单轮交付校验
 skills/forecast-edge/               核心研究 Skill
 ```
 
@@ -33,4 +34,4 @@ python3 -m unittest discover -s skills/forecast-edge/tests -p 'test_*.py'
 bash skills/forecast-edge/tests/test_cli.sh
 ```
 
-账户地址、凭据、聊天 ID 和私有报告必须通过运行时配置提供，不得写入仓库。
+每条交易意图都显式包含 `venue`、`multi_market_identifier` 和 `instrument_identifier`；三者共同确定下游路由目标。账户标识、凭据、聊天 ID 和私有报告必须通过运行时配置提供，不得写入仓库。

@@ -338,8 +338,14 @@ def normalize_market(raw: dict[str, Any]) -> dict[str, Any]:
                 "token_id": str(tokens[index]) if index < len(tokens) else None,
             }
         )
+    events = raw.get("events")
+    parent_event = events[0] if isinstance(events, list) and events and isinstance(events[0], dict) else {}
+    event_id = raw.get("eventId") or parent_event.get("id")
+    event_slug = raw.get("eventSlug") or parent_event.get("slug")
     return {
         "id": str(raw.get("id")) if raw.get("id") is not None else None,
+        "event_id": str(event_id) if event_id is not None else None,
+        "event_slug": event_slug,
         "question": raw.get("question") or raw.get("title"),
         "slug": raw.get("slug"),
         "description": raw.get("description"),
@@ -882,7 +888,12 @@ def main(argv: list[str] | None = None) -> int:
                 },
             }
         elif args.command == "market":
-            param = {"id": args.identifier} if args.identifier.isdigit() else {"slug": args.identifier}
+            if args.identifier.isdigit():
+                param = {"id": args.identifier}
+            elif re.fullmatch(r"0x[a-fA-F0-9]{64}", args.identifier):
+                param = {"condition_ids": args.identifier}
+            else:
+                param = {"slug": args.identifier}
             raw = client.get_json(join_url(args.gamma_base, "/markets", param))
             if isinstance(raw, list):
                 raw = raw[0] if raw and isinstance(raw[0], dict) else None
