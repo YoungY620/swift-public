@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PARENT_PATH = ROOT / ".github" / "workflows" / "forecast-edge.yml"
 RESEARCH_PATH = ROOT / ".github" / "workflows" / "forecast-edge-research.yml"
 EXECUTION_PATH = ROOT / ".github" / "workflows" / "execute-polymarket.yml"
+AUDIT_PATH = ROOT / ".github" / "workflows" / "forecast-edge-audit.yml"
 SCHEDULED_PROMPT_PATH = ROOT / "automation" / "prompts" / "scheduled-scan.zh-CN.md"
 REPAIR_PROMPT_PATH = ROOT / "automation" / "prompts" / "repair-trade-intents.zh-CN.md"
 
@@ -19,6 +20,7 @@ class WorkflowContractTests(unittest.TestCase):
         cls.parent = PARENT_PATH.read_text(encoding="utf-8")
         cls.research = RESEARCH_PATH.read_text(encoding="utf-8")
         cls.execution = EXECUTION_PATH.read_text(encoding="utf-8")
+        cls.audit = AUDIT_PATH.read_text(encoding="utf-8")
 
     @staticmethod
     def step(workflow: str, name: str) -> str:
@@ -29,6 +31,7 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_parent_owns_schedule_and_calls_two_reusable_subworkflows(self) -> None:
         self.assertIn('cron: "23 * * * *"', self.parent)
+        self.assertIn("FORECAST_EDGE_INTERVAL_HOURS || '8'", self.parent)
         self.assertIn("uses: ./.github/workflows/forecast-edge-research.yml", self.parent)
         self.assertIn("uses: ./.github/workflows/execute-polymarket.yml", self.parent)
         self.assertIn("needs: [gate, research]", self.parent)
@@ -36,6 +39,19 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("needs.gate.outputs.execution-ready == 'true'", self.parent)
         self.assertIn("inputs['execute-live-trades']", self.parent)
         self.assertNotIn("workflow_run:", self.parent)
+
+    def test_parent_manifest_records_the_effective_schedule_gate(self) -> None:
+        self.assertIn("interval-hours=$interval", self.parent)
+        self.assertIn("anchor-utc-hour=$anchor", self.parent)
+        self.assertIn("gate-event-name=$EVENT_NAME", self.parent)
+        self.assertIn("schedule:{", self.parent)
+        self.assertIn("interval_hours:($schedule_interval_hours|tonumber)", self.parent)
+
+    def test_audit_is_triggered_only_after_the_parent_completes(self) -> None:
+        self.assertIn("workflow_run:", self.audit)
+        self.assertIn("Forecast Edge research and optional execution", self.audit)
+        self.assertIn("types:\n      - completed", self.audit)
+        self.assertNotIn("cron:", self.audit)
 
     def test_parent_grants_reusable_children_only_checkout_permission(self) -> None:
         research_call = self.parent[

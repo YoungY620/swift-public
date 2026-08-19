@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/forecast-edge/audit.schema.json",
+  "title": "Forecast Edge Agent Audit",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "rubric_id",
+    "rubric_version",
+    "overall_status",
+    "confidence",
+    "parent_run_id",
+    "checks",
+    "anomalies",
+    "missing_evidence",
+    "agent_notes"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "rubric_id": {"const": "forecast-edge-production-audit"},
+    "rubric_version": {"const": "1.0"},
+    "overall_status": {
+      "enum": ["PASS", "WARN", "FAIL", "INSUFFICIENT_EVIDENCE"]
+    },
+    "confidence": {"enum": ["HIGH", "MEDIUM", "LOW"]},
+    "parent_run_id": {"type": "string", "pattern": "^[0-9]+$"},
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "status", "severity", "evidence", "reason"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[A-Z]+-[0-9]{3}$"},
+          "status": {
+            "enum": ["PASS", "WARN", "FAIL", "INSUFFICIENT_EVIDENCE", "NOT_APPLICABLE"]
+          },
+          "severity": {"enum": ["critical", "high", "medium", "low"]},
+          "evidence": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1, "maxLength": 200},
+            "uniqueItems": true
+          },
+          "reason": {"type": "string", "minLength": 1, "maxLength": 1000}
+        }
+      }
+    },
+    "anomalies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["check_id", "severity", "summary", "evidence"],
+        "properties": {
+          "check_id": {"type": "string", "pattern": "^[A-Z]+-[0-9]{3}$"},
+          "severity": {"enum": ["critical", "high", "medium", "low"]},
+          "summary": {"type": "string", "minLength": 1, "maxLength": 1000},
+          "evidence": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1, "maxLength": 200},
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "missing_evidence": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "maxLength": 500},
+      "uniqueItems": true
+    },
+    "agent_notes": {"type": "string", "maxLength": 2000}
+  }
+}

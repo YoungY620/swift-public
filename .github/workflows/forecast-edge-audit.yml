@@ -1,0 +1,407 @@
+name: Forecast Edge post-run agent audit
+
+on:
+  workflow_run:
+    workflows:
+      - Forecast Edge research and optional execution
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      parent-run-id:
+        description: Completed Forecast Edge parent workflow run id to audit
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: forecast-edge-audit-${{ github.event.workflow_run.id || inputs['parent-run-id'] }}
+  cancel-in-progress: false
+
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      audit-applicable: ${{ steps.select.outputs.audit-applicable }}
+    env:
+      PARENT_RUN_ID: ${{ github.event.workflow_run.id || inputs['parent-run-id'] }}
+      EXPECTED_PARENT_WORKFLOW: Forecast Edge research and optional execution
+    steps:
+      - name: Select completed iterations that need agent review
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$PARENT_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::parent-run-id must be a GitHub Actions run id"
+            exit 1
+          fi
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID")
+          jobs=$(gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID/jobs?per_page=100" \
+            --jq '[.[].jobs[]]')
+          jq -e \
+            --arg expected "$EXPECTED_PARENT_WORKFLOW" \
+            '.name == $expected and .status == "completed"' <<< "$run" >/dev/null
+          applicable=$(jq -rn \
+            --argjson run "$run" \
+            --argjson jobs "$jobs" \
+            '($run.conclusion != "success") or any($jobs[]; (.name | test("^research(?: /|$)")) and .conclusion != "skipped")')
+          echo "audit-applicable=$applicable" >> "$GITHUB_OUTPUT"
+          if [[ "$applicable" != "true" ]]; then
+            echo "Successful hourly wake-up was gated off; no research or execution result needs agent review." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  audit:
+    needs: select
+    if: ${{ needs.select.outputs.audit-applicable == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+    env:
+      PARENT_RUN_ID: ${{ github.event.workflow_run.id || inputs['parent-run-id'] }}
+      EXPECTED_PARENT_WORKFLOW: Forecast Edge research and optional execution
+      KIMI_CODE_VERSION: "0.37.0"
+      KIMI_MODEL_NAME: kimi-for-coding
+      KIMI_MODEL_PROVIDER_TYPE: kimi
+      KIMI_MODEL_BASE_URL: https://api.kimi.com/coding/v1
+      KIMI_DISABLE_TELEMETRY: "1"
+      AUDIT_RUBRIC_PATH: ${{ github.workspace }}/automation/audit/forecast-edge-audit-rubric.json
+      AUDIT_SCHEMA_PATH: ${{ github.workspace }}/schemas/forecast-edge-audit.schema.json
+      AUDIT_PROMPT_PATH: ${{ github.workspace }}/automation/prompts/forecast-edge-audit.zh-CN.md
+      AUDIT_AGENT_PROFILE_PATH: ${{ github.workspace }}/automation/agents/forecast-edge-auditor.md
+
+    steps:
+      - name: Check out trusted audit code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate audit configuration
+        env:
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$PARENT_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::parent-run-id must be a GitHub Actions run id"
+            exit 1
+          fi
+          if [[ -z "$KIMI_MODEL_API_KEY" ]]; then
+            echo "::error::Required Actions secret KIMI_CODE_API_KEY is not configured"
+            exit 1
+          fi
+          for required_tool in gh jq npm python3 sha256sum; do
+            if ! command -v "$required_tool" >/dev/null; then
+              echo "::error::Audit runner is missing required tool: $required_tool"
+              exit 1
+            fi
+          done
+          runtime_dir="$RUNNER_TEMP/forecast-edge-audit-$PARENT_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          install -d -m 700 "$runtime_dir/evidence/release"
+          {
+            echo "AUDIT_RUNTIME_DIR=$runtime_dir"
+            echo "AUDIT_EVIDENCE_DIR=$runtime_dir/evidence"
+            echo "AUDIT_EVIDENCE_PATH=$runtime_dir/evidence/evidence.json"
+            echo "AUDIT_AGENT_DIR=$runtime_dir/agent"
+            echo "AUDIT_AGENT_RESPONSE_PATH=$runtime_dir/agent-response.json"
+            echo "AUDIT_RESULT_PATH=$runtime_dir/audit-result.json"
+            echo "KIMI_CODE_HOME=$RUNNER_TEMP/kimi-code-audit-home"
+          } >> "$GITHUB_ENV"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Restore npm download cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-kimi-code-audit-${{ env.KIMI_CODE_VERSION }}
+          restore-keys: |
+            ${{ runner.os }}-npm-kimi-code-audit-
+
+      - name: Install pinned audit agent and schema validator
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global "@moonshot-ai/kimi-code@$KIMI_CODE_VERSION"
+          python3 -m venv "$AUDIT_RUNTIME_DIR/python-venv"
+          "$AUDIT_RUNTIME_DIR/python-venv/bin/python" -m pip install \
+            --disable-pip-version-check --requirement automation/requirements-github-actions.txt
+
+      - name: Collect read-only parent workflow evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONFIGURED_INTERVAL_HOURS: ${{ vars.FORECAST_EDGE_INTERVAL_HOURS || '8' }}
+          CONFIGURED_ANCHOR_UTC_HOUR: ${{ vars.FORECAST_EDGE_ANCHOR_UTC_HOUR || '2' }}
+          LIVE_TRADING_ENABLED: ${{ vars.POLYMARKET_LIVE_TRADING_ENABLED || 'false' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID" > "$AUDIT_EVIDENCE_DIR/run.raw.json"
+          gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID/jobs?per_page=100" \
+            --jq '[.[].jobs[]]' > "$AUDIT_EVIDENCE_DIR/jobs.raw.json"
+          jq -e \
+            --arg expected "$EXPECTED_PARENT_WORKFLOW" \
+            '.name == $expected and .status == "completed"' \
+            "$AUDIT_EVIDENCE_DIR/run.raw.json" >/dev/null
+          jq '{
+            id:(.id|tostring),
+            run_number,
+            run_attempt,
+            event,
+            status,
+            conclusion,
+            head_sha,
+            created_at,
+            run_started_at,
+            updated_at,
+            html_url,
+            workflow_id
+          }' "$AUDIT_EVIDENCE_DIR/run.raw.json" > "$AUDIT_EVIDENCE_DIR/run.json"
+          jq '[.[] | {
+            id:(.id|tostring),
+            name,
+            status,
+            conclusion,
+            started_at,
+            completed_at,
+            runner_name,
+            runner_group_name,
+            labels,
+            steps:[.steps[]? | {name,status,conclusion,number,started_at,completed_at}]
+          }]' "$AUDIT_EVIDENCE_DIR/jobs.raw.json" > "$AUDIT_EVIDENCE_DIR/jobs.json"
+          jq -n \
+            --arg interval_hours "$CONFIGURED_INTERVAL_HOURS" \
+            --arg anchor_utc_hour "$CONFIGURED_ANCHOR_UTC_HOUR" \
+            --arg live_trading_enabled "$LIVE_TRADING_ENABLED" \
+            '{
+              interval_hours:($interval_hours|tonumber),
+              anchor_utc_hour:($anchor_utc_hour|tonumber),
+              live_trading_enabled:($live_trading_enabled == "true")
+            }' > "$AUDIT_EVIDENCE_DIR/configuration.json"
+
+      - name: Collect matching final Release evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="$AUDIT_EVIDENCE_DIR/release"
+          release_api="$release_dir/release-api.json"
+          run_attempt=$(jq -r '.run_attempt' "$AUDIT_EVIDENCE_DIR/run.json")
+          expected_release_tag="forecast-edge-research/run-$PARENT_RUN_ID-attempt-$run_attempt"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            > "$release_dir/releases.pages.json"
+          release_tag=$(jq -r --arg expected "$expected_release_tag" \
+            '[.[][] | select(.tag_name == $expected) | .tag_name] | first // empty' \
+            "$release_dir/releases.pages.json")
+          if [[ -n "$release_tag" ]]; then
+            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$release_tag" > "$release_api"
+            jq '{
+              found:true,
+              id:(.id|tostring),
+              tag_name,
+              target_commitish,
+              draft,
+              prerelease,
+              created_at,
+              published_at,
+              html_url,
+              assets:[.assets[] | {name,size,digest,created_at,updated_at}]
+            }' "$release_api" > "$release_dir/metadata.json"
+            for asset in iteration-release-manifest.json research-release-manifest.json \
+              validation-summary.json execution-receipt.json execution-verification.json; do
+              if jq -e --arg asset "$asset" '.assets | any(.name == $asset)' "$release_api" >/dev/null; then
+                gh release download "$release_tag" --pattern "$asset" --dir "$release_dir"
+              fi
+            done
+          else
+            jq -n '{found:false,assets:[]}' > "$release_dir/metadata.json"
+          fi
+          for optional_json in iteration-release-manifest.json research-release-manifest.json \
+            validation-summary.json execution-receipt.json execution-verification.json; do
+            if [[ ! -f "$release_dir/$optional_json" ]]; then
+              printf 'null\n' > "$release_dir/$optional_json"
+            fi
+          done
+          : > "$release_dir/downloaded-assets.ndjson"
+          for optional_json in iteration-release-manifest.json research-release-manifest.json \
+            validation-summary.json execution-receipt.json execution-verification.json; do
+            if jq -e 'type != "null"' "$release_dir/$optional_json" >/dev/null; then
+              jq -cn \
+                --arg name "$optional_json" \
+                --arg sha256 "$(sha256sum "$release_dir/$optional_json" | cut -d ' ' -f 1)" \
+                '{name:$name,sha256:$sha256}' >> "$release_dir/downloaded-assets.ndjson"
+            fi
+          done
+          jq -s '.' "$release_dir/downloaded-assets.ndjson" > "$release_dir/downloaded-assets.json"
+
+      - name: Normalize and safety-check audit evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="$AUDIT_EVIDENCE_DIR/release"
+          python3 scripts/forecast_edge_workflow_contract.py > "$AUDIT_EVIDENCE_DIR/source-contract.json"
+          jq -n \
+            --slurpfile run "$AUDIT_EVIDENCE_DIR/run.json" \
+            --slurpfile jobs "$AUDIT_EVIDENCE_DIR/jobs.json" \
+            --slurpfile configuration "$AUDIT_EVIDENCE_DIR/configuration.json" \
+            --slurpfile source_contract "$AUDIT_EVIDENCE_DIR/source-contract.json" \
+            --slurpfile metadata "$release_dir/metadata.json" \
+            --slurpfile downloaded_assets "$release_dir/downloaded-assets.json" \
+            --slurpfile manifest "${release_dir}/iteration-release-manifest.json" \
+            --slurpfile research_manifest "${release_dir}/research-release-manifest.json" \
+            --slurpfile validation_summary "${release_dir}/validation-summary.json" \
+            --slurpfile execution_receipt "${release_dir}/execution-receipt.json" \
+            --slurpfile execution_verification "${release_dir}/execution-verification.json" \
+            '{
+              run:$run[0],
+              jobs:$jobs[0],
+              configuration:$configuration[0],
+              source_contract:$source_contract[0],
+              release:{
+                metadata:($metadata[0] + {downloaded_assets:$downloaded_assets[0]}),
+                manifest:($manifest[0] // null),
+                research_manifest:($research_manifest[0] // null),
+                validation_summary:($validation_summary[0] // null),
+                execution_receipt:($execution_receipt[0] // null),
+                execution_verification:($execution_verification[0] // null)
+              },
+              evidence_safety:{secret_value_scan_passed:true},
+              agent_response:{available:false}
+            }' > "$AUDIT_EVIDENCE_PATH"
+          if LC_ALL=C grep -aEq \
+            -- '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9]{20,}' \
+            "$AUDIT_EVIDENCE_PATH"; then
+            echo "::error::Audit evidence contains secret-like material"
+            exit 1
+          fi
+          jq -e \
+            --arg run_id "$PARENT_RUN_ID" \
+            '.run.id == $run_id and (.jobs | type == "array") and (.configuration.interval_hours | type == "number")' \
+            "$AUDIT_EVIDENCE_PATH" >/dev/null
+
+      - name: Run read-only Kimi audit agent
+        id: audit-agent
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$AUDIT_AGENT_DIR"
+          install -m 600 "$AUDIT_EVIDENCE_PATH" "$AUDIT_AGENT_DIR/evidence.json"
+          install -m 600 "$AUDIT_RUBRIC_PATH" "$AUDIT_AGENT_DIR/rubric.json"
+          install -m 600 "$AUDIT_SCHEMA_PATH" "$AUDIT_AGENT_DIR/audit.schema.json"
+          install -m 600 "$AUDIT_PROMPT_PATH" "$AUDIT_AGENT_DIR/prompt.md"
+          {
+            sed -n '1,240p' "$AUDIT_AGENT_DIR/prompt.md"
+            printf '\n<rubric-data>\n'
+            jq -c '.' "$AUDIT_AGENT_DIR/rubric.json"
+            printf '</rubric-data>\n<schema-data>\n'
+            jq -c '.' "$AUDIT_AGENT_DIR/audit.schema.json"
+            printf '</schema-data>\n<evidence-data>\n'
+            jq -c '.' "$AUDIT_AGENT_DIR/evidence.json"
+            printf '</evidence-data>\n'
+          } > "$AUDIT_AGENT_DIR/rendered-prompt.txt"
+          cd "$AUDIT_AGENT_DIR"
+          kimi --agent-file "$AUDIT_AGENT_PROFILE_PATH" \
+            -p "$(<rendered-prompt.txt)" \
+            > "$AUDIT_AGENT_RESPONSE_PATH" 2> "$AUDIT_RUNTIME_DIR/agent.stderr"
+          if grep -Fq -- "$KIMI_MODEL_API_KEY" "$AUDIT_AGENT_RESPONSE_PATH"; then
+            rm -f "$AUDIT_AGENT_RESPONSE_PATH"
+            echo "::error::Audit agent response contained protected credential material"
+            exit 1
+          fi
+
+      - name: Validate agent judgment or produce fail-closed audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          validator="$AUDIT_RUNTIME_DIR/python-venv/bin/python"
+          if [[ "${{ steps.audit-agent.outcome }}" == "success" ]] && \
+            "$validator" scripts/forecast_edge_audit.py validate \
+              --input "$AUDIT_AGENT_RESPONSE_PATH" \
+              --rubric "$AUDIT_RUBRIC_PATH" \
+              --evidence "$AUDIT_EVIDENCE_PATH" \
+              --schema "$AUDIT_SCHEMA_PATH" \
+              --output "$AUDIT_RESULT_PATH"; then
+            echo "Validated the audit agent's structured judgment"
+          else
+            printf '%s\n' 'agent response unavailable or invalid' > "$AUDIT_RUNTIME_DIR/fallback-reason.txt"
+            "$validator" scripts/forecast_edge_audit.py fallback \
+              --input "$AUDIT_RUNTIME_DIR/fallback-reason.txt" \
+              --rubric "$AUDIT_RUBRIC_PATH" \
+              --evidence "$AUDIT_EVIDENCE_PATH" \
+              --schema "$AUDIT_SCHEMA_PATH" \
+              --parent-run-id "$PARENT_RUN_ID" \
+              --output "$AUDIT_RESULT_PATH"
+          fi
+          jq -e --arg run_id "$PARENT_RUN_ID" '.parent_run_id == $run_id' "$AUDIT_RESULT_PATH" >/dev/null
+
+      - name: Publish sanitized audit summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            printf '# Forecast Edge post-run audit\n\n'
+            printf -- '- Parent run: [%s](%s)\n' \
+              "$PARENT_RUN_ID" "$(jq -r '.run.html_url' "$AUDIT_EVIDENCE_PATH")"
+            printf -- '- Overall status: `%s`\n' "$(jq -r '.overall_status' "$AUDIT_RESULT_PATH")"
+            printf -- '- Confidence: `%s`\n\n' "$(jq -r '.confidence' "$AUDIT_RESULT_PATH")"
+            printf '## Checks\n\n'
+            printf '| Check | Severity | Status | Reason |\n'
+            printf '|---|---|---|---|\n'
+            jq -r '.checks[] | "| `\(.id)` | \(.severity) | `\(.status)` | \(.reason | gsub("[\\r\\n|]"; " ")) |"' \
+              "$AUDIT_RESULT_PATH"
+            printf '\n## Anomalies\n\n'
+            if [[ "$(jq '.anomalies | length' "$AUDIT_RESULT_PATH")" -eq 0 ]]; then
+              printf '_No evidence-backed anomaly was reported._\n'
+            else
+              jq -r '.anomalies[] | "- **\(.severity)** `\(.check_id)`: \(.summary | gsub("[\\r\\n]"; " "))"' \
+                "$AUDIT_RESULT_PATH"
+            fi
+            printf '\n## Missing evidence\n\n'
+            if [[ "$(jq '.missing_evidence | length' "$AUDIT_RESULT_PATH")" -eq 0 ]]; then
+              printf '_None._\n'
+            else
+              jq -r '.missing_evidence[] | "- " + (gsub("[\\r\\n]"; " "))' "$AUDIT_RESULT_PATH"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce critical audit outcome
+        shell: bash
+        run: |
+          set -euo pipefail
+          overall=$(jq -r '.overall_status' "$AUDIT_RESULT_PATH")
+          if [[ "$overall" == "FAIL" || "$overall" == "INSUFFICIENT_EVIDENCE" ]]; then
+            echo "::error::Forecast Edge audit concluded $overall"
+            exit 1
+          fi
+
+      - name: Remove private audit runtime
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${AUDIT_RUNTIME_DIR:-}" && \
+                "$AUDIT_RUNTIME_DIR" == "$RUNNER_TEMP"/forecast-edge-audit-* && \
+                -d "$AUDIT_RUNTIME_DIR" ]]; then
+            find "$AUDIT_RUNTIME_DIR" -depth -delete
+          fi

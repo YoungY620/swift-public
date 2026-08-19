@@ -1,0 +1,194 @@
+{
+  "schema_version": "1.0",
+  "rubric_id": "forecast-edge-production-audit",
+  "description": "Forecast Edge 父工作流完成后的研究、真实执行、发布和安全审计。缺少必要证据时不得判定通过。",
+  "statuses": [
+    "PASS",
+    "WARN",
+    "FAIL",
+    "INSUFFICIENT_EVIDENCE",
+    "NOT_APPLICABLE"
+  ],
+  "checks": [
+    {
+      "id": "SCHED-001",
+      "severity": "critical",
+      "title": "八小时调度配置",
+      "applies_when": "always",
+      "expected": "父工作流每小时唤醒，由 gate 按 8 小时间隔和合法 UTC anchor 放行；最终 manifest 记录本轮实际 gate 配置。",
+      "evidence_required": ["configuration", "source_contract", "release.manifest.schedule"],
+      "pass_condition": "当前 FORECAST_EDGE_INTERVAL_HOURS 为 8，anchor 在 0..23，源码保留小时唤醒和取模 gate；实际执行轮次的 manifest.interval_hours 为 8。"
+    },
+    {
+      "id": "SCHED-002",
+      "severity": "high",
+      "title": "调度不互相取消",
+      "applies_when": "always",
+      "expected": "父工作流使用固定 concurrency group 且 cancel-in-progress=false。",
+      "evidence_required": ["source_contract.parent_concurrency_safe"],
+      "pass_condition": "source_contract.parent_concurrency_safe=true。"
+    },
+    {
+      "id": "GATE-001",
+      "severity": "critical",
+      "title": "自动真实交易开关生效",
+      "applies_when": "parent event is schedule and the gate releases the iteration",
+      "expected": "持久 live trading 开关为 true；已执行轮次 manifest 中 execution.requested 和 configuration_ready 都为 true。",
+      "evidence_required": ["configuration.live_trading_enabled", "release.manifest.execution"],
+      "pass_condition": "所有适用布尔值均为 true；被正常 gate 掉的小时轮次标记 NOT_APPLICABLE。"
+    },
+    {
+      "id": "GATE-002",
+      "severity": "critical",
+      "title": "只有存在意图才执行",
+      "applies_when": "iteration research ran",
+      "expected": "执行 job 的源码条件同时要求 execution-ready=true 和 research.has-intents=true；没有意图时 execution 应跳过。",
+      "evidence_required": ["source_contract.execution_requires_intents", "jobs", "release.manifest.trade_intents"],
+      "pass_condition": "源码条件成立，且本轮 job 结论与 has_items 一致。"
+    },
+    {
+      "id": "RESEARCH-001",
+      "severity": "critical",
+      "title": "研究子图成功",
+      "applies_when": "gate released the iteration",
+      "expected": "research job 成功且研究 manifest/validation 进入最终 Release。",
+      "evidence_required": ["jobs", "release.research_manifest", "release.validation_summary"],
+      "pass_condition": "research job success，研究 manifest 和 validation summary 存在且能通过基本一致性检查。"
+    },
+    {
+      "id": "HANDOFF-001",
+      "severity": "critical",
+      "title": "交易意图摘要绑定",
+      "applies_when": "iteration research ran",
+      "expected": "研究 manifest 和最终 manifest 的 trade-intents SHA-256 完全一致，执行回执绑定由该摘要和 run identity 派生的 execution id。",
+      "evidence_required": ["release.manifest", "release.research_manifest", "release.execution_receipt"],
+      "pass_condition": "摘要一致；有执行时 execution_id 与 run_id/run_attempt/digest 的确定性计算一致。"
+    },
+    {
+      "id": "HANDOFF-002",
+      "severity": "critical",
+      "title": "执行完成前不公开意图",
+      "applies_when": "gate released the iteration",
+      "expected": "研究和执行子图不使用 Actions artifact、不发布 Release/Issue；父 workflow 仅在 execution success 或合法 skipped 后发布。",
+      "evidence_required": ["source_contract.no_actions_artifacts", "source_contract.release_after_execution", "jobs", "release.published_at"],
+      "pass_condition": "源码时序约束成立，Release 发布时间不早于 execution job 完成时间；失败执行不存在最终 Release。"
+    },
+    {
+      "id": "EXEC-001",
+      "severity": "critical",
+      "title": "在指定 EC2 runner 执行",
+      "applies_when": "execution job ran",
+      "expected": "execution job 在带 polymarket-execution、ec2、eu-north-1 等标签的 self-hosted Linux X64 runner 上成功。",
+      "evidence_required": ["jobs", "source_contract.execution_runner_labels"],
+      "pass_condition": "jobs API 和源码 runner labels 一致，execution conclusion=success。"
+    },
+    {
+      "id": "EXEC-002",
+      "severity": "critical",
+      "title": "执行前取消所有旧挂单",
+      "applies_when": "execution receipt exists",
+      "expected": "先执行 cancel-open-orders，再 preflight；回执 remaining_open_order_count=0。",
+      "evidence_required": ["source_contract.cancel_before_preflight", "release.execution_receipt.pre_execution_cancellation"],
+      "pass_condition": "源码顺序正确且回执 remaining_open_order_count=0。"
+    },
+    {
+      "id": "EXEC-003",
+      "severity": "critical",
+      "title": "预检时没有未成交挂单",
+      "applies_when": "execution job ran",
+      "expected": "执行器把 preflight.open_order_count 非零视为硬失败。",
+      "evidence_required": ["source_contract.preflight_requires_zero_open_orders", "jobs"],
+      "pass_condition": "源码 fail-closed 约束存在且 execution job 成功；若未保留独立 preflight 值，应明确降低置信度而非虚构。"
+    },
+    {
+      "id": "EXEC-004",
+      "severity": "critical",
+      "title": "地区、CLOB 和钱包健康",
+      "applies_when": "execution verification exists",
+      "expected": "geoblock.blocked=false、closed_only=false，verification health 与已认证账户健康检查一致。",
+      "evidence_required": ["release.execution_verification.health"],
+      "pass_condition": "blocked=false 且 closed_only=false；钱包身份缺少独立证据时不得声称已验证。"
+    },
+    {
+      "id": "EXEC-005",
+      "severity": "critical",
+      "title": "FOK 保护市价执行",
+      "applies_when": "execution receipt contains receipts",
+      "expected": "所有订单 order_type=FOK 且 execution_style=protected_market。",
+      "evidence_required": ["source_contract.fok_protected_market", "release.execution_receipt.receipts"],
+      "pass_condition": "源码约束成立，且每张实际回执字段均匹配。"
+    },
+    {
+      "id": "EXEC-006",
+      "severity": "critical",
+      "title": "价格、金额和份额保护",
+      "applies_when": "execution receipt contains receipts",
+      "expected": "BUY 不超过保护价格/总支出，SELL 不低于保护价格，实际份额不超过计划份额。",
+      "evidence_required": ["release.execution_receipt.receipts"],
+      "pass_condition": "逐单比较 actual_vwap、planned_limit_price、collateral_effect、planned_quantity、filled_quantity 全部满足方向性保护。"
+    },
+    {
+      "id": "EXEC-007",
+      "severity": "critical",
+      "title": "订单全部成交或明确无动作",
+      "applies_when": "execution receipt exists",
+      "expected": "COMPLETED 的每张回执均为 FULL；NO_ACTIONS 不含回执；PARTIAL/NO_FILL/REJECTED/UNCERTAIN 不得算成功。",
+      "evidence_required": ["release.execution_receipt"],
+      "pass_condition": "状态组合严格匹配预期。"
+    },
+    {
+      "id": "EXEC-008",
+      "severity": "critical",
+      "title": "执行后没有未成交挂单",
+      "applies_when": "execution verification exists",
+      "expected": "verification.open_order_count=0 且每个 order.open=false。",
+      "evidence_required": ["release.execution_verification"],
+      "pass_condition": "两个层面的开放订单检查均通过。"
+    },
+    {
+      "id": "EXEC-009",
+      "severity": "high",
+      "title": "余额、成交和费用证据一致",
+      "applies_when": "execution receipt contains receipts",
+      "expected": "成交数量、交易记录、抵押品变化、持仓变化和可观察费用互相一致。",
+      "evidence_required": ["release.execution_receipt.receipts", "release.execution_verification.orders"],
+      "pass_condition": "所有可计算关系一致；没有单独费用证据时应指出证据边界，不能猜测。"
+    },
+    {
+      "id": "EXEC-010",
+      "severity": "high",
+      "title": "执行幂等且不重复成交",
+      "applies_when": "execution receipt exists",
+      "expected": "execution_id 与 repository/run/attempt/digest 唯一绑定；回执没有重复 order_id、trade id 或 transaction hash。",
+      "evidence_required": ["run", "release.manifest", "release.execution_receipt"],
+      "pass_condition": "execution_id 精确匹配确定性计算且各标识符无重复；无法读取 ledger 只能审计已发布证据。"
+    },
+    {
+      "id": "RELEASE-001",
+      "severity": "critical",
+      "title": "仅在子图完成后发布",
+      "applies_when": "gate released the iteration",
+      "expected": "执行成功或因无意图合法跳过后才有最终 Release；执行失败时没有最终 Release。",
+      "evidence_required": ["run", "jobs", "release"],
+      "pass_condition": "Release 存在性及 published_at 与 job 结论/时间一致。"
+    },
+    {
+      "id": "RELEASE-002",
+      "severity": "high",
+      "title": "发布、Issue、飞书顺序",
+      "applies_when": "release job ran",
+      "expected": "父 workflow 中 Release、Issue、飞书通知严格按此顺序执行。",
+      "evidence_required": ["source_contract.notification_order", "jobs"],
+      "pass_condition": "源码顺序和 release job step 结论一致；可选 Issue 被合法跳过不算异常。"
+    },
+    {
+      "id": "SEC-001",
+      "severity": "critical",
+      "title": "审计与执行凭据隔离",
+      "applies_when": "always",
+      "expected": "Polymarket 凭据只留在 EC2 本地 secret file；audit 仅接收模型凭据，不接收交易、SSH 或 AWS 凭据；证据和报告不含秘密值。",
+      "evidence_required": ["source_contract.credential_isolation", "evidence_safety"],
+      "pass_condition": "静态 workflow 合约成立且证据安全扫描通过。"
+    }
+  ]
+}

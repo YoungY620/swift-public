@@ -28,13 +28,16 @@ jobs:
       execution-requested: ${{ steps.gate.outputs.execution-requested }}
       execution-ready: ${{ steps.gate.outputs.execution-ready }}
       handoff-directory: ${{ steps.gate.outputs.handoff-directory }}
+      interval-hours: ${{ steps.gate.outputs.interval-hours }}
+      anchor-utc-hour: ${{ steps.gate.outputs.anchor-utc-hour }}
+      gate-event-name: ${{ steps.gate.outputs.gate-event-name }}
     steps:
       - name: Validate schedule and private workflow configuration
         id: gate
         env:
           EVENT_NAME: ${{ github.event_name }}
           MANUAL_EXECUTION: ${{ inputs['execute-live-trades'] || false }}
-          INTERVAL_HOURS: ${{ vars.FORECAST_EDGE_INTERVAL_HOURS || '12' }}
+          INTERVAL_HOURS: ${{ vars.FORECAST_EDGE_INTERVAL_HOURS || '8' }}
           ANCHOR_UTC_HOUR: ${{ vars.FORECAST_EDGE_ANCHOR_UTC_HOUR || '2' }}
           LIVE_TRADING_ENABLED: ${{ vars.POLYMARKET_LIVE_TRADING_ENABLED || 'false' }}
           FORECAST_EDGE_MARKET_ADAPTERS: ${{ vars.FORECAST_EDGE_MARKET_ADAPTERS }}
@@ -103,6 +106,9 @@ jobs:
             echo "execution-requested=$execution_requested"
             echo "execution-ready=$execution_ready"
             echo "handoff-directory=$handoff_directory"
+            echo "interval-hours=$interval"
+            echo "anchor-utc-hour=$anchor"
+            echo "gate-event-name=$EVENT_NAME"
           } >> "$GITHUB_OUTPUT"
 
   research:
@@ -155,6 +161,10 @@ jobs:
       EXECUTION_REQUESTED: ${{ needs.gate.outputs.execution-requested }}
       EXECUTION_READY: ${{ needs.gate.outputs.execution-ready }}
       EXECUTION_RESULT: ${{ needs.execution.result }}
+      SCHEDULE_INTERVAL_HOURS: ${{ needs.gate.outputs.interval-hours }}
+      SCHEDULE_ANCHOR_UTC_HOUR: ${{ needs.gate.outputs.anchor-utc-hour }}
+      GATE_EVENT_NAME: ${{ needs.gate.outputs.gate-event-name }}
+      GATE_SHOULD_RUN: ${{ needs.gate.outputs.should-run }}
     steps:
       - name: Check out release templates
         uses: actions/checkout@v4
@@ -327,6 +337,10 @@ jobs:
             --argjson execution_requested "$EXECUTION_REQUESTED" \
             --argjson execution_ready "$EXECUTION_READY" \
             --arg execution_result "$EXECUTION_RESULT" \
+            --arg schedule_interval_hours "$SCHEDULE_INTERVAL_HOURS" \
+            --arg schedule_anchor_utc_hour "$SCHEDULE_ANCHOR_UTC_HOUR" \
+            --arg gate_event_name "$GATE_EVENT_NAME" \
+            --arg gate_should_run "$GATE_SHOULD_RUN" \
             --arg receipt_asset "$receipt_asset" \
             --arg receipt_sha256 "$receipt_digest" \
             --arg verification_asset "$verification_asset" \
@@ -340,6 +354,12 @@ jobs:
               workflow_run_attempt:$run_attempt,
               generated_at:$generated_at,
               trade_intents:{published:true, asset:"trade-intents.jsonl", sha256:$trade_intents_sha256, has_items:$has_intents},
+              schedule:{
+                event_name:$gate_event_name,
+                interval_hours:($schedule_interval_hours|tonumber),
+                anchor_utc_hour:($schedule_anchor_utc_hour|tonumber),
+                gate_should_run:($gate_should_run == "true")
+              },
               execution:{
                 requested:$execution_requested,
                 configuration_ready:$execution_ready,
