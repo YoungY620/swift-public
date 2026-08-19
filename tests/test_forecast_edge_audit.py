@@ -169,6 +169,27 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         with self.assertRaisesRegex(audit_module.AuditValidationError, "secret-like"):
             audit_module.extract_last_json_object("progress POLYMARKET_CLOB_API_SECRET")
 
+    def test_normalizer_downgrades_an_unsupported_pass_without_upgrading(self) -> None:
+        response = self.response()
+        response["checks"][0]["evidence"] = ["release.missing"]
+        normalized = audit_module.normalize_unsupported_judgments(
+            response, self.rubric, self.evidence
+        )
+        self.assertEqual(normalized["checks"][0]["status"], "INSUFFICIENT_EVIDENCE")
+        self.assertEqual(normalized["overall_status"], "INSUFFICIENT_EVIDENCE")
+        self.assertIn("release.missing", normalized["missing_evidence"])
+
+    def test_normalizer_preserves_a_fail(self) -> None:
+        response = self.response()
+        response["overall_status"] = "FAIL"
+        response["checks"][0]["status"] = "FAIL"
+        response["checks"][1]["evidence"] = ["release.missing"]
+        normalized = audit_module.normalize_unsupported_judgments(
+            response, self.rubric, self.evidence
+        )
+        self.assertEqual(normalized["checks"][0]["status"], "FAIL")
+        self.assertEqual(normalized["overall_status"], "FAIL")
+
     def test_fallback_is_schema_valid_and_fail_closed(self) -> None:
         response = audit_module.fallback_response(self.rubric, "123", "invalid response")
         errors = list(Draft202012Validator(self.schema).iter_errors(response))

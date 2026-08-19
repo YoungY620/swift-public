@@ -343,6 +343,13 @@ jobs:
             --evidence "$AUDIT_EVIDENCE_PATH" \
             --schema "$AUDIT_SCHEMA_PATH" \
             --output "$AUDIT_AGENT_RESPONSE_PATH"
+          "$AUDIT_RUNTIME_DIR/python-venv/bin/python" "$GITHUB_WORKSPACE/scripts/forecast_edge_audit.py" normalize \
+            --input "$AUDIT_AGENT_RESPONSE_PATH" \
+            --rubric "$AUDIT_RUBRIC_PATH" \
+            --evidence "$AUDIT_EVIDENCE_PATH" \
+            --schema "$AUDIT_SCHEMA_PATH" \
+            --output "$AUDIT_AGENT_RESPONSE_PATH.normalized"
+          mv "$AUDIT_AGENT_RESPONSE_PATH.normalized" "$AUDIT_AGENT_RESPONSE_PATH"
 
       - name: Validate agent judgment or produce fail-closed audit
         shell: bash

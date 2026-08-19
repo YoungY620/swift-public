@@ -80,6 +80,52 @@ def extract_last_json_object(text: str) -> dict[str, Any]:
     return candidate
 
 
+def normalize_unsupported_judgments(
+    response: dict[str, Any], rubric: dict[str, Any], evidence: dict[str, Any]
+) -> dict[str, Any]:
+    """Downgrade unsupported positive judgments; never upgrade an Agent judgment."""
+    checks = response.get("checks")
+    rubric_checks = rubric.get("checks")
+    if not isinstance(checks, list) or not isinstance(rubric_checks, list):
+        return response
+    rubric_by_id = {
+        str(item.get("id")): item for item in rubric_checks if isinstance(item, dict)
+    }
+    missing = {
+        str(item) for item in response.get("missing_evidence", []) if isinstance(item, str)
+    }
+    downgraded = False
+    for check in checks:
+        if not isinstance(check, dict) or check.get("status") not in {"PASS", "WARN"}:
+            continue
+        citations = check.get("evidence")
+        if not isinstance(citations, list):
+            citations = []
+        absent = [str(key) for key in citations if isinstance(key, str) and not resolve(evidence, key)[0]]
+        if not citations:
+            rubric_item = rubric_by_id.get(str(check.get("id")), {})
+            required = rubric_item.get("evidence_required", [])
+            absent = [str(key) for key in required if isinstance(key, str)]
+        if not absent:
+            continue
+        missing.update(absent)
+        check["status"] = "INSUFFICIENT_EVIDENCE"
+        check["evidence"] = sorted(set(absent))
+        check["reason"] = "缺少支持原判断的必要证据，已由确定性校验器降级。"
+        downgraded = True
+    if downgraded:
+        response["missing_evidence"] = sorted(missing)
+        response["confidence"] = "LOW"
+        statuses = [
+            str(item.get("status")) for item in checks if isinstance(item, dict)
+        ]
+        if "FAIL" in statuses:
+            response["overall_status"] = "FAIL"
+        else:
+            response["overall_status"] = "INSUFFICIENT_EVIDENCE"
+    return response
+
+
 def validate_response(response: Any, rubric: dict[str, Any], evidence: dict[str, Any], schema: dict[str, Any]) -> None:
     errors = sorted(Draft202012Validator(schema).iter_errors(response), key=lambda error: list(error.path))
     if errors:
@@ -169,7 +215,7 @@ def fallback_response(rubric: dict[str, Any], parent_run_id: str, reason: str) -
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("validate", "extract", "fallback"))
+    parser.add_argument("command", choices=("validate", "normalize", "extract", "fallback"))
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--rubric", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
@@ -183,6 +229,12 @@ def main() -> int:
     schema = load_json(args.schema, "audit schema")
     if args.command == "extract":
         response = extract_last_json_object(args.input.read_text(encoding="utf-8"))
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(response, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return 0
+    if args.command == "normalize":
+        response = load_json(args.input, "agent response")
+        response = normalize_unsupported_judgments(response, rubric, evidence)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(response, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return 0
