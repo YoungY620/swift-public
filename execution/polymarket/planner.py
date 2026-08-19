@@ -120,8 +120,11 @@ def _plan_one(
     limits: RiskLimits,
 ) -> PlannedOrder | SkippedIntent:
     _assert_market(intent, market)
-    if intent.reference_price > ONE:
-        raise PlanningError(f"intent {index} reference price exceeds 1")
+    suggested_price = intent.notional / intent.quantity
+    if suggested_price > ONE:
+        raise PlanningError(
+            f"intent {index} suggested notional divided by quantity exceeds 1"
+        )
     if intent.notional > limits.max_order_notional:
         raise PlanningError(
             f"intent {index} notional {intent.notional} exceeds per-order limit "
@@ -142,9 +145,9 @@ def _plan_one(
 
     deviation = Decimal(limits.max_price_deviation_bps) / BPS
     if intent.side == "buy":
-        raw_limit = min(ONE - market.tick_size, intent.reference_price * (ONE + deviation))
+        raw_limit = min(ONE - market.tick_size, suggested_price * (ONE + deviation))
     else:
-        raw_limit = max(market.tick_size, intent.reference_price * (ONE - deviation))
+        raw_limit = max(market.tick_size, suggested_price * (ONE - deviation))
     limit_price = _round_price(raw_limit, market.tick_size, side=intent.side)
 
     quantity_cap = intent.quantity
@@ -154,13 +157,6 @@ def _plan_one(
             return SkippedIntent(index, "no_position", "no matching position is available to sell")
     cash_cap: Decimal | None = None
     if intent.side == "buy":
-        allowed_gross_notional = min(
-            limits.max_order_notional,
-            intent.notional
-            * (
-            ONE + Decimal(limits.max_notional_deviation_bps) / BPS
-            ),
-        )
         spendable = max(ZERO, available_cash - limits.minimum_cash_reserve)
         if spendable <= ZERO:
             return SkippedIntent(
@@ -171,7 +167,7 @@ def _plan_one(
         worst_case_unit_cost = limit_price + maximum_fee_per_share
         quantity_cap = min(
             quantity_cap,
-            allowed_gross_notional / limit_price,
+            intent.notional / limit_price,
             spendable / worst_case_unit_cost,
         )
         cash_cap = spendable
@@ -211,18 +207,11 @@ def _plan_one(
     gross = sum((fill.gross_notional for fill in fills), ZERO)
     fee = sum((fill.fee for fill in fills), ZERO)
     vwap = gross / filled_quantity
-    live_deviation_bps = abs(vwap - intent.reference_price) / intent.reference_price * BPS
+    live_deviation_bps = abs(vwap - suggested_price) / suggested_price * BPS
     if live_deviation_bps > Decimal(limits.max_price_deviation_bps):
-        raise PlanningError(f"intent {index} live VWAP exceeds the price deviation limit")
-    expected_live_notional = intent.reference_price * filled_quantity
-    notional_deviation_bps = (
-        abs(gross - expected_live_notional) / expected_live_notional * BPS
-    )
-    if notional_deviation_bps > Decimal(limits.max_notional_deviation_bps):
-        return SkippedIntent(
-            index,
-            "notional_deviation_too_large",
-            "live executable gross notional differs from the intent beyond the configured limit",
+        raise PlanningError(
+            f"intent {index} simulated VWAP differs from suggested notional/quantity price "
+            "beyond the configured limit"
         )
     cash_effect = gross + fee if intent.side == "buy" else gross - fee
     limit_gross_notional = filled_quantity * limit_price

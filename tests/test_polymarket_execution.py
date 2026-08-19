@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
 from execution.polymarket.artifact import ArtifactError, load_and_validate_jsonl
+from execution.polymarket.ledger import LedgerError, SQLiteLedger
 from execution.polymarket.models import (
     BookLevel,
     FeeSchedule,
@@ -15,6 +17,11 @@ from execution.polymarket.models import (
     TradeIntent,
 )
 from execution.polymarket.planner import PlanningError, build_execution_plan
+from execution.polymarket.sdk_adapter import (
+    AdapterError,
+    LivePolymarketAdapter,
+    open_buy_order_reserve,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -138,6 +145,47 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(plan.orders, ())
         self.assertEqual(plan.skipped[0].code, "insufficient_liquidity")
 
+    def test_buy_quantity_is_capped_by_both_suggested_shares_and_amount(self) -> None:
+        limits = RiskLimits(
+            max_price_deviation_bps=1000,
+            max_quantity_reduction_bps=2000,
+        )
+        plan = build_execution_plan(
+            intents=[intent(price="0.50", notional="5", quantity="10")],
+            markets={TOKEN: market(asks=(("0.52", "100"),))},
+            positions={},
+            available_cash=Decimal("100"),
+            limits=limits,
+        )
+        order = plan.orders[0]
+        self.assertEqual(order.limit_price, Decimal("0.55"))
+        self.assertEqual(order.quantity, Decimal("9.09"))
+        self.assertLessEqual(order.limit_gross_notional, Decimal("5"))
+
+    def test_simulated_vwap_is_checked_against_notional_per_suggested_share(self) -> None:
+        limits = RiskLimits(
+            max_price_deviation_bps=500,
+            max_quantity_reduction_bps=2000,
+        )
+        plan = build_execution_plan(
+            intents=[intent(price="0.49", notional="5", quantity="10")],
+            markets={TOKEN: market(asks=(("0.52", "100"),))},
+            positions={},
+            available_cash=Decimal("100"),
+            limits=limits,
+        )
+        self.assertEqual(plan.orders[0].limit_price, Decimal("0.52"))
+        self.assertEqual(plan.orders[0].vwap, Decimal("0.52"))
+
+        with self.assertRaisesRegex(PlanningError, "simulated VWAP"):
+            build_execution_plan(
+                intents=[intent(price="0.49", notional="5", quantity="10")],
+                markets={TOKEN: market(asks=(("0.47", "100"),))},
+                positions={},
+                available_cash=Decimal("100"),
+                limits=limits,
+            )
+
     def test_abnormal_order_notional_fails_the_whole_batch(self) -> None:
         with self.assertRaisesRegex(PlanningError, "exceeds"):
             build_execution_plan(
@@ -209,6 +257,168 @@ class ArtifactTests(unittest.TestCase):
                 schema_path=ROOT / "schemas" / "trade-intent.schema.json",
             )
 
+
+@dataclass
+class SignedOrderFixture:
+    salt: int
+    signature: str
+
+
+class SQLiteLedgerTests(unittest.TestCase):
+    def ledger(self, path: Path, execution_id: str, owner: str = "runner-a") -> SQLiteLedger:
+        return SQLiteLedger(path=path, execution_id=execution_id, lease_owner=owner)
+
+    def test_local_ledger_persists_order_and_completed_replay(self) -> None:
+        path = Path(tempfile.mkdtemp()) / "ledger.sqlite3"
+        ledger = self.ledger(path, "execution-1")
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(
+            ledger.claim_run(
+                artifact_sha256="a" * 64,
+                planned_notional=Decimal("5"),
+                daily_notional_limit=Decimal("10"),
+            ),
+            "new",
+        )
+        payload = ledger.save_signed_order(
+            0,
+            SignedOrderFixture(salt=7, signature="0xsigned"),
+            {"intent_index": 0},
+            before_token_balance=Decimal("0"),
+            before_collateral_balance=Decimal("20"),
+        )
+        self.assertEqual(payload["salt"], 7)
+        ledger.mark_submitted(0, {"order_id": "order-1"})
+        ledger.mark_order_terminal(0, {"status": "filled"})
+        ledger.complete({"status": "COMPLETED"})
+
+        replay = self.ledger(path, "execution-1", owner="runner-b")
+        self.assertEqual(
+            replay.claim_run(
+                artifact_sha256="a" * 64,
+                planned_notional=Decimal("5"),
+                daily_notional_limit=Decimal("10"),
+            ),
+            "completed",
+        )
+        self.assertEqual(replay.get(replay.order_key(0))["state"], "VERIFIED")
+
+    def test_local_ledger_enforces_shared_daily_limit(self) -> None:
+        path = Path(tempfile.mkdtemp()) / "ledger.sqlite3"
+        first = self.ledger(path, "execution-1")
+        first.claim_run(
+            artifact_sha256="a" * 64,
+            planned_notional=Decimal("6"),
+            daily_notional_limit=Decimal("10"),
+        )
+        second = self.ledger(path, "execution-2")
+        with self.assertRaisesRegex(LedgerError, "daily notional"):
+            second.claim_run(
+                artifact_sha256="b" * 64,
+                planned_notional=Decimal("5"),
+                daily_notional_limit=Decimal("10"),
+            )
+
+    def test_local_ledger_rejects_another_unexpired_lease_owner(self) -> None:
+        path = Path(tempfile.mkdtemp()) / "ledger.sqlite3"
+        first = self.ledger(path, "execution-1")
+        first.claim_run(
+            artifact_sha256="a" * 64,
+            planned_notional=Decimal("1"),
+            daily_notional_limit=Decimal("10"),
+        )
+        second = self.ledger(path, "execution-1", owner="runner-b")
+        with self.assertRaisesRegex(LedgerError, "another runner"):
+            second.claim_run(
+                artifact_sha256="a" * 64,
+                planned_notional=Decimal("1"),
+                daily_notional_limit=Decimal("10"),
+            )
+
+
+class OpenOrderReserveTests(unittest.TestCase):
+    def test_reserves_remaining_buy_notional_with_fee_buffer(self) -> None:
+        reserve = open_buy_order_reserve(
+            [
+                {
+                    "side": "BUY",
+                    "original_size": "40",
+                    "size_matched": "22.8",
+                    "price": "0.31",
+                },
+                {
+                    "side": "SELL",
+                    "original_size": "50",
+                    "size_matched": "0",
+                    "price": "0.3",
+                },
+            ]
+        )
+        self.assertEqual(reserve, Decimal("5.59860"))
+
+
+@dataclass
+class OrderFixture:
+    id: str
+    status: str
+    associate_trades: tuple[str, ...] = ()
+
+
+class PageFixture:
+    def __init__(self, *items: OrderFixture) -> None:
+        self.items = items
+
+    def iter_items(self):
+        return iter(self.items)
+
+
+class ClientFixture:
+    def __init__(self, *items: OrderFixture) -> None:
+        self.items = items
+
+    def list_open_orders(self, *, id: str) -> PageFixture:
+        return PageFixture(*(item for item in self.items if item.id == id))
+
+
+class OpenOrderStatusTests(unittest.TestCase):
+    def adapter(self, *items: OrderFixture) -> LivePolymarketAdapter:
+        adapter = LivePolymarketAdapter.__new__(LivePolymarketAdapter)
+        adapter.client = ClientFixture(*items)
+        return adapter
+
+    def test_live_order_is_open(self) -> None:
+        result = self.adapter(OrderFixture("order-1", "LIVE")).order_if_open("order-1")
+        self.assertEqual(
+            result,
+            {"id": "order-1", "status": "LIVE", "associate_trades": ()},
+        )
+
+    def test_matched_order_is_not_open(self) -> None:
+        result = self.adapter(OrderFixture("order-1", "MATCHED")).order_if_open("order-1")
+        self.assertIsNone(result)
+
+    def test_terminal_order_record_remains_available_for_trade_reconciliation(self) -> None:
+        result = self.adapter(
+            OrderFixture("order-1", "MATCHED", ("trade-1",))
+        ).order("order-1")
+        self.assertEqual(
+            result,
+            {
+                "id": "order-1",
+                "status": "MATCHED",
+                "associate_trades": ("trade-1",),
+            },
+        )
+
+    def test_terminal_and_non_resting_statuses_are_not_open(self) -> None:
+        for status in ("CANCELED", "CANCELLED", "DELAYED", "UNMATCHED"):
+            with self.subTest(status=status):
+                result = self.adapter(OrderFixture("order-1", status)).order_if_open("order-1")
+                self.assertIsNone(result)
+
+    def test_unknown_status_fails_closed(self) -> None:
+        with self.assertRaisesRegex(AdapterError, "unknown order status"):
+            self.adapter(OrderFixture("order-1", "PENDING")).order_if_open("order-1")
 
 if __name__ == "__main__":
     unittest.main()

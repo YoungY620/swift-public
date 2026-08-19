@@ -246,7 +246,6 @@ class MarketSnapshot:
 @dataclass(frozen=True)
 class RiskLimits:
     max_price_deviation_bps: int = 300
-    max_notional_deviation_bps: int = 500
     max_quantity_reduction_bps: int = 2500
     max_order_notional: Decimal = Decimal("50")
     max_batch_notional: Decimal = Decimal("100")
@@ -260,8 +259,6 @@ class RiskLimits:
     def __post_init__(self) -> None:
         if not 0 <= self.max_price_deviation_bps <= 5000:
             raise ModelError("max_price_deviation_bps must be between 0 and 5000")
-        if not 0 <= self.max_notional_deviation_bps <= 5000:
-            raise ModelError("max_notional_deviation_bps must be between 0 and 5000")
         if not 0 <= self.max_quantity_reduction_bps <= 10000:
             raise ModelError("max_quantity_reduction_bps must be between 0 and 10000")
         if self.max_order_notional <= ZERO or self.max_batch_notional <= ZERO:
@@ -281,7 +278,6 @@ class RiskLimits:
     def from_dict(cls, raw: dict[str, Any]) -> "RiskLimits":
         integer_fields = {
             "max_price_deviation_bps",
-            "max_notional_deviation_bps",
             "max_quantity_reduction_bps",
             "max_intents",
             "plan_ttl_seconds",
@@ -294,6 +290,9 @@ class RiskLimits:
             "minimum_cash_reserve",
             "max_fee_per_share",
         }
+        unknown = set(raw) - integer_fields - decimal_fields
+        if unknown:
+            raise ModelError("unknown risk limit fields: " + ", ".join(sorted(unknown)))
         values: dict[str, Any] = {}
         defaults = asdict(cls())
         for name in integer_fields:
@@ -306,8 +305,6 @@ class RiskLimits:
         result = cls(**values)
         if not 0 <= result.max_price_deviation_bps <= 5000:
             raise ModelError("max_price_deviation_bps must be between 0 and 5000")
-        if not 0 <= result.max_notional_deviation_bps <= 5000:
-            raise ModelError("max_notional_deviation_bps must be between 0 and 5000")
         if not 0 <= result.max_quantity_reduction_bps <= 10000:
             raise ModelError("max_quantity_reduction_bps must be between 0 and 10000")
         if result.max_order_notional <= ZERO or result.max_batch_notional <= ZERO:
@@ -327,7 +324,6 @@ class RiskLimits:
     def to_dict(self) -> dict[str, Any]:
         return {
             "max_price_deviation_bps": self.max_price_deviation_bps,
-            "max_notional_deviation_bps": self.max_notional_deviation_bps,
             "max_quantity_reduction_bps": self.max_quantity_reduction_bps,
             "max_order_notional": decimal_string(self.max_order_notional),
             "max_batch_notional": decimal_string(self.max_batch_notional),

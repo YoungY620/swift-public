@@ -19,7 +19,7 @@ from .artifact import (
     write_filtered_jsonl,
 )
 from .engine import ExecutionError, UncertainExecutionError, execute_orders, verify_receipts
-from .ledger import DynamoLedger, LedgerError
+from .ledger import DynamoLedger, LedgerError, SQLiteLedger
 from .models import (
     ZERO,
     MarketSnapshot,
@@ -91,8 +91,8 @@ def command_plan(args: argparse.Namespace) -> int:
         raise PlanningError("preflight snapshot is bound to another intent file")
     if preflight.get("health", {}).get("geoblock", {}).get("blocked") is not False:
         raise PlanningError("preflight did not prove blocked=false")
-    if preflight.get("open_order_count") != 0:
-        raise PlanningError("preflight account has conflicting open orders")
+    if preflight.get("conflicting_open_order_count") != 0:
+        raise PlanningError("preflight account has conflicting target-token open orders")
     collateral_asset = preflight.get("collateral_asset", {})
     if collateral_asset.get("asset") != "pUSD" or collateral_asset.get("decimals") != 6:
         raise PlanningError("preflight did not resolve the active six-decimal pUSD collateral")
@@ -111,7 +111,8 @@ def command_plan(args: argparse.Namespace) -> int:
         if isinstance(raw, dict)
     }
     available_cash = decimal_value(
-        preflight.get("collateral", {}).get("balance", "0"), "available collateral"
+        preflight.get("collateral", {}).get("effective_available_balance", "0"),
+        "effective available collateral",
     )
     plan = build_execution_plan(
         intents=intents,
@@ -196,11 +197,18 @@ def command_execute(args: argparse.Namespace) -> int:
         _write_json(args.output, summary)
         return 0
 
-    ledger = DynamoLedger(
-        table_name=args.ledger_table,
-        execution_id=args.execution_id,
-        lease_owner=args.lease_owner,
-    )
+    if args.ledger_path is not None:
+        ledger = SQLiteLedger(
+            path=args.ledger_path,
+            execution_id=args.execution_id,
+            lease_owner=args.lease_owner,
+        )
+    else:
+        ledger = DynamoLedger(
+            table_name=args.ledger_table,
+            execution_id=args.execution_id,
+            lease_owner=args.lease_owner,
+        )
     planned_notional = sum((order.gross_notional for order in orders), ZERO)
     claim = ledger.claim_run(
         artifact_sha256=args.artifact_sha256,
@@ -282,7 +290,9 @@ def build_parser(root: Path) -> argparse.ArgumentParser:
     execute.add_argument("--output", required=True, type=Path)
     execute.add_argument("--execution-id", required=True)
     execute.add_argument("--artifact-sha256", required=True)
-    execute.add_argument("--ledger-table", required=True)
+    ledger = execute.add_mutually_exclusive_group(required=True)
+    ledger.add_argument("--ledger-table")
+    ledger.add_argument("--ledger-path", type=Path)
     execute.add_argument("--lease-owner", required=True)
     execute.add_argument("--daily-notional-limit", required=True)
     execute.add_argument("--settlement-timeout-seconds", type=int, default=90)
@@ -317,4 +327,3 @@ if __name__ == "__main__":
     ) as exc:
         print(f"polymarket execution failed: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
-

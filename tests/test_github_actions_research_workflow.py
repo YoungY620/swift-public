@@ -6,180 +6,155 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW_PATH = ROOT / ".github" / "workflows" / "forecast-edge-research.yml"
+PARENT_PATH = ROOT / ".github" / "workflows" / "forecast-edge.yml"
+RESEARCH_PATH = ROOT / ".github" / "workflows" / "forecast-edge-research.yml"
+EXECUTION_PATH = ROOT / ".github" / "workflows" / "execute-polymarket.yml"
 SCHEDULED_PROMPT_PATH = ROOT / "automation" / "prompts" / "scheduled-scan.zh-CN.md"
 REPAIR_PROMPT_PATH = ROOT / "automation" / "prompts" / "repair-trade-intents.zh-CN.md"
 
 
-class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
+class WorkflowContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+        cls.parent = PARENT_PATH.read_text(encoding="utf-8")
+        cls.research = RESEARCH_PATH.read_text(encoding="utf-8")
+        cls.execution = EXECUTION_PATH.read_text(encoding="utf-8")
 
-    def step(self, name: str) -> str:
+    @staticmethod
+    def step(workflow: str, name: str) -> str:
         marker = f"      - name: {name}\n"
-        start = self.workflow.index(marker)
-        end = self.workflow.find("\n      - name: ", start + len(marker))
-        return self.workflow[start:] if end == -1 else self.workflow[start:end]
+        start = workflow.index(marker)
+        end = workflow.find("\n      - name: ", start + len(marker))
+        return workflow[start:] if end == -1 else workflow[start:end]
 
-    def test_research_data_stays_outside_the_checkout_and_git_branches(self) -> None:
-        self.assertIn('runtime_dir="$RUNNER_TEMP/forecast-edge-', self.workflow)
-        self.assertIn('echo "RUNTIME_DIR=$runtime_dir"', self.workflow)
-        self.assertNotIn("runtime/github-actions", self.workflow)
-        self.assertNotIn("forecast-edge-private-report", self.workflow)
-        self.assertNotIn("git push", self.workflow)
-        self.assertNotIn("git checkout -b", self.workflow)
+    def test_parent_owns_schedule_and_calls_two_reusable_subworkflows(self) -> None:
+        self.assertIn('cron: "23 * * * *"', self.parent)
+        self.assertIn("uses: ./.github/workflows/forecast-edge-research.yml", self.parent)
+        self.assertIn("uses: ./.github/workflows/execute-polymarket.yml", self.parent)
+        self.assertIn("needs: [gate, research]", self.parent)
+        self.assertIn("needs.research.outputs.has-intents == 'true'", self.parent)
+        self.assertIn("needs.gate.outputs.execution-ready == 'true'", self.parent)
+        self.assertIn("inputs['execute-live-trades']", self.parent)
+        self.assertNotIn("workflow_run:", self.parent)
 
-    def test_research_job_is_pinned_to_the_dedicated_self_hosted_runner(self) -> None:
-        self.assertIn("runs-on: ubuntu-latest", self.workflow)
+    def test_children_are_reusable_and_do_not_publish(self) -> None:
+        for child in (self.research, self.execution):
+            self.assertIn("workflow_call:", child)
+            self.assertNotIn("workflow_run:", child)
+            self.assertNotIn("actions/upload-artifact", child)
+            self.assertNotIn("actions/download-artifact", child)
+            self.assertNotIn("gh release create", child)
+            self.assertNotIn("gh issue create", child)
+        self.assertNotIn("cron:", self.research)
+
+    def test_private_trade_intents_are_staged_on_mode_0700_ec2_storage(self) -> None:
+        configure = self.step(self.research, "Configure authenticated EC2 handoff channel")
+        stage = self.step(self.research, "Stage private research handoff on EC2")
+        self.assertIn('install -d -m 700 "$REMOTE_HANDOFF_DIR"', configure)
+        self.assertIn('"$TRADE_INTENTS_PATH"', stage)
+        self.assertIn("trade-intents.jsonl", stage)
+        self.assertIn("chmod 600", stage)
+        self.assertNotIn("trade-intents.jsonl", self.step(
+            self.research, "Build current-iteration research Release"
+        ))
+
+    def test_private_research_details_are_not_written_to_actions_logs(self) -> None:
+        self.assertNotIn('cat "$VALIDATION_ERRORS_PATH"', self.research)
+        self.assertNotIn('cat "$VALIDATION_SUMMARY_PATH"', self.research)
+        self.assertNotRegex(self.research, r"sed -n .*kimi-attempt-[1-4]\.stderr")
+        self.assertNotIn("HTTP 200: $canonical_url", self.research)
+
+    def test_parent_publishes_only_after_optional_execution_resolves(self) -> None:
+        self.assertIn("needs: [gate, research, execution]", self.parent)
+        release = self.step(self.parent, "Publish one final iteration Release")
+        self.assertIn('gh release create "$RELEASE_TAG"', release)
+        self.assertIn('"$RELEASE_RUNTIME_DIR/trade-intents.jsonl"', release)
+        self.assertIn("execution-receipt.json", release)
+        release_index = self.parent.index("      - name: Publish one final iteration Release\n")
+        issue_index = self.parent.index("      - name: Create post-release Issue notification\n")
+        feishu_index = self.parent.index("      - name: Send post-release notification to Feishu\n")
+        self.assertLess(release_index, issue_index)
+        self.assertLess(issue_index, feishu_index)
+
+    def test_cleanup_only_runs_for_an_iteration_that_started(self) -> None:
+        cleanup = self.parent[self.parent.index("  cleanup:\n") :]
+        self.assertIn("needs.gate.outputs.should-run == 'true'", cleanup)
+        self.assertIn('if [[ -d "$handoff_dir" ]]', cleanup)
+
+    def test_no_actions_artifact_is_used_anywhere_in_the_parent_graph(self) -> None:
+        combined = self.parent + self.research + self.execution
+        self.assertNotIn("actions/upload-artifact", combined)
+        self.assertNotIn("actions/download-artifact", combined)
+        self.assertNotIn("forecast-edge-trade-intents", combined)
+
+    def test_execution_gate_checks_toggle_without_loading_trading_credentials(self) -> None:
+        gate = self.step(self.parent, "Validate schedule and private workflow configuration")
+        self.assertIn("POLYMARKET_LIVE_TRADING_ENABLED", gate)
+        self.assertIn("execution_ready=$execution_requested", gate)
+        for name in (
+            "POLYMARKET_SIGNER_PRIVATE_KEY",
+            "POLYMARKET_CLOB_API_KEY",
+            "POLYMARKET_CLOB_API_SECRET",
+            "POLYMARKET_CLOB_API_PASSPHRASE",
+        ):
+            self.assertNotIn(name, gate)
+
+    def test_execution_uses_persistent_ec2_and_sqlite_ledger(self) -> None:
+        for label in ("self-hosted", "Linux", "X64", "polymarket-execution", "eu-north-1"):
+            self.assertIn(f"      - {label}", self.execution)
         self.assertIn(
-            "runs-on:\n"
-            "      - self-hosted\n"
-            "      - macOS\n"
-            "      - ARM64\n"
-            "      - forecast-edge",
-            self.workflow,
+            "LEDGER_PATH: /home/ubuntu/poly-edge-live/runtime/execution-ledger.sqlite3",
+            self.execution,
         )
-        validate = self.step("Validate workflow configuration")
-        self.assertIn("BASH_VERSINFO[0] < 4", validate)
-        self.assertIn("curl gh jq npm python3 sha256sum tar timeout", validate)
+        self.assertIn("cancel remainders", self.execution)
+        self.assertNotIn("ssh ", self.execution)
+        self.assertNotIn("scp ", self.execution)
+        self.assertNotIn("aws ec2 run-instances", self.execution)
+        self.assertNotIn("Dynamo", self.execution)
 
-    def test_each_release_contains_one_report_and_restores_a_rolling_window(self) -> None:
-        restore = self.step("Restore recent research Releases")
-        package = self.step("Build current-iteration research Release")
-        publish = self.step("Publish current-iteration research Release")
+    def test_execution_details_stay_out_of_actions_logs_until_release(self) -> None:
+        execute = self.step(
+            self.execution,
+            "Validate, price, execute, cancel remainders, and verify locally",
+        )
+        for command in ("validate", "preflight", "plan", "execute", "verify"):
+            self.assertIn(f'> "$RUNTIME_DIR/{command}-command.log" 2>&1', execute)
 
-        self.assertIn("gh release download", restore)
-        self.assertIn("FORECAST_EDGE_HISTORY_RELEASE_COUNT", self.workflow)
-        self.assertIn('.[0:$limit]', restore)
-        self.assertIn("forecast-edge-research-report.tar.gz", restore)
-        self.assertIn("report_archive_sha256", restore)
+    def test_polymarket_credentials_exist_only_in_server_local_file(self) -> None:
         self.assertIn(
-            'tar -C "$REPORTS_DIR" -czf "$REPORT_ARCHIVE_PATH" "$current_report_dir_relative"',
-            package,
+            "SERVER_SECRET_PATH: /home/ubuntu/poly-edge-live/runtime/secrets.json",
+            self.execution,
         )
-        self.assertIn('--argjson report_count "1"', package)
-        self.assertIn("history_releases_used", package)
-        self.assertNotIn("history_archive", package)
-        self.assertIn('release_tag="forecast-edge-research/run-', package)
-        self.assertIn('gh release create "$RELEASE_TAG"', publish)
-        self.assertIn('--target "$GITHUB_SHA"', publish)
-        self.assertIn('--latest=false', publish)
+        self.assertIn('"$SERVER_SECRET_PATH"', self.execution)
+        self.assertNotIn("secrets.POLYMARKET_", self.execution)
+        execution_call = self.parent[
+            self.parent.index("  execution:\n") : self.parent.index("\n  release:\n")
+        ]
+        self.assertNotIn("secrets:", execution_call)
+        self.assertNotIn("POLYMARKET_SIGNER_PRIVATE_KEY", self.parent)
+        self.assertNotIn("POLYMARKET_CLOB_API_", self.parent)
 
-    def test_trade_intent_artifact_contains_only_jsonl(self) -> None:
-        upload = self.step("Upload validated trade-intent artifact")
+    def test_execution_price_threshold_is_configurable_and_notional_bounded(self) -> None:
+        self.assertIn("POLYMARKET_MAX_PRICE_DEVIATION_BPS", self.execution)
+        self.assertIn("max_price_deviation_bps", self.execution)
 
-        self.assertEqual(self.workflow.count("uses: actions/upload-artifact@v4"), 1)
-        self.assertIn("path: ${{ env.TRADE_INTENTS_PATH }}", upload)
-        self.assertNotIn("VALIDATION_SUMMARY_PATH", upload)
-        self.assertNotIn("MANIFEST", upload)
-        self.assertNotIn("path: |", upload)
-
-    def test_polymarket_trade_probe_is_read_only(self) -> None:
-        probe = self.step("Probe Polymarket runner trade availability")
-        self.assertIn("https://polymarket.com/api/geoblock", probe)
-        self.assertIn("https://clob.polymarket.com/", probe)
-        self.assertIn("read-only network probe", probe)
-        self.assertNotIn("KIMI_CODE_API_KEY", probe)
-        self.assertNotIn("private key", probe.lower())
-        self.assertNotIn("post-order", probe.lower())
-
-    def test_kimi_provider_is_probed_before_agent_execution(self) -> None:
-        probe = self.step("Probe Kimi model availability")
-
-        self.assertLess(
-            self.workflow.index("      - name: Probe Kimi model availability\n"),
-            self.workflow.index("      - name: Run Kimi Code — initial attempt\n"),
-        )
-        self.assertIn("secrets.KIMI_CODE_API_KEY", probe)
-        self.assertIn('"$KIMI_MODEL_BASE_URL/models"', probe)
-        self.assertIn('.id == $model', probe)
-        self.assertNotIn('echo "$KIMI_MODEL_API_KEY"', probe)
-
-    def test_python_dependencies_are_isolated_in_a_runner_temp_venv(self) -> None:
-        install = self.step("Install JSON Schema validator")
-
-        self.assertIn('echo "PYTHON_VENV_DIR=$runtime_dir/python-venv"', self.workflow)
-        self.assertIn('python3 -m venv "$PYTHON_VENV_DIR"', install)
-        self.assertIn('"$PYTHON_VENV_DIR/bin/python" -m pip install', install)
-        self.assertIn('echo "$PYTHON_VENV_DIR/bin" >> "$GITHUB_PATH"', install)
-        self.assertNotIn("--break-system-packages", install)
-
-    def test_release_permission_and_public_disclosure_gate_are_explicit(self) -> None:
-        self.assertIn("contents: write", self.workflow)
-        self.assertIn("ALLOW_PUBLIC_RESEARCH_RELEASES", self.workflow)
-        self.assertIn("GitHub Releases inherit repository visibility", self.workflow)
-
-    def test_only_required_api_and_notification_secrets_are_configured(self) -> None:
-        configured_secrets = set(re.findall(r"secrets\.([A-Z0-9_]+)", self.workflow))
+    def test_research_uses_only_model_and_ec2_handoff_secrets(self) -> None:
+        configured = set(re.findall(r"secrets\.([A-Z0-9_]+)", self.research))
         self.assertEqual(
-            configured_secrets,
-            {
-                "KIMI_CODE_API_KEY",
-                "FEISHU_APP_ID",
-                "FEISHU_APP_SECRET",
-                "FEISHU_CHAT_ID",
-            },
+            configured,
+            {"KIMI_CODE_API_KEY", "POLYMARKET_EC2_SSH_PRIVATE_KEY"},
         )
+        research_call = self.parent[
+            self.parent.index("  research:\n") : self.parent.index("\n  execution:\n")
+        ]
+        self.assertNotIn("secrets: inherit", research_call)
+        self.assertNotIn("POLYMARKET_SIGNER_PRIVATE_KEY", research_call)
+        self.assertNotIn("POLYMARKET_CLOB_API_", research_call)
 
-    def test_published_polymarket_urls_are_canonical_and_verified(self) -> None:
-        verify = self.step("Resolve and verify published Polymarket URLs")
-        format_issue = self.step("Format Issue notification")
-
-        self.assertLess(
-            self.workflow.index("      - name: Resolve and verify published Polymarket URLs\n"),
-            self.workflow.index("      - name: Build current-iteration research Release\n"),
-        )
-        self.assertIn("polymarket_data.py", verify)
-        self.assertIn('market "$market_id"', verify)
-        self.assertIn("Gamma's canonical event slug", verify)
-        self.assertIn("https://polymarket.com/event/", verify)
-        self.assertIn("--location --fail-with-body", verify)
-        self.assertIn("%{http_code}", verify)
-        self.assertIn('[[ "$http_status" != "200" ]]', verify)
-        self.assertIn('echo "URL_VERIFICATION_PATH=$runtime_dir/url_verification.json"', self.workflow)
-        self.assertIn('all(.[]; .http_status == 200)', verify)
-        self.assertIn("NOTIFICATION_ITEMS_PATH", format_issue)
-        self.assertIn("[打开已验证的 Polymarket 盘口]", format_issue)
-
-    def test_feishu_receives_the_exact_issue_body_as_a_card_after_issue_creation(self) -> None:
-        send = self.step("Send Issue notification to Feishu")
-
-        self.assertLess(
-            self.workflow.index("      - name: Create Issue notification\n"),
-            self.workflow.index("      - name: Send Issue notification to Feishu\n"),
-        )
-        self.assertIn('--rawfile issue "$RUNTIME_DIR/issue.md"', send)
-        self.assertIn('msg_type: "interactive"', send)
-        self.assertIn('schema: "2.0"', send)
-        self.assertIn('tag: "markdown", content: $issue', send)
-        self.assertIn('tag: "plain_text", content: $title', send)
-        self.assertIn('template: "blue"', send)
-        self.assertNotIn('msg_type: "text"', send)
-        self.assertNotIn("lark_md", send)
-        self.assertIn('uuid: $uuid', send)
-        self.assertIn("receive_id_type=chat_id", send)
-        self.assertNotIn("FEISHU_RECEIVE_ID_TYPE", send)
-        self.assertNotIn("FEISHU_EXPECTED_BOT_NAME", send)
-
-    def test_stable_public_options_are_workflow_constants(self) -> None:
-        self.assertIn("ENABLED_PREDICTION_MARKETS: polymarket", self.workflow)
-        self.assertIn('KIMI_CODE_VERSION: "0.37.0"', self.workflow)
-        self.assertIn("KIMI_MODEL_NAME: kimi-k3-highspeed", self.workflow)
-        self.assertIn(
-            "KIMI_MODEL_BASE_URL: https://api.kimi.com/coding/v1", self.workflow
-        )
-        self.assertNotIn("vars.KIMI_CODE_VERSION", self.workflow)
-        self.assertNotIn("vars.KIMI_MODEL_NAME", self.workflow)
-        self.assertNotIn("vars.KIMI_MODEL_BASE_URL", self.workflow)
-        self.assertNotIn("vars.ENABLED_PREDICTION_MARKETS", self.workflow)
-
-    def test_kimi_failures_emit_bounded_diagnostics(self) -> None:
-        for attempt in range(1, 5):
-            self.assertIn(
-                f"sed -n '1,200p' \"$RUNTIME_DIR/kimi-attempt-{attempt}.stderr\" >&2",
-                self.workflow,
-            )
+    def test_public_release_requires_post_execution_disclosure_opt_ins(self) -> None:
+        validate = self.step(self.research, "Validate workflow configuration")
+        self.assertIn("ALLOW_PUBLIC_RESEARCH_RELEASES", validate)
+        self.assertIn("ALLOW_PUBLIC_TRADE_INTENTS", validate)
 
     def test_prompt_requires_current_holdings_and_novel_event_research(self) -> None:
         prompt = SCHEDULED_PROMPT_PATH.read_text(encoding="utf-8")
@@ -188,14 +163,12 @@ class GitHubActionsResearchWorkflowContractTests(unittest.TestCase):
         self.assertIn("不得直接沿用历史概率", prompt)
         self.assertIn("只能新增一个", prompt)
 
-    def test_repair_prompt_distinguishes_history_from_the_current_report(self) -> None:
+    def test_repair_prompt_distinguishes_history_from_current_report(self) -> None:
         prompt = REPAIR_PROMPT_PATH.read_text(encoding="utf-8")
-        render = self.step("Render initial and repair prompts")
-
+        render = self.step(self.research, "Render initial and repair prompts")
         self.assertIn("{{BASELINE_REPORTS_PATH}}", prompt)
         self.assertIn("路径不在历史报告清单", prompt)
         self.assertIn("本轮报告数量为 0", prompt)
-        self.assertIn("不得把历史报告误当成", prompt)
         self.assertIn("{{BASELINE_REPORTS_PATH}}", render)
 
 

@@ -1,3 +1,6 @@
 self-hosted-runner:
   labels:
     - forecast-edge
+    - polymarket-execution
+    - ec2
+    - eu-north-1

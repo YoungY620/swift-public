@@ -15,12 +15,13 @@ import sys
 from pathlib import Path
 
 
-ALLOWED = {
-    "POLYMARKET_PRIVATE_KEY",
-    "POLYMARKET_DEPOSIT_WALLET",
-    "POLYMARKET_API_KEY",
-    "POLYMARKET_API_SECRET",
-    "POLYMARKET_API_PASSPHRASE",
+REQUIRED_KEYS = {
+    "POLYMARKET_SIGNER_PRIVATE_KEY",
+    "POLYMARKET_ACCOUNT_WALLET",
+    "POLYMARKET_CLOB_API_KEY",
+    "POLYMARKET_CLOB_API_SECRET",
+    "POLYMARKET_CLOB_API_PASSPHRASE",
+    "POLYMARKET_EXPECTED_WALLET_TYPE",
 }
 
 
@@ -34,11 +35,11 @@ def main(argv: list[str]) -> int:
         print("secret file must not be readable or writable by group/other", file=sys.stderr)
         return 2
     raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict) or set(raw) != ALLOWED:
+    if not isinstance(raw, dict) or set(raw) != REQUIRED_KEYS:
         print("secret file has an unexpected key set", file=sys.stderr)
         return 2
     environment = os.environ.copy()
-    for key in sorted(ALLOWED):
+    for key in sorted(raw):
         value = raw.get(key)
         if not isinstance(value, str) or not value:
             print(f"secret file value {key} is missing", file=sys.stderr)
@@ -51,4 +52,3 @@ def main(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv))
-

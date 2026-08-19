@@ -1,69 +1,40 @@
-name: Forecast Edge scheduled research
+name: Forecast Edge private research
 
 on:
-  schedule:
-    # Repository variables cannot be interpolated into cron. Trigger hourly at
-    # a non-peak minute, then let schedule-gate enforce the configured N hours.
-    - cron: "23 * * * *"
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      handoff-directory:
+        description: Absolute private handoff directory on the persistent EC2 host
+        required: true
+        type: string
+      ec2-host:
+        required: true
+        type: string
+      ec2-user:
+        required: true
+        type: string
+      ec2-host-fingerprint:
+        required: true
+        type: string
+    secrets:
+      KIMI_CODE_API_KEY:
+        required: true
+      POLYMARKET_EC2_SSH_PRIVATE_KEY:
+        required: true
+    outputs:
+      has-intents:
+        value: ${{ jobs.research.outputs.has-intents }}
+      trade-intents-sha256:
+        value: ${{ jobs.research.outputs.trade-intents-sha256 }}
+      release-tag:
+        value: ${{ jobs.research.outputs.release-tag }}
+      generated-at:
+        value: ${{ jobs.research.outputs.generated-at }}
 
 permissions: {}
 
 jobs:
-  schedule-gate:
-    runs-on: ubuntu-latest
-    outputs:
-      should-run: ${{ steps.gate.outputs.should-run }}
-      interval-hours: ${{ steps.gate.outputs.interval-hours }}
-    steps:
-      - name: Validate interval and select iteration
-        id: gate
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          INTERVAL_HOURS: ${{ vars.FORECAST_EDGE_INTERVAL_HOURS || '12' }}
-          ANCHOR_UTC_HOUR: ${{ vars.FORECAST_EDGE_ANCHOR_UTC_HOUR || '2' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! "$INTERVAL_HOURS" =~ ^[0-9]+$ ]]; then
-            echo "::error::FORECAST_EDGE_INTERVAL_HOURS must be an integer greater than or equal to 6"
-            exit 1
-          fi
-          if [[ ! "$ANCHOR_UTC_HOUR" =~ ^[0-9]+$ ]]; then
-            echo "::error::FORECAST_EDGE_ANCHOR_UTC_HOUR must be an integer from 0 through 23"
-            exit 1
-          fi
-          interval=$((10#$INTERVAL_HOURS))
-          anchor=$((10#$ANCHOR_UTC_HOUR))
-          if (( interval < 6 )); then
-            echo "::error::FORECAST_EDGE_INTERVAL_HOURS must be an integer greater than or equal to 6"
-            exit 1
-          fi
-          if (( anchor > 23 )); then
-            echo "::error::FORECAST_EDGE_ANCHOR_UTC_HOUR must be an integer from 0 through 23"
-            exit 1
-          fi
-
-          should_run=false
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            should_run=true
-          else
-            epoch_hour=$(( $(date -u +%s) / 3600 ))
-            if (( (epoch_hour - anchor) % interval == 0 )); then
-              should_run=true
-            fi
-          fi
-
-          echo "should-run=$should_run" >> "$GITHUB_OUTPUT"
-          echo "interval-hours=$interval" >> "$GITHUB_OUTPUT"
-          echo "### Schedule gate" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Event: \`$EVENT_NAME\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Interval: \`$interval\` hours" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Start iteration: \`$should_run\`" >> "$GITHUB_STEP_SUMMARY"
-
   research:
-    needs: schedule-gate
-    if: ${{ needs.schedule-gate.outputs.should-run == 'true' }}
     runs-on:
       - self-hosted
       - macOS
@@ -71,12 +42,12 @@ jobs:
       - forecast-edge
     timeout-minutes: 350
     permissions:
-      actions: read
-      contents: write
-      issues: write
-    concurrency:
-      group: forecast-edge-research-${{ github.repository }}
-      cancel-in-progress: false
+      contents: read
+    outputs:
+      has-intents: ${{ steps.private-handoff.outputs.has-intents }}
+      trade-intents-sha256: ${{ steps.private-handoff.outputs.trade-intents-sha256 }}
+      release-tag: ${{ steps.release-package.outputs.release-tag }}
+      generated-at: ${{ steps.release-package.outputs.generated-at }}
     env:
       ENABLED_PREDICTION_MARKETS: polymarket
       POLYMARKET_ACCOUNT: ${{ vars.POLYMARKET_ACCOUNT }}
@@ -90,6 +61,10 @@ jobs:
       KIMI_MODEL_BASE_URL: https://api.kimi.com/coding/v1
       KIMI_DISABLE_TELEMETRY: "1"
       TRADE_INTENT_SCHEMA_PATH: ${{ github.workspace }}/schemas/trade-intent.schema.json
+      REMOTE_HANDOFF_DIR: ${{ inputs.handoff-directory }}
+      EC2_HOST: ${{ inputs.ec2-host }}
+      EC2_USER: ${{ inputs.ec2-user }}
+      EC2_HOST_FINGERPRINT: ${{ inputs.ec2-host-fingerprint }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -99,9 +74,7 @@ jobs:
       - name: Validate workflow configuration
         env:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
-          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
-          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
-          FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.POLYMARKET_EC2_SSH_PRIVATE_KEY }}
         shell: bash
         run: |
           set -euo pipefail
@@ -109,27 +82,15 @@ jobs:
             echo "::error::Required Actions secret KIMI_CODE_API_KEY is not configured"
             exit 1
           fi
-          if [[ -z "$FEISHU_APP_ID" ]]; then
-            echo "::error::Required Actions secret FEISHU_APP_ID is not configured"
-            exit 1
-          fi
-          if [[ -z "$FEISHU_APP_SECRET" ]]; then
-            echo "::error::Required Actions secret FEISHU_APP_SECRET is not configured"
-            exit 1
-          fi
-          if [[ -z "$FEISHU_CHAT_ID" ]]; then
-            echo "::error::Required Actions secret FEISHU_CHAT_ID is not configured"
-            exit 1
-          fi
-          if [[ "$FEISHU_CHAT_ID" != oc_* ]]; then
-            echo "::error::FEISHU_CHAT_ID must be a chat_id beginning with oc_"
+          if [[ -z "$EC2_SSH_PRIVATE_KEY" ]]; then
+            echo "::error::Required Actions secret POLYMARKET_EC2_SSH_PRIVATE_KEY is not configured"
             exit 1
           fi
           if (( BASH_VERSINFO[0] < 4 )); then
             echo "::error::The research runner must expose Bash 4 or newer"
             exit 1
           fi
-          for required_tool in curl gh jq npm python3 sha256sum tar timeout; do
+          for required_tool in curl gh jq npm python3 scp sha256sum ssh ssh-keygen ssh-keyscan tar timeout; do
             if ! command -v "$required_tool" >/dev/null; then
               echo "::error::The research runner is missing required tool: $required_tool"
               exit 1
@@ -148,12 +109,24 @@ jobs:
             echo "::error::FORECAST_EDGE_HISTORY_RELEASE_COUNT must be an integer from 2 through 20"
             exit 1
           fi
-          if [[ "$REPOSITORY_PRIVATE" != "true" && "$ALLOW_PUBLIC_TRADE_INTENTS" != "true" ]]; then
-            echo "::error::Public repositories expose trade-intent artifacts; set ALLOW_PUBLIC_TRADE_INTENTS=true only after accepting that disclosure"
-            exit 1
-          fi
           if [[ "$REPOSITORY_PRIVATE" != "true" && "$ALLOW_PUBLIC_RESEARCH_RELEASES" != "true" ]]; then
             echo "::error::GitHub Releases inherit repository visibility; set ALLOW_PUBLIC_RESEARCH_RELEASES=true only after accepting public disclosure of iteration research reports"
+            exit 1
+          fi
+          if [[ "$REPOSITORY_PRIVATE" != "true" && "$ALLOW_PUBLIC_TRADE_INTENTS" != "true" ]]; then
+            echo "::error::The final Release publishes trade intents only after execution resolves; set ALLOW_PUBLIC_TRADE_INTENTS=true only after accepting that post-execution disclosure"
+            exit 1
+          fi
+          if [[ ! "$REMOTE_HANDOFF_DIR" =~ ^/home/ubuntu/poly-edge-workflows/[0-9]+-[0-9]+$ ]]; then
+            echo "::error::Private handoff directory is outside the approved EC2 runtime root"
+            exit 1
+          fi
+          if [[ ! "$EC2_HOST" =~ ^[A-Za-z0-9.-]+$ || ! "$EC2_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+            echo "::error::EC2 SSH host or user is invalid"
+            exit 1
+          fi
+          if [[ ! "$EC2_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/=]+$ ]]; then
+            echo "::error::EC2 SSH host fingerprint is invalid"
             exit 1
           fi
           runtime_dir="$RUNNER_TEMP/forecast-edge-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
@@ -178,9 +151,32 @@ jobs:
             echo "RELEASE_ASSETS_DIR=$release_assets_dir"
             echo "REPORT_ARCHIVE_PATH=$release_assets_dir/forecast-edge-research-report.tar.gz"
             echo "RELEASE_MANIFEST_PATH=$release_assets_dir/research-release-manifest.json"
+            echo "RESEARCH_HANDOFF_ARCHIVE=$runtime_dir/research-handoff.tar.gz"
+            echo "SSH_KEY_PATH=$runtime_dir/ec2-key"
+            echo "KNOWN_HOSTS_PATH=$runtime_dir/known_hosts"
             echo "KIMI_CODE_HOME=$RUNNER_TEMP/kimi-code-home"
             echo "PYTHON_VENV_DIR=$runtime_dir/python-venv"
           } >> "$GITHUB_ENV"
+
+      - name: Configure authenticated EC2 handoff channel
+        env:
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.POLYMARKET_EC2_SSH_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > "$SSH_KEY_PATH"
+          ssh-keyscan -T 15 -t ed25519 "$EC2_HOST" > "$KNOWN_HOSTS_PATH" 2>/dev/null
+          scanned_fingerprint=$(ssh-keygen -lf "$KNOWN_HOSTS_PATH" -E sha256 | awk '{print $2}')
+          if [[ "$scanned_fingerprint" != "$EC2_HOST_FINGERPRINT" ]]; then
+            echo "::error::Persistent EC2 SSH host key does not match the configured fingerprint"
+            exit 1
+          fi
+          ssh -i "$SSH_KEY_PATH" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$KNOWN_HOSTS_PATH" \
+            "$EC2_USER@$EC2_HOST" -- \
+            install -d -m 700 "$REMOTE_HANDOFF_DIR"
 
       - name: Probe Kimi model availability
         env:
@@ -443,7 +439,7 @@ jobs:
             -p "$(<"$ORIGINAL_PROMPT_PATH")" \
             > "$RUNTIME_DIR/kimi-attempt-1.stdout" \
             2> "$RUNTIME_DIR/kimi-attempt-1.stderr"; then
-            sed -n '1,200p' "$RUNTIME_DIR/kimi-attempt-1.stderr" >&2
+            echo "::error::Kimi initial attempt failed; private diagnostics were retained for repair"
             exit 1
           fi
 
@@ -468,7 +464,7 @@ jobs:
           printf '%s\n' "${reports[0]}" > "$CURRENT_REPORT_PATH_FILE"
           if ! python3 skills/forecast-edge/scripts/report_tool.py validate "${reports[0]}" \
             > "$REPORT_VALIDATION_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
-            cat "$VALIDATION_ERRORS_PATH" >&2
+            echo "::error::Private report validation failed"
             exit 1
           fi
           if ! python3 scripts/validate_trade_intents.py "$TRADE_INTENTS_PATH" \
@@ -477,10 +473,10 @@ jobs:
             --polymarket-account-snapshot "$ACCOUNT_SNAPSHOT_PATH" \
             --report "${reports[0]}" \
             > "$VALIDATION_SUMMARY_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
-            cat "$VALIDATION_ERRORS_PATH" >&2
+            echo "::error::Private trade-intent validation failed"
             exit 1
           fi
-          cat "$VALIDATION_SUMMARY_PATH"
+          echo "Private report and trade intents passed validation"
 
       - name: Run Kimi Code — repair 1 of 3
         id: kimi-repair-1
@@ -496,7 +492,7 @@ jobs:
             -p "$(<"$REPAIR_PROMPT_PATH")" \
             > "$RUNTIME_DIR/kimi-attempt-2.stdout" \
             2> "$RUNTIME_DIR/kimi-attempt-2.stderr"; then
-            sed -n '1,200p' "$RUNTIME_DIR/kimi-attempt-2.stderr" >&2
+            echo "::error::Kimi repair attempt 1 failed; private diagnostics were retained"
             exit 1
           fi
 
@@ -522,7 +518,7 @@ jobs:
           printf '%s\n' "${reports[0]}" > "$CURRENT_REPORT_PATH_FILE"
           if ! python3 skills/forecast-edge/scripts/report_tool.py validate "${reports[0]}" \
             > "$REPORT_VALIDATION_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
-            cat "$VALIDATION_ERRORS_PATH" >&2
+            echo "::error::Private report validation failed"
             exit 1
           fi
           if ! python3 scripts/validate_trade_intents.py "$TRADE_INTENTS_PATH" \
@@ -531,10 +527,10 @@ jobs:
             --polymarket-account-snapshot "$ACCOUNT_SNAPSHOT_PATH" \
             --report "${reports[0]}" \
             > "$VALIDATION_SUMMARY_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
-            cat "$VALIDATION_ERRORS_PATH" >&2
+            echo "::error::Private trade-intent validation failed"
             exit 1
           fi
-          cat "$VALIDATION_SUMMARY_PATH"
+          echo "Private report and trade intents passed validation"
 
       - name: Run Kimi Code — repair 2 of 3
         id: kimi-repair-2
@@ -550,7 +546,7 @@ jobs:
             -p "$(<"$REPAIR_PROMPT_PATH")" \
             > "$RUNTIME_DIR/kimi-attempt-3.stdout" \
             2> "$RUNTIME_DIR/kimi-attempt-3.stderr"; then
-            sed -n '1,200p' "$RUNTIME_DIR/kimi-attempt-3.stderr" >&2
+            echo "::error::Kimi repair attempt 2 failed; private diagnostics were retained"
             exit 1
           fi
 
@@ -576,7 +572,7 @@ jobs:
           printf '%s\n' "${reports[0]}" > "$CURRENT_REPORT_PATH_FILE"
           if ! python3 skills/forecast-edge/scripts/report_tool.py validate "${reports[0]}" \
             > "$REPORT_VALIDATION_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
-            cat "$VALIDATION_ERRORS_PATH" >&2
+            echo "::error::Private report validation failed"
             exit 1
           fi
           if ! python3 scripts/validate_trade_intents.py "$TRADE_INTENTS_PATH" \
@@ -585,10 +581,10 @@ jobs:
             --polymarket-account-snapshot "$ACCOUNT_SNAPSHOT_PATH" \
             --report "${reports[0]}" \
             > "$VALIDATION_SUMMARY_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
-            cat "$VALIDATION_ERRORS_PATH" >&2
+            echo "::error::Private trade-intent validation failed"
             exit 1
           fi
-          cat "$VALIDATION_SUMMARY_PATH"
+          echo "Private report and trade intents passed validation"
 
       - name: Run Kimi Code — repair 3 of 3
         id: kimi-repair-3
@@ -604,7 +600,7 @@ jobs:
             -p "$(<"$REPAIR_PROMPT_PATH")" \
             > "$RUNTIME_DIR/kimi-attempt-4.stdout" \
             2> "$RUNTIME_DIR/kimi-attempt-4.stderr"; then
-            sed -n '1,200p' "$RUNTIME_DIR/kimi-attempt-4.stderr" >&2
+            echo "::error::Kimi repair attempt 3 failed; private diagnostics were retained"
             exit 1
           fi
 
@@ -630,7 +626,7 @@ jobs:
           printf '%s\n' "${reports[0]}" > "$CURRENT_REPORT_PATH_FILE"
           if ! python3 skills/forecast-edge/scripts/report_tool.py validate "${reports[0]}" \
             > "$REPORT_VALIDATION_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
-            cat "$VALIDATION_ERRORS_PATH" >&2
+            echo "::error::Private report validation failed"
             exit 1
           fi
           if ! python3 scripts/validate_trade_intents.py "$TRADE_INTENTS_PATH" \
@@ -639,10 +635,10 @@ jobs:
             --polymarket-account-snapshot "$ACCOUNT_SNAPSHOT_PATH" \
             --report "${reports[0]}" \
             > "$VALIDATION_SUMMARY_PATH" 2> "$VALIDATION_ERRORS_PATH"; then
-            cat "$VALIDATION_ERRORS_PATH" >&2
+            echo "::error::Private trade-intent validation failed"
             exit 1
           fi
-          cat "$VALIDATION_SUMMARY_PATH"
+          echo "Private report and trade intents passed validation"
 
       - name: Enforce retry limit
         if: ${{ always() }}
@@ -661,9 +657,6 @@ jobs:
             exit 0
           fi
           echo "::error::Trade intents failed validation after the initial attempt and three repairs"
-          if [[ -f "$VALIDATION_ERRORS_PATH" ]]; then
-            cat "$VALIDATION_ERRORS_PATH" >&2
-          fi
           exit 1
 
       - name: Resolve and verify published Polymarket URLs
@@ -785,7 +778,7 @@ jobs:
             )
             IFS=$'\t' read -r http_status effective_url <<< "$verification_result"
             if [[ "$http_status" != "200" ]]; then
-              echo "::error::Published Polymarket URL did not return HTTP 200: $canonical_url"
+              echo "::error::A private Polymarket market URL did not return HTTP 200"
               exit 1
             fi
             verified_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -928,41 +921,6 @@ jobs:
           echo "generated-at=$generated_at" >> "$GITHUB_OUTPUT"
           echo "release-tag=$release_tag" >> "$GITHUB_OUTPUT"
 
-      - name: Publish current-iteration research Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.release-package.outputs.release-tag }}
-          GENERATED_AT: ${{ steps.release-package.outputs.generated-at }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "::error::Refusing to replace existing research Release $RELEASE_TAG"
-            exit 1
-          fi
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "::error::Refusing to publish research on an existing tag $RELEASE_TAG"
-            exit 1
-          fi
-          gh release create "$RELEASE_TAG" \
-            --target "$GITHUB_SHA" \
-            --title "Forecast Edge research — $GENERATED_AT" \
-            --notes-file "$RUNTIME_DIR/release-notes.md" \
-            --latest=false \
-            "$REPORT_ARCHIVE_PATH" \
-            "$RELEASE_MANIFEST_PATH" \
-            "$RELEASE_ASSETS_DIR/report.json" \
-            "$RELEASE_ASSETS_DIR/report.md" \
-            "$RELEASE_ASSETS_DIR/validation-summary.json"
-
-      - name: Upload validated trade-intent artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: forecast-edge-trade-intents
-          path: ${{ env.TRADE_INTENTS_PATH }}
-          if-no-files-found: error
-          retention-days: 14
-
       - name: Format Issue notification
         env:
           GENERATED_AT: ${{ steps.release-package.outputs.generated-at }}
@@ -997,107 +955,56 @@ jobs:
             printf '_本轮没有通过策略门槛且需要执行的交易意图。_\n' >> "$RUNTIME_DIR/issue.md"
           fi
 
-      - name: Create Issue notification
-        if: ${{ github.event.repository.private && vars.CREATE_TRADE_INTENT_ISSUE != 'false' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GENERATED_AT: ${{ steps.release-package.outputs.generated-at }}
+      - name: Stage private research handoff on EC2
+        id: private-handoff
         shell: bash
         run: |
           set -euo pipefail
-          gh issue create \
-            --title "Forecast Edge iteration — $GENERATED_AT" \
-            --body-file "$RUNTIME_DIR/issue.md"
+          handoff_root="$RUNTIME_DIR/private-handoff"
+          install -d -m 700 "$handoff_root/release-assets"
+          install -m 600 "$REPORT_ARCHIVE_PATH" "$handoff_root/release-assets/"
+          install -m 600 "$RELEASE_MANIFEST_PATH" "$handoff_root/release-assets/"
+          install -m 600 "$RELEASE_ASSETS_DIR/report.json" "$handoff_root/release-assets/"
+          install -m 600 "$RELEASE_ASSETS_DIR/report.md" "$handoff_root/release-assets/"
+          install -m 600 "$RELEASE_ASSETS_DIR/validation-summary.json" \
+            "$handoff_root/release-assets/"
+          install -m 600 "$RUNTIME_DIR/release-notes.md" "$handoff_root/"
+          install -m 600 "$RUNTIME_DIR/issue.md" "$handoff_root/"
+          tar -C "$handoff_root" -czf "$RESEARCH_HANDOFF_ARCHIVE" \
+            release-assets release-notes.md issue.md
 
-      - name: Send Issue notification to Feishu
-        env:
-          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
-          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
-          FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}
-          GENERATED_AT: ${{ steps.release-package.outputs.generated-at }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! -s "$RUNTIME_DIR/issue.md" ]]; then
-            echo "::error::Issue notification body is missing or empty"
-            exit 1
+          trade_intents_digest=$(sha256sum "$TRADE_INTENTS_PATH" | cut -d ' ' -f 1)
+          has_intents=false
+          if [[ -s "$TRADE_INTENTS_PATH" ]]; then
+            has_intents=true
           fi
-
-          token_response=$(
-            jq -cn \
-              --arg app_id "$FEISHU_APP_ID" \
-              --arg app_secret "$FEISHU_APP_SECRET" \
-              '{app_id: $app_id, app_secret: $app_secret}' \
-              | curl --fail-with-body --silent --show-error \
-                  --retry 3 --retry-all-errors --retry-delay 2 --max-time 30 \
-                  --request POST \
-                  --header 'Content-Type: application/json; charset=utf-8' \
-                  --data-binary @- \
-                  https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal
+          ssh_options=(
+            -i "$SSH_KEY_PATH"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$KNOWN_HOSTS_PATH"
           )
-          if ! tenant_token=$(
-            jq -er \
-              'select(.code == 0) | .tenant_access_token | select(type == "string" and length > 0)' \
-              <<< "$token_response"
-          ); then
-            echo "::error::Feishu tenant token request failed"
-            exit 1
-          fi
-          echo "::add-mask::$tenant_token"
-
-          message_payload=$(
-            jq -cn \
-              --arg receive_id "$FEISHU_CHAT_ID" \
-              --arg uuid "forecast-edge-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
-              --arg title "Forecast Edge iteration — $GENERATED_AT" \
-              --rawfile issue "$RUNTIME_DIR/issue.md" \
-              '{
-                receive_id: $receive_id,
-                msg_type: "interactive",
-                content: ({
-                  schema: "2.0",
-                  config: {wide_screen_mode: true},
-                  header: {
-                    title: {tag: "plain_text", content: $title},
-                    template: "blue"
-                  },
-                  body: {
-                    elements: [
-                      {tag: "markdown", content: $issue}
-                    ]
-                  }
-                } | tojson),
-                uuid: $uuid
-              }'
-          )
-          send_response=$(
-            printf '%s' "$message_payload" \
-              | curl --fail-with-body --silent --show-error \
-                  --retry 3 --retry-all-errors --retry-delay 2 --max-time 30 \
-                  --request POST \
-                  --header "Authorization: Bearer $tenant_token" \
-                  --header 'Content-Type: application/json; charset=utf-8' \
-                  --data-binary @- \
-                  'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id'
-          )
-          if ! jq -e \
-            '.code == 0 and (.data.message_id | type == "string" and length > 0)' \
-            <<< "$send_response" >/dev/null; then
-            echo "::error::Feishu message delivery failed"
-            exit 1
-          fi
-          echo "Feishu Card 2.0 Issue notification delivered"
+          scp "${ssh_options[@]}" \
+            "$RESEARCH_HANDOFF_ARCHIVE" \
+            "$TRADE_INTENTS_PATH" \
+            "$EC2_USER@$EC2_HOST:$REMOTE_HANDOFF_DIR/"
+          ssh "${ssh_options[@]}" "$EC2_USER@$EC2_HOST" -- \
+            chmod 600 \
+              "$REMOTE_HANDOFF_DIR/research-handoff.tar.gz" \
+              "$REMOTE_HANDOFF_DIR/trade-intents.jsonl"
+          echo "has-intents=$has_intents" >> "$GITHUB_OUTPUT"
+          echo "trade-intents-sha256=$trade_intents_digest" >> "$GITHUB_OUTPUT"
 
       - name: Report validation diagnostics on failure
         if: ${{ failure() }}
         shell: bash
         run: |
           if [[ -s "$VALIDATION_ERRORS_PATH" ]]; then
-            cat "$VALIDATION_ERRORS_PATH" >&2
-            {
-              echo '### Validation diagnostics'
-              echo '```text'
-              sed -n '1,200p' "$VALIDATION_ERRORS_PATH"
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Detailed validation diagnostics remain private and were not written to Actions logs"
           fi
+
+      - name: Remove EC2 SSH identity
+        if: ${{ always() }}
+        shell: bash
+        run: rm -f "${SSH_KEY_PATH:-}" "${KNOWN_HOSTS_PATH:-}"

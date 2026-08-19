@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Iterable
@@ -39,6 +39,16 @@ GEOBLOCK_URL = "https://polymarket.com/api/geoblock"
 ASSETS_URL = "https://api.perpetuals.polymarket.com/v1/info/assets"
 POLYGON_RPC_URL = "https://polygon.drpc.org"
 BASE_UNITS = Decimal("1000000")
+OPEN_BUY_RESERVE_MULTIPLIER = Decimal("1.05")
+PINNED_SDK_VERSION = "0.6.0"
+ORDER_PROTOCOL_VERSION = "2"
+SIGNATURE_TYPE_BY_WALLET = {
+    "EOA": 0,
+    "POLY_PROXY": 1,
+    "GNOSIS_SAFE": 2,
+    "DEPOSIT_WALLET": 3,
+}
+SUPPORTED_WALLET_TYPES = frozenset(SIGNATURE_TYPE_BY_WALLET)
 
 # These are the production contracts shipped by polymarket-client 0.6.0.  They
 # are used only to select the matching allowance entry.  The SDK itself still
@@ -55,30 +65,40 @@ class AdapterError(RuntimeError):
 
 @dataclass(frozen=True)
 class Credentials:
-    private_key: str
-    wallet: str
-    api_key: str
-    api_secret: str
-    api_passphrase: str
+    signer_private_key: str = field(repr=False)
+    account_wallet: str
+    clob_api_key: str = field(repr=False)
+    clob_api_secret: str = field(repr=False)
+    clob_api_passphrase: str = field(repr=False)
+    expected_wallet_type: str = "AUTO"
 
     @classmethod
     def from_env(cls) -> "Credentials":
         names = {
-            "private_key": "POLYMARKET_PRIVATE_KEY",
-            "wallet": "POLYMARKET_DEPOSIT_WALLET",
-            "api_key": "POLYMARKET_API_KEY",
-            "api_secret": "POLYMARKET_API_SECRET",
-            "api_passphrase": "POLYMARKET_API_PASSPHRASE",
+            "signer_private_key": "POLYMARKET_SIGNER_PRIVATE_KEY",
+            "account_wallet": "POLYMARKET_ACCOUNT_WALLET",
+            "clob_api_key": "POLYMARKET_CLOB_API_KEY",
+            "clob_api_secret": "POLYMARKET_CLOB_API_SECRET",
+            "clob_api_passphrase": "POLYMARKET_CLOB_API_PASSPHRASE",
         }
         values: dict[str, str] = {}
         missing: list[str] = []
-        for field, name in names.items():
+        for field_name, name in names.items():
             value = os.environ.get(name, "").strip()
             if not value:
                 missing.append(name)
-            values[field] = value
+            values[field_name] = value
         if missing:
             raise AdapterError("missing required secret/config: " + ", ".join(sorted(missing)))
+        expected_wallet_type = os.environ.get(
+            "POLYMARKET_EXPECTED_WALLET_TYPE", "AUTO"
+        ).strip().upper()
+        if expected_wallet_type not in {"AUTO", *SUPPORTED_WALLET_TYPES}:
+            supported = ", ".join(["AUTO", *sorted(SUPPORTED_WALLET_TYPES)])
+            raise AdapterError(
+                "POLYMARKET_EXPECTED_WALLET_TYPE must be one of: " + supported
+            )
+        values["expected_wallet_type"] = expected_wallet_type
         return cls(**values)
 
 
@@ -204,6 +224,24 @@ def _model_dict(value: Any) -> dict[str, Any]:
     raise AdapterError(f"cannot serialize SDK value {type(value).__name__}")
 
 
+def open_buy_order_reserve(orders: Iterable[dict[str, Any]]) -> Decimal:
+    """Reserve remaining BUY notional plus a fee buffer for unrelated live orders."""
+
+    reserve = ZERO
+    for order in orders:
+        if str(order.get("side", "")).casefold() != "buy":
+            continue
+        original = decimal_value(order.get("original_size", "0"), "open order original size")
+        matched = decimal_value(order.get("size_matched", "0"), "open order matched size")
+        price = decimal_value(order.get("price", "0"), "open order price")
+        if original < ZERO or matched < ZERO or matched > original:
+            raise AdapterError("open BUY order returned invalid size accounting")
+        if price <= ZERO or price > Decimal("1"):
+            raise AdapterError("open BUY order returned an invalid price")
+        reserve += (original - matched) * price
+    return reserve * OPEN_BUY_RESERVE_MULTIPLIER
+
+
 class LivePolymarketAdapter:
     def __init__(self, credentials: Credentials) -> None:
         try:
@@ -212,25 +250,31 @@ class LivePolymarketAdapter:
             from eth_account import Account
         except ImportError as exc:  # pragma: no cover - production dependency failure.
             raise AdapterError("polymarket-client is not installed") from exc
-        if version("polymarket-client") != "0.6.0":
-            raise AdapterError("executor requires the audited polymarket-client 0.6.0")
+        sdk_version = version("polymarket-client")
+        if sdk_version != PINNED_SDK_VERSION:
+            raise AdapterError(
+                f"executor requires the audited polymarket-client {PINNED_SDK_VERSION}"
+            )
+        self.sdk_version = sdk_version
         try:
-            signer = str(Account.from_key(credentials.private_key).address)
+            signer = str(Account.from_key(credentials.signer_private_key).address)
         except (TypeError, ValueError) as exc:
-            raise AdapterError("POLYMARKET_PRIVATE_KEY is not a valid EVM signing key") from exc
-        if not EVM_ADDRESS.fullmatch(credentials.wallet):
-            raise AdapterError("POLYMARKET_DEPOSIT_WALLET is not an EVM address")
-        if credentials.wallet.casefold() != signer.casefold():
-            code = _contract_code(credentials.wallet)
+            raise AdapterError(
+                "POLYMARKET_SIGNER_PRIVATE_KEY is not a valid EVM signing key"
+            ) from exc
+        if not EVM_ADDRESS.fullmatch(credentials.account_wallet):
+            raise AdapterError("POLYMARKET_ACCOUNT_WALLET is not an EVM address")
+        if credentials.account_wallet.casefold() != signer.casefold():
+            code = _contract_code(credentials.account_wallet)
             if code.casefold() in {"0x", "0x0", "0x00"}:
                 raise AdapterError(
-                    "configured Polymarket wallet is not deployed; scheduled execution "
+                    "configured Polymarket account wallet is not deployed; scheduled execution "
                     "will not deploy it automatically"
                 )
         api_creds = ApiKeyCreds(
-            key=credentials.api_key,
-            secret=credentials.api_secret,
-            passphrase=credentials.api_passphrase,
+            key=credentials.clob_api_key,
+            secret=credentials.clob_api_secret,
+            passphrase=credentials.clob_api_passphrase,
         )
         try:
             # SecureClient.create() can derive API credentials and deploy a default
@@ -238,21 +282,35 @@ class LivePolymarketAdapter:
             # deliberately so initialization remains read-only; the first
             # authenticated preflight call then proves the supplied credentials.
             self.client = SecureClient._create(  # type: ignore[attr-defined]
-                private_key=credentials.private_key,
-                wallet=credentials.wallet,
+                private_key=credentials.signer_private_key,
+                wallet=credentials.account_wallet,
                 credentials=api_creds,
                 validate_credentials=False,
             )
         except Exception as exc:
             raise AdapterError(f"authenticated Polymarket client creation failed: {exc}") from exc
-        if str(self.client.wallet).casefold() != credentials.wallet.casefold():
+        if str(self.client.wallet).casefold() != credentials.account_wallet.casefold():
             self.client.close()
-            raise AdapterError("authenticated wallet differs from POLYMARKET_DEPOSIT_WALLET")
+            raise AdapterError("authenticated wallet differs from POLYMARKET_ACCOUNT_WALLET")
+        detected_wallet_type = str(self.client.wallet_type)
+        if detected_wallet_type not in SUPPORTED_WALLET_TYPES:
+            self.client.close()
+            raise AdapterError(f"SDK returned unsupported wallet type {detected_wallet_type!r}")
+        if (
+            credentials.expected_wallet_type != "AUTO"
+            and detected_wallet_type != credentials.expected_wallet_type
+        ):
+            self.client.close()
+            raise AdapterError(
+                "detected wallet type "
+                f"{detected_wallet_type} differs from POLYMARKET_EXPECTED_WALLET_TYPE "
+                f"{credentials.expected_wallet_type}"
+            )
         used = self.client.credentials
         if (
-            str(used.key) != credentials.api_key
-            or str(used.secret) != credentials.api_secret
-            or str(used.passphrase) != credentials.api_passphrase
+            str(used.key) != credentials.clob_api_key
+            or str(used.secret) != credentials.clob_api_secret
+            or str(used.passphrase) != credentials.clob_api_passphrase
         ):
             self.client.close()
             raise AdapterError("authenticated client did not retain the supplied API credentials")
@@ -277,6 +335,10 @@ class LivePolymarketAdapter:
     @property
     def wallet_type(self) -> str:
         return str(self.client.wallet_type)
+
+    @property
+    def signature_type(self) -> int:
+        return SIGNATURE_TYPE_BY_WALLET[self.wallet_type]
 
     def health(self) -> dict[str, Any]:
         geoblock = _request_json(GEOBLOCK_URL)
@@ -422,8 +484,16 @@ class LivePolymarketAdapter:
         conditional: dict[str, Any] = {}
         all_open_orders = self.open_orders()
         open_order_count = len(all_open_orders)
-        if all_open_orders:
-            raise AdapterError("account has existing open orders; autonomous execution is paused")
+        target_tokens = {intent.instrument_identifier for intent in intents}
+        conflicting_open_orders = tuple(
+            order for order in all_open_orders if str(order.get("token_id", "")) in target_tokens
+        )
+        if conflicting_open_orders:
+            raise AdapterError(
+                "account has existing open orders for a target token; autonomous execution is paused"
+            )
+        open_buy_reserve = open_buy_order_reserve(all_open_orders)
+        effective_available_balance = max(ZERO, effective_balance - open_buy_reserve)
         for intent in intents:
             snapshot = self.market_snapshot(intent)
             markets[intent.instrument_identifier] = snapshot.to_dict()
@@ -444,6 +514,9 @@ class LivePolymarketAdapter:
                 "wallet": self.wallet,
                 "signer": self.signer,
                 "wallet_type": self.wallet_type,
+                "signature_type": self.signature_type,
+                "sdk_version": self.sdk_version,
+                "order_protocol_version": ORDER_PROTOCOL_VERSION,
             },
             "health": health,
             "collateral_asset": {
@@ -455,7 +528,8 @@ class LivePolymarketAdapter:
                 **collateral,
                 "authenticated_balance": decimal_string(authenticated_balance),
                 "public_onchain_balance": decimal_string(public_balance),
-                "effective_available_balance": decimal_string(effective_balance),
+                "open_buy_order_reserve": decimal_string(open_buy_reserve),
+                "effective_available_balance": decimal_string(effective_available_balance),
             },
             "conditional": conditional,
             "native_gas_balance": decimal_string(native_balance),
@@ -463,6 +537,10 @@ class LivePolymarketAdapter:
             "allowance_policy": "preexisting-only; scheduled execution never submits approvals",
             "positions": list(positions),
             "open_order_count": open_order_count,
+            "conflicting_open_order_count": len(conflicting_open_orders),
+            "open_order_policy": (
+                "unrelated orders preserved; remaining BUY notional plus 5% is reserved"
+            ),
             "markets": markets,
         }
 
@@ -510,14 +588,29 @@ class LivePolymarketAdapter:
                 values[str(raw.get("id", trade_id))] = raw
         return tuple(values[key] for key in sorted(values))
 
-    def order_if_open(self, order_id: str) -> dict[str, Any] | None:
+    def order(self, order_id: str) -> dict[str, Any] | None:
         try:
             values = tuple(self.client.list_open_orders(id=order_id).iter_items())
         except Exception as exc:
-            raise AdapterError(f"open-order query failed for {order_id}: {exc}") from exc
+            raise AdapterError(f"order query failed for {order_id}: {exc}") from exc
         if len(values) > 1:
-            raise AdapterError(f"CLOB returned duplicate open order {order_id}")
-        return _model_dict(values[0]) if values else None
+            raise AdapterError(f"CLOB returned duplicate order {order_id}")
+        if not values:
+            return None
+        return _model_dict(values[0])
+
+    def order_if_open(self, order_id: str) -> dict[str, Any] | None:
+        order = self.order(order_id)
+        if order is None:
+            return None
+        status = str(order.get("status", "")).strip().upper()
+        if status == "LIVE":
+            return order
+        if status in {"MATCHED", "CANCELED", "CANCELLED", "DELAYED", "UNMATCHED"}:
+            return None
+        raise AdapterError(
+            f"CLOB returned unknown order status {status or '<missing>'} for {order_id}"
+        )
 
     def conditional_balance(self, token_id: str) -> Decimal:
         value = self.balance_allowance(asset_type="CONDITIONAL", token_id=token_id)

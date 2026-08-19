@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Iterable
 
-from .ledger import DynamoLedger
+from .ledger import DynamoLedger, SQLiteLedger
 from .models import (
     SHARE_QUANTUM,
     ZERO,
@@ -20,7 +20,11 @@ from .models import (
     decimal_value,
 )
 from .planner import build_execution_plan
-from .sdk_adapter import LivePolymarketAdapter, required_exchange_allowance
+from .sdk_adapter import (
+    LivePolymarketAdapter,
+    open_buy_order_reserve,
+    required_exchange_allowance,
+)
 
 
 class ExecutionError(RuntimeError):
@@ -52,11 +56,12 @@ def _replan_one(
     original: PlannedOrder,
     limits: RiskLimits,
 ) -> tuple[PlannedOrder, MarketSnapshot]:
-    if adapter.open_orders():
-        raise ExecutionError("account acquired an open order after preflight")
+    open_orders = adapter.open_orders()
+    if any(str(order.get("token_id", "")) == original.token_id for order in open_orders):
+        raise ExecutionError("account acquired a target-token open order after preflight")
     market = adapter.market_snapshot(original.intent)
     positions = _position_map(adapter)
-    cash = adapter.collateral_balance()
+    cash = max(ZERO, adapter.collateral_balance() - open_buy_order_reserve(open_orders))
     capped_intent = TradeIntent(
         schema_version=original.intent.schema_version,
         venue=original.intent.venue,
@@ -65,7 +70,9 @@ def _replan_one(
         outcome=original.intent.outcome,
         side=original.intent.side,
         reference_price=original.intent.reference_price,
-        notional=min(original.intent.notional, original.gross_notional),
+        notional=(
+            original.intent.notional * original.quantity / original.intent.quantity
+        ),
         quantity=original.quantity,
         currency=original.intent.currency,
     )
@@ -277,7 +284,7 @@ def execute_orders(
     adapter: LivePolymarketAdapter,
     orders: Iterable[PlannedOrder],
     limits: RiskLimits,
-    ledger: DynamoLedger,
+    ledger: DynamoLedger | SQLiteLedger,
     settlement_timeout_seconds: int = 90,
     expected_account: dict[str, Any] | None = None,
     expires_at: datetime | None = None,
@@ -395,8 +402,9 @@ def execute_orders(
                 uncertain = True
                 raise UncertainExecutionError("accepted order has no order id")
             trade_ids = {str(item) for item in post_response.get("trade_ids", []) if str(item)}
+            order_record = adapter.order(order_id)
+            trade_ids.update(_trade_ids_from_order(order_record))
             open_order = adapter.order_if_open(order_id)
-            trade_ids.update(_trade_ids_from_order(open_order))
             if open_order is not None:
                 cancel = adapter.cancel_order(order_id)
                 not_canceled = cancel.get("not_canceled", {})

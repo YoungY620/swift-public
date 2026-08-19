@@ -1,0 +1,481 @@
+name: Forecast Edge research and optional execution
+
+on:
+  schedule:
+    # Repository variables cannot be interpolated into cron. Trigger hourly and
+    # let the gate below enforce the configured interval.
+    - cron: "23 * * * *"
+  workflow_dispatch:
+    inputs:
+      execute-live-trades:
+        description: Execute validated trade intents when production configuration is complete
+        required: false
+        default: false
+        type: boolean
+
+permissions: {}
+
+concurrency:
+  group: forecast-edge-parent-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      should-run: ${{ steps.gate.outputs.should-run }}
+      execution-requested: ${{ steps.gate.outputs.execution-requested }}
+      execution-ready: ${{ steps.gate.outputs.execution-ready }}
+      handoff-directory: ${{ steps.gate.outputs.handoff-directory }}
+    steps:
+      - name: Validate schedule and private workflow configuration
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_EXECUTION: ${{ inputs['execute-live-trades'] || false }}
+          INTERVAL_HOURS: ${{ vars.FORECAST_EDGE_INTERVAL_HOURS || '12' }}
+          ANCHOR_UTC_HOUR: ${{ vars.FORECAST_EDGE_ANCHOR_UTC_HOUR || '2' }}
+          LIVE_TRADING_ENABLED: ${{ vars.POLYMARKET_LIVE_TRADING_ENABLED || 'false' }}
+          POLYMARKET_ACCOUNT: ${{ vars.POLYMARKET_ACCOUNT }}
+          EC2_HOST: ${{ vars.POLYMARKET_EC2_HOST }}
+          EC2_USER: ${{ vars.POLYMARKET_EC2_USER }}
+          EC2_HOST_FINGERPRINT: ${{ vars.POLYMARKET_EC2_HOST_FINGERPRINT }}
+          KIMI_CODE_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.POLYMARKET_EC2_SSH_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$INTERVAL_HOURS" =~ ^[0-9]+$ ]]; then
+            echo "::error::FORECAST_EDGE_INTERVAL_HOURS must be an integer greater than or equal to 6"
+            exit 1
+          fi
+          if [[ ! "$ANCHOR_UTC_HOUR" =~ ^[0-9]+$ ]]; then
+            echo "::error::FORECAST_EDGE_ANCHOR_UTC_HOUR must be an integer from 0 through 23"
+            exit 1
+          fi
+          interval=$((10#$INTERVAL_HOURS))
+          anchor=$((10#$ANCHOR_UTC_HOUR))
+          if (( interval < 6 || anchor > 23 )); then
+            echo "::error::Forecast Edge schedule configuration is outside the supported range"
+            exit 1
+          fi
+
+          should_run=false
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            should_run=true
+          else
+            epoch_hour=$(( $(date -u +%s) / 3600 ))
+            if (( (epoch_hour - anchor) % interval == 0 )); then
+              should_run=true
+            fi
+          fi
+
+          if [[ "$should_run" == "true" ]]; then
+            missing_research=()
+            for name in POLYMARKET_ACCOUNT EC2_HOST EC2_USER EC2_HOST_FINGERPRINT \
+              KIMI_CODE_API_KEY FEISHU_APP_ID FEISHU_APP_SECRET FEISHU_CHAT_ID \
+              EC2_SSH_PRIVATE_KEY; do
+              if [[ -z "${!name:-}" ]]; then
+                missing_research+=("$name")
+              fi
+            done
+            if (( ${#missing_research[@]} > 0 )); then
+              printf '::error::Missing parent workflow configuration: %s\n' \
+                "${missing_research[*]}"
+              exit 1
+            fi
+          fi
+
+          execution_requested=false
+          if [[ "$LIVE_TRADING_ENABLED" == "true" || "$MANUAL_EXECUTION" == "true" ]]; then
+            execution_requested=true
+          fi
+          execution_ready=$execution_requested
+          handoff_directory="/home/ubuntu/poly-edge-workflows/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          {
+            echo "should-run=$should_run"
+            echo "execution-requested=$execution_requested"
+            echo "execution-ready=$execution_ready"
+            echo "handoff-directory=$handoff_directory"
+          } >> "$GITHUB_OUTPUT"
+
+  research:
+    needs: gate
+    if: ${{ needs.gate.outputs.should-run == 'true' }}
+    uses: ./.github/workflows/forecast-edge-research.yml
+    with:
+      handoff-directory: ${{ needs.gate.outputs.handoff-directory }}
+      ec2-host: ${{ vars.POLYMARKET_EC2_HOST }}
+      ec2-user: ${{ vars.POLYMARKET_EC2_USER }}
+      ec2-host-fingerprint: ${{ vars.POLYMARKET_EC2_HOST_FINGERPRINT }}
+    secrets:
+      KIMI_CODE_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+      POLYMARKET_EC2_SSH_PRIVATE_KEY: ${{ secrets.POLYMARKET_EC2_SSH_PRIVATE_KEY }}
+
+  execution:
+    needs: [gate, research]
+    if: >-
+      needs.gate.outputs.execution-ready == 'true' &&
+      needs.research.outputs.has-intents == 'true'
+    uses: ./.github/workflows/execute-polymarket.yml
+    with:
+      handoff-directory: ${{ needs.gate.outputs.handoff-directory }}
+      trade-intents-sha256: ${{ needs.research.outputs.trade-intents-sha256 }}
+
+  release:
+    needs: [gate, research, execution]
+    if: >-
+      always() &&
+      needs.research.result == 'success' &&
+      (needs.execution.result == 'success' || needs.execution.result == 'skipped')
+    runs-on:
+      - self-hosted
+      - macOS
+      - ARM64
+      - forecast-edge
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      issues: write
+    env:
+      REMOTE_HANDOFF_DIR: ${{ needs.gate.outputs.handoff-directory }}
+      EC2_HOST: ${{ vars.POLYMARKET_EC2_HOST }}
+      EC2_USER: ${{ vars.POLYMARKET_EC2_USER }}
+      EC2_HOST_FINGERPRINT: ${{ vars.POLYMARKET_EC2_HOST_FINGERPRINT }}
+      RELEASE_TAG: ${{ needs.research.outputs.release-tag }}
+      GENERATED_AT: ${{ needs.research.outputs.generated-at }}
+      TRADE_INTENTS_SHA256: ${{ needs.research.outputs.trade-intents-sha256 }}
+      HAS_INTENTS: ${{ needs.research.outputs.has-intents }}
+      EXECUTION_REQUESTED: ${{ needs.gate.outputs.execution-requested }}
+      EXECUTION_READY: ${{ needs.gate.outputs.execution-ready }}
+      EXECUTION_RESULT: ${{ needs.execution.result }}
+    steps:
+      - name: Check out release templates
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download private completed handoff
+        env:
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.POLYMARKET_EC2_SSH_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime_dir="$RUNNER_TEMP/forecast-edge-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          install -d -m 700 "$runtime_dir"
+          ssh_key_path="$runtime_dir/ec2-key"
+          known_hosts_path="$runtime_dir/known_hosts"
+          umask 077
+          printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > "$ssh_key_path"
+          ssh-keyscan -T 15 -t ed25519 "$EC2_HOST" > "$known_hosts_path" 2>/dev/null
+          scanned_fingerprint=$(ssh-keygen -lf "$known_hosts_path" -E sha256 | awk '{print $2}')
+          if [[ "$scanned_fingerprint" != "$EC2_HOST_FINGERPRINT" ]]; then
+            echo "::error::Persistent EC2 SSH host key does not match the configured fingerprint"
+            exit 1
+          fi
+          ssh_options=(
+            -i "$ssh_key_path"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$known_hosts_path"
+          )
+          scp "${ssh_options[@]}" \
+            "$EC2_USER@$EC2_HOST:$REMOTE_HANDOFF_DIR/research-handoff.tar.gz" \
+            "$EC2_USER@$EC2_HOST:$REMOTE_HANDOFF_DIR/trade-intents.jsonl" \
+            "$runtime_dir/"
+          if [[ "$EXECUTION_RESULT" == "success" ]]; then
+            scp "${ssh_options[@]}" \
+              "$EC2_USER@$EC2_HOST:$REMOTE_HANDOFF_DIR/execution-receipt.json" \
+              "$EC2_USER@$EC2_HOST:$REMOTE_HANDOFF_DIR/execution-verification.json" \
+              "$runtime_dir/"
+          fi
+          rm -f "$ssh_key_path" "$known_hosts_path"
+          {
+            echo "RELEASE_RUNTIME_DIR=$runtime_dir"
+            echo "RELEASE_ASSETS_DIR=$runtime_dir/release-assets"
+            echo "ISSUE_BODY_PATH=$runtime_dir/issue.md"
+            echo "RELEASE_NOTES_PATH=$runtime_dir/release-notes.md"
+          } >> "$GITHUB_ENV"
+
+      - name: Verify and extract private research package
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="$RELEASE_RUNTIME_DIR/research-handoff.tar.gz" \
+          DESTINATION="$RELEASE_RUNTIME_DIR" python3 - <<'PY'
+          import os
+          import tarfile
+          from pathlib import PurePosixPath
+
+          allowed = {
+              "release-assets/forecast-edge-research-report.tar.gz",
+              "release-assets/research-release-manifest.json",
+              "release-assets/report.json",
+              "release-assets/report.md",
+              "release-assets/validation-summary.json",
+              "release-notes.md",
+              "issue.md",
+          }
+          with tarfile.open(os.environ["ARCHIVE"], "r:gz") as archive:
+              files = set()
+              for member in archive.getmembers():
+                  path = PurePosixPath(member.name)
+                  if path.is_absolute() or ".." in path.parts:
+                      raise SystemExit("unsafe path in private research handoff")
+                  if member.isfile():
+                      files.add(member.name)
+                  elif not member.isdir():
+                      raise SystemExit("unsupported entry in private research handoff")
+              if files != allowed:
+                  raise SystemExit("private research handoff has an unexpected file set")
+              archive.extractall(os.environ["DESTINATION"])
+          PY
+          manifest="$RELEASE_ASSETS_DIR/research-release-manifest.json"
+          archive="$RELEASE_ASSETS_DIR/forecast-edge-research-report.tar.gz"
+          report="$RELEASE_ASSETS_DIR/report.json"
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg release_tag "$RELEASE_TAG" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg commit_sha "$GITHUB_SHA" \
+            --arg trade_digest "$TRADE_INTENTS_SHA256" \
+            '.schema_version == "1.0" and
+             .lineage_id == "forecast-edge-production" and
+             .repository == $repository and
+             .release_tag == $release_tag and
+             .workflow_run_id == $run_id and
+             .workflow_run_attempt == $run_attempt and
+             .commit_sha == $commit_sha and
+             .trade_intents_sha256 == $trade_digest' \
+            "$manifest" >/dev/null
+          test "$(sha256sum "$archive" | cut -d ' ' -f 1)" = \
+            "$(jq -r '.report_archive_sha256' "$manifest")"
+          test "$(sha256sum "$report" | cut -d ' ' -f 1)" = \
+            "$(jq -r '.current_report_sha256' "$manifest")"
+          test "$(sha256sum "$RELEASE_RUNTIME_DIR/trade-intents.jsonl" | cut -d ' ' -f 1)" = \
+            "$TRADE_INTENTS_SHA256"
+
+      - name: Build final iteration manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipt_asset=null
+          verification_asset=null
+          receipt_digest=null
+          verification_digest=null
+          if [[ "$EXECUTION_RESULT" == "success" ]]; then
+            jq -e '.status == "COMPLETED" or .status == "NO_ACTIONS"' \
+              "$RELEASE_RUNTIME_DIR/execution-receipt.json" >/dev/null
+            jq -e '.orders | type == "array"' \
+              "$RELEASE_RUNTIME_DIR/execution-verification.json" >/dev/null
+            receipt_asset=execution-receipt.json
+            verification_asset=execution-verification.json
+            receipt_digest=$(sha256sum "$RELEASE_RUNTIME_DIR/$receipt_asset" | cut -d ' ' -f 1)
+            verification_digest=$(sha256sum "$RELEASE_RUNTIME_DIR/$verification_asset" | cut -d ' ' -f 1)
+          fi
+          jq -n \
+            --arg schema_version "1.0" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg release_tag "$RELEASE_TAG" \
+            --arg commit_sha "$GITHUB_SHA" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg generated_at "$GENERATED_AT" \
+            --arg trade_intents_sha256 "$TRADE_INTENTS_SHA256" \
+            --argjson has_intents "$HAS_INTENTS" \
+            --argjson execution_requested "$EXECUTION_REQUESTED" \
+            --argjson execution_ready "$EXECUTION_READY" \
+            --arg execution_result "$EXECUTION_RESULT" \
+            --arg receipt_asset "$receipt_asset" \
+            --arg receipt_sha256 "$receipt_digest" \
+            --arg verification_asset "$verification_asset" \
+            --arg verification_sha256 "$verification_digest" \
+            '{
+              schema_version:$schema_version,
+              repository:$repository,
+              release_tag:$release_tag,
+              commit_sha:$commit_sha,
+              workflow_run_id:$run_id,
+              workflow_run_attempt:$run_attempt,
+              generated_at:$generated_at,
+              trade_intents:{published:true, asset:"trade-intents.jsonl", sha256:$trade_intents_sha256, has_items:$has_intents},
+              execution:{
+                requested:$execution_requested,
+                configuration_ready:$execution_ready,
+                workflow_result:$execution_result,
+                receipt_asset:(if $receipt_asset == "null" then null else $receipt_asset end),
+                receipt_sha256:(if $receipt_sha256 == "null" then null else $receipt_sha256 end),
+                verification_asset:(if $verification_asset == "null" then null else $verification_asset end),
+                verification_sha256:(if $verification_sha256 == "null" then null else $verification_sha256 end)
+              }
+            }' > "$RELEASE_RUNTIME_DIR/iteration-release-manifest.json"
+          {
+            printf '\n## Execution\n\n'
+            printf -- '- Requested: `%s`\n' "$EXECUTION_REQUESTED"
+            printf -- '- Configuration ready: `%s`\n' "$EXECUTION_READY"
+            printf -- '- Subworkflow result: `%s`\n' "$EXECUTION_RESULT"
+            printf -- '- Raw trade intents published after subworkflow completion: `true`\n'
+          } >> "$RELEASE_NOTES_PATH"
+          {
+            printf '\n---\n\n'
+            printf -- '- Execution requested: `%s`\n' "$EXECUTION_REQUESTED"
+            printf -- '- Execution configuration ready: `%s`\n' "$EXECUTION_READY"
+            printf -- '- Execution workflow: `%s`\n' "$EXECUTION_RESULT"
+          } >> "$ISSUE_BODY_PATH"
+
+      - name: Publish one final iteration Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Refusing to replace existing iteration Release $RELEASE_TAG"
+            exit 1
+          fi
+          assets=(
+            "$RELEASE_ASSETS_DIR/forecast-edge-research-report.tar.gz"
+            "$RELEASE_ASSETS_DIR/research-release-manifest.json"
+            "$RELEASE_ASSETS_DIR/report.json"
+            "$RELEASE_ASSETS_DIR/report.md"
+            "$RELEASE_ASSETS_DIR/validation-summary.json"
+            "$RELEASE_RUNTIME_DIR/iteration-release-manifest.json"
+            "$RELEASE_RUNTIME_DIR/trade-intents.jsonl"
+          )
+          if [[ "$EXECUTION_RESULT" == "success" ]]; then
+            assets+=(
+              "$RELEASE_RUNTIME_DIR/execution-receipt.json"
+              "$RELEASE_RUNTIME_DIR/execution-verification.json"
+            )
+          fi
+          gh release create "$RELEASE_TAG" \
+            --target "$GITHUB_SHA" \
+            --title "Forecast Edge iteration — $GENERATED_AT" \
+            --notes-file "$RELEASE_NOTES_PATH" \
+            --latest=false \
+            "${assets[@]}"
+
+      - name: Create post-release Issue notification
+        if: ${{ github.event.repository.private && vars.CREATE_TRADE_INTENT_ISSUE != 'false' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh issue create \
+            --title "Forecast Edge iteration — $GENERATED_AT" \
+            --body-file "$ISSUE_BODY_PATH"
+
+      - name: Send post-release notification to Feishu
+        env:
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          token_response=$(
+            jq -cn \
+              --arg app_id "$FEISHU_APP_ID" \
+              --arg app_secret "$FEISHU_APP_SECRET" \
+              '{app_id:$app_id, app_secret:$app_secret}' \
+              | curl --fail-with-body --silent --show-error \
+                  --retry 3 --retry-all-errors --retry-delay 2 --max-time 30 \
+                  --request POST \
+                  --header 'Content-Type: application/json; charset=utf-8' \
+                  --data-binary @- \
+                  https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal
+          )
+          tenant_token=$(jq -er \
+            'select(.code == 0) | .tenant_access_token | select(type == "string" and length > 0)' \
+            <<< "$token_response")
+          echo "::add-mask::$tenant_token"
+          message_payload=$(
+            jq -cn \
+              --arg receive_id "$FEISHU_CHAT_ID" \
+              --arg uuid "forecast-edge-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+              --arg title "Forecast Edge iteration — $GENERATED_AT" \
+              --rawfile issue "$ISSUE_BODY_PATH" \
+              '{
+                receive_id:$receive_id,
+                msg_type:"interactive",
+                content:({
+                  schema:"2.0",
+                  config:{wide_screen_mode:true},
+                  header:{title:{tag:"plain_text",content:$title},template:"blue"},
+                  body:{elements:[{tag:"markdown",content:$issue}]}
+                } | tojson),
+                uuid:$uuid
+              }'
+          )
+          send_response=$(
+            printf '%s' "$message_payload" \
+              | curl --fail-with-body --silent --show-error \
+                  --retry 3 --retry-all-errors --retry-delay 2 --max-time 30 \
+                  --request POST \
+                  --header "Authorization: Bearer $tenant_token" \
+                  --header 'Content-Type: application/json; charset=utf-8' \
+                  --data-binary @- \
+                  'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id'
+          )
+          jq -e '.code == 0 and (.data.message_id | type == "string" and length > 0)' \
+            <<< "$send_response" >/dev/null
+
+  cleanup:
+    needs: [gate, research, execution, release]
+    if: >-
+      always() &&
+      needs.gate.outputs.should-run == 'true' &&
+      needs.gate.outputs.handoff-directory != ''
+    runs-on:
+      - self-hosted
+      - macOS
+      - ARM64
+      - forecast-edge
+    timeout-minutes: 10
+    permissions: {}
+    env:
+      REMOTE_HANDOFF_DIR: ${{ needs.gate.outputs.handoff-directory }}
+      EC2_HOST: ${{ vars.POLYMARKET_EC2_HOST }}
+      EC2_USER: ${{ vars.POLYMARKET_EC2_USER }}
+      EC2_HOST_FINGERPRINT: ${{ vars.POLYMARKET_EC2_HOST_FINGERPRINT }}
+    steps:
+      - name: Remove private EC2 handoff directory
+        env:
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.POLYMARKET_EC2_SSH_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$REMOTE_HANDOFF_DIR" =~ ^/home/ubuntu/poly-edge-workflows/[0-9]+-[0-9]+$ ]]; then
+            echo "::error::Refusing to remove an unapproved EC2 path"
+            exit 1
+          fi
+          runtime_dir="$RUNNER_TEMP/forecast-edge-cleanup-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          install -d -m 700 "$runtime_dir"
+          key_path="$runtime_dir/ec2-key"
+          known_hosts="$runtime_dir/known_hosts"
+          umask 077
+          printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > "$key_path"
+          ssh-keyscan -T 15 -t ed25519 "$EC2_HOST" > "$known_hosts" 2>/dev/null
+          scanned_fingerprint=$(ssh-keygen -lf "$known_hosts" -E sha256 | awk '{print $2}')
+          if [[ "$scanned_fingerprint" != "$EC2_HOST_FINGERPRINT" ]]; then
+            echo "::error::Persistent EC2 SSH host key does not match the configured fingerprint"
+            exit 1
+          fi
+          ssh -i "$key_path" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$known_hosts" \
+            "$EC2_USER@$EC2_HOST" bash -s -- "$REMOTE_HANDOFF_DIR" <<'REMOTE'
+          set -euo pipefail
+          handoff_dir=$1
+          if [[ -d "$handoff_dir" ]]; then
+            find "$handoff_dir" -depth -delete
+          fi
+          REMOTE
+          rm -f "$key_path" "$known_hosts"
