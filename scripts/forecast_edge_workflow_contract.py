@@ -177,6 +177,23 @@ def main() -> int:
             and "needs.execution.result == 'success'" in release
             and "needs.execution.result == 'skipped'" in release
         ),
+        "release_direct_report_inventory_safe": (
+            'actual-direct-reports.txt' in parent
+            and 'expected-direct-reports.txt' in parent
+            and 'LC_ALL=C sort -u' in parent
+            and 'if ! cmp -s "$actual_reports" "$expected_reports"' in parent
+            and 'diff -u "$expected_reports" "$actual_reports" || true' in parent
+            and 'actual_direct_reports[*]' not in parent
+            and 'expected_direct_reports[*]' not in parent
+        ),
+        "release_accepts_verified_warning_receipts": (
+            '.status == "COMPLETED_WITH_WARNINGS"' in parent
+            and '.status == "NO_FILL" and .code == "FOK_NOT_FILLED"' in parent
+            and '.status == "FULL"' in parent
+            and '.status == "UNCERTAIN"' not in parent
+            and '.status == "PARTIAL"' not in parent
+            and '.status == "REJECTED"' not in parent
+        ),
         "cancel_before_preflight": (
             execution_step.index("cancel-open-orders") < execution_step.index(" preflight ")
         ),

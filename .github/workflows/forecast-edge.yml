@@ -296,15 +296,16 @@ jobs:
           done < <(
             jq -r '.reports[] | [.json_asset, .markdown_asset, .sha256] | @tsv' "$manifest"
           )
-          mapfile -t actual_direct_reports < <(
-            find "$RELEASE_ASSETS_DIR" -maxdepth 1 -type f \
-              \( -name 'report-*.json' -o -name 'report-*.md' \) -printf '%f\n' | sort
-          )
-          mapfile -t expected_direct_reports < <(
-            jq -r '.reports[] | .json_asset, .markdown_asset' "$manifest" | sort
-          )
-          if [[ "${actual_direct_reports[*]}" != "${expected_direct_reports[*]}" ]]; then
+          actual_reports="$RELEASE_RUNTIME_DIR/actual-direct-reports.txt"
+          expected_reports="$RELEASE_RUNTIME_DIR/expected-direct-reports.txt"
+          find "$RELEASE_ASSETS_DIR" -maxdepth 1 -type f \
+            \( -name 'report-*.json' -o -name 'report-*.md' \) \
+            -printf '%f\n' | LC_ALL=C sort -u > "$actual_reports"
+          jq -r '.reports[] | .json_asset, .markdown_asset' "$manifest" \
+            | LC_ALL=C sort -u > "$expected_reports"
+          if ! cmp -s "$actual_reports" "$expected_reports"; then
             echo "::error::Private handoff direct reports differ from the signed manifest"
+            diff -u "$expected_reports" "$actual_reports" || true
             exit 1
           fi
           test "$(sha256sum "$RELEASE_RUNTIME_DIR/trade-intents.jsonl" | cut -d ' ' -f 1)" = \
@@ -322,8 +323,16 @@ jobs:
           diagnostics_summary_digest=null
           diagnostics_manifest_digest=null
           if [[ "$EXECUTION_RESULT" == "success" ]]; then
-            jq -e '.status == "COMPLETED" or .status == "NO_ACTIONS"' \
-              "$RELEASE_RUNTIME_DIR/execution-receipt.json" >/dev/null
+            jq -e '
+              (.status == "COMPLETED" or
+               .status == "NO_ACTIONS" or
+               .status == "COMPLETED_WITH_WARNINGS") and
+              (.receipts | type == "array") and
+              all(.receipts[];
+                .status == "FULL" or
+                (.status == "NO_FILL" and .code == "FOK_NOT_FILLED")
+              )
+            ' "$RELEASE_RUNTIME_DIR/execution-receipt.json" >/dev/null
             jq -e '.orders | type == "array"' \
               "$RELEASE_RUNTIME_DIR/execution-verification.json" >/dev/null
             receipt_asset=execution-receipt.json

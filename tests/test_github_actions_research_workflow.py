@@ -198,6 +198,27 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertLess(release_index, issue_index)
         self.assertLess(issue_index, feishu_index)
 
+    def test_release_uses_file_comparison_for_signed_report_inventory(self) -> None:
+        verify = self.step(
+            self.parent, "Verify and extract private research package"
+        )
+        self.assertIn('actual-direct-reports.txt', verify)
+        self.assertIn('expected-direct-reports.txt', verify)
+        self.assertIn('LC_ALL=C sort -u', verify)
+        self.assertIn('if ! cmp -s "$actual_reports" "$expected_reports"', verify)
+        self.assertIn('diff -u "$expected_reports" "$actual_reports" || true', verify)
+        self.assertNotIn('actual_direct_reports[*]', verify)
+        self.assertNotIn('expected_direct_reports[*]', verify)
+
+    def test_release_accepts_only_verified_warning_receipts(self) -> None:
+        release = self.step(self.parent, "Build final iteration manifest")
+        self.assertIn('.status == "COMPLETED_WITH_WARNINGS"', release)
+        self.assertIn('.status == "NO_FILL" and .code == "FOK_NOT_FILLED"', release)
+        self.assertIn('.status == "FULL"', release)
+        self.assertNotIn('.status == "UNCERTAIN"', release)
+        self.assertNotIn('.status == "PARTIAL"', release)
+        self.assertNotIn('.status == "REJECTED"', release)
+
     def test_parent_has_no_ec2_handoff_cleanup_or_ssh_credentials(self) -> None:
         self.assertNotIn("  cleanup:\n", self.parent)
         self.assertNotIn("POLYMARKET_EC2_SSH_PRIVATE_KEY", self.parent)
