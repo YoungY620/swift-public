@@ -113,6 +113,10 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
         if adapter in seen:
             raise IterationError(f"multiple current reports declare adapter {adapter}")
         seen.add(adapter)
+        if not (report_path.parent / "report.md").is_file():
+            raise IterationError(
+                f"private report {report_path} is missing its sibling report.md"
+            )
         report_rows.append(
             {
                 "adapter": adapter,

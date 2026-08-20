@@ -345,6 +345,20 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn(".reports[] | .json_asset, .markdown_asset", stage)
         self.assertNotIn("gh release create", self.research)
 
+    def test_history_restore_fails_on_transient_gh_api_errors(self) -> None:
+        restore = self.step(self.research, "Restore recent research Releases")
+        # The API response must be captured before jq runs; piping gh directly
+        # into jq inside a process substitution would mask transient failures
+        # as "no history" under set -euo pipefail.
+        self.assertIn("releases_json=$(gh api --paginate --slurp", restore)
+        self.assertIn('<<< "$releases_json"', restore)
+
+    def test_execution_validates_price_deviation_variable_before_jq(self) -> None:
+        validate = self.step(
+            self.execution, "Validate EC2 runner and private execution configuration"
+        )
+        self.assertIn('"$POLYMARKET_MAX_PRICE_DEVIATION_BPS" =~ ^[0-9]+$', validate)
+
     def test_market_adapter_is_variable_and_account_identity_is_secret(self) -> None:
         self.assertIn(
             "ENABLED_PREDICTION_MARKETS: ${{ vars.FORECAST_EDGE_MARKET_ADAPTERS }}",

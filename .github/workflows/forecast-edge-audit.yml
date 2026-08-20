@@ -771,7 +771,6 @@ jobs:
           research_result=$(stage_result '^research(?: /|$)')
           execution_result=$(stage_result '^execution(?: /|$)')
           release_result=$(stage_result '^release(?: /|$)')
-          cleanup_result=$(stage_result '^cleanup(?: /|$)')
           overall=${AUDIT_OVERALL_STATUS:-INSUFFICIENT_EVIDENCE}
           confidence=${AUDIT_CONFIDENCE:-LOW}
           audit_job=${AUDIT_JOB_RESULT:-failure}
@@ -800,8 +799,8 @@ jobs:
           message_path="$RUNNER_TEMP/forecast-edge-final-status.md"
           {
             printf '**父流程**：[%s](%s) · `%s`\n' "$PARENT_RUN_ID" "$parent_url" "$parent_conclusion"
-            printf '**阶段**：gate `%s` · research `%s` · execution `%s` · release `%s` · cleanup `%s`\n' \
-              "$gate_result" "$research_result" "$execution_result" "$release_result" "$cleanup_result"
+            printf '**阶段**：gate `%s` · research `%s` · execution `%s` · release `%s`\n' \
+              "$gate_result" "$research_result" "$execution_result" "$release_result"
             printf '**Agent Judge**：job `%s` · 结论 `%s` · 置信度 `%s`\n' \
               "$audit_job" "$overall" "$confidence"
             printf '**严重检查项**：%s\n' "$finding_ids"

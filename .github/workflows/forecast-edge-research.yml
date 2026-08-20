@@ -222,17 +222,19 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$REPORTS_DIR/reports"
+          # Capture the API response before jq so a transient gh failure
+          # propagates through set -e instead of masquerading as "no history".
+          releases_json=$(gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100")
           mapfile -t previous_tags < <(
-            gh api --paginate --slurp \
-              "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
-              jq -r --argjson limit "$HISTORY_RELEASE_COUNT" '
+            jq -r --argjson limit "$HISTORY_RELEASE_COUNT" '
                 map(.[]) |
                 map(select(.draft == false and (.tag_name | startswith("forecast-edge-research/run-")))) |
                 sort_by(.created_at) |
                 reverse |
                 .[0:$limit] |
                 .[].tag_name
-              '
+              ' <<< "$releases_json"
           )
           printf '%s\n' "${previous_tags[@]}" |
             jq -Rsc 'split("\n") | map(select(length > 0))' > "$HISTORY_RELEASE_TAGS_PATH"

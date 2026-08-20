@@ -59,6 +59,10 @@ jobs:
             echo "::error::Research artifact digest is invalid"
             exit 1
           fi
+          if [[ ! "$POLYMARKET_MAX_PRICE_DEVIATION_BPS" =~ ^[0-9]+$ ]]; then
+            echo "::error::POLYMARKET_MAX_PRICE_DEVIATION_BPS must be a non-negative integer (basis points)"
+            exit 1
+          fi
           if [[ -L "$SERVER_SECRET_PATH" || ! -f "$SERVER_SECRET_PATH" || \
                 "$(stat -c '%U' "$SERVER_SECRET_PATH")" != "ubuntu" || \
                 "$(stat -c '%a' "$SERVER_SECRET_PATH")" != "600" ]]; then

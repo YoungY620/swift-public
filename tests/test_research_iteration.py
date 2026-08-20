@@ -59,6 +59,9 @@ class ResearchIterationTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        # report_tool.py archive always renders report.md next to report.json;
+        # fixtures must mirror that delivery contract.
+        (report_dir / "report.md").write_text("# report\n", encoding="utf-8")
         return report
 
     def test_accepts_exactly_one_report_for_each_enabled_venue(self) -> None:
@@ -98,6 +101,15 @@ class ResearchIterationTests(unittest.TestCase):
             self.add_report(args.reports_root, "run-poly", "polymarket")
 
             with self.assertRaisesRegex(iteration.IterationError, "expected 2"):
+                iteration.validate(args)
+
+    def test_rejects_report_without_sibling_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            args = self.arguments(Path(temporary), enabled="polymarket")
+            report = self.add_report(args.reports_root, "run-poly", "polymarket")
+            (report.parent / "report.md").unlink()
+
+            with self.assertRaisesRegex(iteration.IterationError, "sibling report.md"):
                 iteration.validate(args)
 
     def test_snapshot_bundle_digest_detects_tampering(self) -> None:
