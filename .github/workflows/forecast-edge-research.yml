@@ -788,7 +788,7 @@ jobs:
                     printf '%s\n' "$candidate_index"
                   fi
                 done < <(jq -r '.[].key' <<< "$matches")
-              )
+            )
               if (( ${#unclaimed_matches[@]} != 1 )); then
                 echo "::error::$venue action $action_index does not map unambiguously to one JSONL routing target"
                 exit 1
@@ -1153,8 +1153,12 @@ jobs:
             done < <(
               find "$KIMI_CODE_HOME/sessions" -type f \
                 \( -name wire.jsonl -o -name output.log \) -print
-            )
+              )
           fi
+          python3 scripts/sanitize_research_diagnostics.py \
+            --root "$staging_root" \
+            --report "$staging_root/redaction-report.json" \
+            --secret-env KIMI_MODEL_API_KEY
           secret_pattern='-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9]{20,}|0x[0-9a-fA-F]{130}|[Aa]uthorization[[:space:]]*:[[:space:]]*(Bearer|Basic)[[:space:]]+[A-Za-z0-9._~+/=-]{8,}|[Pp]assword[[:space:]]*[:=][[:space:]]*[^[:space:]]{8,}'
           exact_secret_found=false
           if [[ -n "$KIMI_MODEL_API_KEY" ]] && \

@@ -111,6 +111,8 @@ def main() -> int:
             and "kimi-sessions" in research
             and "wire.jsonl" in research
             and "output.log" in research
+            and "sanitize_research_diagnostics.py" in research
+            and "redaction-report.json" in research
             and "Collect and verify research diagnostic artifact" in audit
             and "research_diagnostics" in audit
             and "retention-days: 90" in research
