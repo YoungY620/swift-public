@@ -15,7 +15,7 @@ SPEC.loader.exec_module(PUBLIC)
 
 
 class PublicMirrorTests(unittest.TestCase):
-    def test_disables_workflows_and_redacts_deployment_details(self) -> None:
+    def test_keeps_workflows_and_redacts_deployment_details(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             workflows = root / ".github" / "workflows"
@@ -24,12 +24,9 @@ class PublicMirrorTests(unittest.TestCase):
                 "runs-on: eu-north-1\npath: /home/ubuntu/poly-edge-live\n",
                 encoding="utf-8",
             )
-            PUBLIC._disable_workflows(root)
             PUBLIC._sanitize_text(root)
-            disabled = root / ".github" / "workflows-disabled" / "example.yml"
-            self.assertTrue(disabled.is_file())
-            self.assertFalse(workflows.exists())
-            text = disabled.read_text(encoding="utf-8")
+            self.assertTrue(workflows.exists())
+            text = (workflows / "example.yml").read_text(encoding="utf-8")
             self.assertIn("deployment-region", text)
             self.assertIn("/srv/poly-edge", text)
 

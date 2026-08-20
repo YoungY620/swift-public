@@ -78,16 +78,6 @@ def _extract_tracked_ref(source: Path, ref: str, destination: Path) -> None:
         archive.extractall(destination)
 
 
-def _disable_workflows(root: Path) -> None:
-    source = root / ".github" / "workflows"
-    if not source.exists():
-        return
-    destination = root / ".github" / "workflows-disabled"
-    if destination.exists():
-        raise PublicMirrorError("public workflow-disabled directory already exists")
-    source.rename(destination)
-
-
 def _sanitize_text(root: Path) -> None:
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES:
@@ -175,15 +165,16 @@ def build_public_snapshot(source: Path, ref: str, destination: Path) -> None:
         target = destination / relative
         if target.exists():
             target.unlink()
-    _disable_workflows(destination)
     _sanitize_text(destination)
     (destination / "PUBLIC_MIRROR.md").write_text(
         """# Public mirror safety boundary
 
 This repository is an identity-free source snapshot. It contains no operator
 account, wallet, host, cloud account, notification route, credential, or local
-path. Workflow source is retained under `.github/workflows-disabled/` for code
-review, but GitHub does not execute files from that directory.
+path. Workflow source is retained under `.github/workflows/` for code review.
+GitHub Actions is disabled at the repository level, and the gate also treats
+missing configuration as a successful no-op, so these files do not run in this
+mirror.
 
 Production forks must supply their own protected configuration. Missing
 configuration is a successful no-op: research, execution, release, and Judge
