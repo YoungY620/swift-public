@@ -21,6 +21,20 @@ def sample() -> dict:
 
 
 class TradeMathTests(unittest.TestCase):
+    def test_uses_the_venue_book_minimum_and_rejects_a_conflicting_override(self) -> None:
+        document = sample()
+        document["min_order_shares"] = 1
+        with self.assertRaisesRegex(
+            trade_math.TradeMathError, "differs from the venue order book"
+        ):
+            trade_math.evaluate_trade(document)
+
+    def test_requires_a_positive_venue_book_minimum(self) -> None:
+        document = sample()
+        del document["book"]["min_order_size"]
+        with self.assertRaisesRegex(trade_math.TradeMathError, "min_order_size"):
+            trade_math.evaluate_trade(document)
+
     def test_requires_adapter_normalized_fee_per_unit(self) -> None:
         document = sample()
         del document["book"]["asks"][0]["fee_per_unit"]

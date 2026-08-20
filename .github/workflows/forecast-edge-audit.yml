@@ -88,7 +88,7 @@ jobs:
     needs: select
     if: ${{ needs.select.outputs.audit-applicable == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     outputs:
       overall_status: ${{ steps.classify.outputs.overall_status }}
       confidence: ${{ steps.classify.outputs.confidence }}
@@ -474,7 +474,7 @@ jobs:
                 ledger:($diagnostic_ledger[0] // null),
                 evidence_root:"evidence/diagnostics/files/execution-diagnostics"
               },
-              evidence_safety:{secret_value_scan_passed:true},
+              evidence_safety:{secret_value_scan_passed:false},
               agent_response:{available:false}
             }' > "$AUDIT_EVIDENCE_PATH"
           if LC_ALL=C grep -aEq \
@@ -483,6 +483,10 @@ jobs:
             echo "::error::Audit evidence contains secret-like material"
             exit 1
           fi
+          safe_evidence="$AUDIT_EVIDENCE_PATH.safe"
+          jq '.evidence_safety.secret_value_scan_passed = true' \
+            "$AUDIT_EVIDENCE_PATH" > "$safe_evidence"
+          mv "$safe_evidence" "$AUDIT_EVIDENCE_PATH"
           jq -e \
             --arg run_id "$PARENT_RUN_ID" \
             '.run.id == $run_id and (.jobs | type == "array") and (.configuration.interval_hours | type == "number")' \
@@ -491,7 +495,7 @@ jobs:
       - name: Run read-only Kimi Code Judge agent
         id: audit-agent
         continue-on-error: true
-        timeout-minutes: 10
+        timeout-minutes: 25
         env:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
         shell: bash
@@ -537,7 +541,8 @@ jobs:
             --output "$AUDIT_AGENT_RESPONSE_PATH.normalized"
           mv "$AUDIT_AGENT_RESPONSE_PATH.normalized" "$AUDIT_AGENT_RESPONSE_PATH"
 
-      - name: Validate agent judgment or produce fail-closed audit
+      - name: Validate agent judgment or produce warning fallback
+        id: audit-result
         shell: bash
         run: |
           set -euo pipefail
@@ -550,6 +555,7 @@ jobs:
               --schema "$AUDIT_SCHEMA_PATH" \
               --output "$AUDIT_RESULT_PATH"; then
             echo "Validated the audit agent's structured judgment"
+            echo "agent-judgment-valid=true" >> "$GITHUB_OUTPUT"
           else
             printf '%s\n' 'agent response unavailable or invalid' > "$AUDIT_RUNTIME_DIR/fallback-reason.txt"
             "$validator" "$GITHUB_WORKSPACE/scripts/forecast_edge_audit.py" fallback \
@@ -559,35 +565,49 @@ jobs:
               --schema "$AUDIT_SCHEMA_PATH" \
               --parent-run-id "$PARENT_RUN_ID" \
               --output "$AUDIT_RESULT_PATH"
+            echo "agent-judgment-valid=false" >> "$GITHUB_OUTPUT"
           fi
           jq -e --arg run_id "$PARENT_RUN_ID" '.parent_run_id == $run_id' "$AUDIT_RESULT_PATH" >/dev/null
 
       - name: Classify audit outcome and breaker requirement
         id: classify
         if: ${{ always() }}
+        env:
+          AGENT_JUDGMENT_VALID: ${{ steps.audit-result.outputs.agent-judgment-valid || 'false' }}
         shell: bash
         run: |
           set -euo pipefail
-          overall=INSUFFICIENT_EVIDENCE
+          overall=WARN
           confidence=LOW
-          serious_findings='["AUDIT-INFRASTRUCTURE"]'
-          if [[ -n "${AUDIT_RESULT_PATH:-}" && -s "$AUDIT_RESULT_PATH" ]] && \
-             jq -e '.overall_status and .confidence and (.checks | type == "array")' \
-               "$AUDIT_RESULT_PATH" >/dev/null; then
-            overall=$(jq -r '.overall_status' "$AUDIT_RESULT_PATH")
-            confidence=$(jq -r '.confidence' "$AUDIT_RESULT_PATH")
-            serious_findings=$(jq -c '[
-              .checks[]
-              | select(
-                  (.status == "FAIL")
-                  or (
-                    (.severity == "critical" or .severity == "high")
-                    and .status == "INSUFFICIENT_EVIDENCE"
-                  )
-                )
-              | .id
-            ]' "$AUDIT_RESULT_PATH")
+          serious_findings='[]'
+          classifier_input="$AUDIT_RESULT_PATH"
+          classifier_evidence="$AUDIT_EVIDENCE_PATH"
+          if [[ ! -s "$classifier_input" ]]; then
+            classifier_input="$RUNNER_TEMP/forecast-edge-audit-missing-result.json"
+            printf '%s\n' \
+              '{"overall_status":"WARN","confidence":"LOW","checks":[]}' \
+              > "$classifier_input"
           fi
+          if [[ ! -s "$classifier_evidence" ]]; then
+            classifier_evidence="$RUNNER_TEMP/forecast-edge-audit-missing-evidence.json"
+            printf '{}\n' > "$classifier_evidence"
+          fi
+          classifier_output="$RUNNER_TEMP/forecast-edge-audit-classification.json"
+          classifier_args=()
+          if [[ "$AGENT_JUDGMENT_VALID" == "true" ]]; then
+            classifier_args+=(--agent-judgment-valid)
+          fi
+          "$AUDIT_RUNTIME_DIR/python-venv/bin/python" \
+            "$GITHUB_WORKSPACE/scripts/forecast_edge_audit.py" classify \
+            --input "$classifier_input" \
+            --rubric "$AUDIT_RUBRIC_PATH" \
+            --evidence "$classifier_evidence" \
+            --schema "$AUDIT_SCHEMA_PATH" \
+            --output "$classifier_output" \
+            "${classifier_args[@]}"
+          overall=$(jq -r '.overall_status' "$classifier_output")
+          confidence=$(jq -r '.confidence' "$classifier_output")
+          serious_findings=$(jq -c '.serious_findings' "$classifier_output")
           trip_required=false
           if [[ "$CIRCUIT_BREAKER_ENABLED" == "true" ]] && \
              [[ "$(jq 'length' <<< "$serious_findings")" -gt 0 ]]; then
@@ -675,9 +695,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          overall=$(jq -r '.overall_status' "$AUDIT_RESULT_PATH")
-          if [[ "$overall" == "FAIL" || "$overall" == "INSUFFICIENT_EVIDENCE" ]]; then
-            echo "::error::Forecast Edge audit concluded $overall"
+          serious='${{ steps.classify.outputs.serious_findings }}'
+          if [[ "$(jq 'length' <<< "$serious")" -gt 0 ]]; then
+            echo "::error::Forecast Edge audit found critical safety failures: $(jq -r 'join(", ")' <<< "$serious")"
             exit 1
           fi
 

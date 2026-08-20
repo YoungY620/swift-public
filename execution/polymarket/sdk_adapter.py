@@ -63,6 +63,26 @@ class AdapterError(RuntimeError):
     """Raised when a live dependency cannot establish a trusted state."""
 
 
+class OrderNotFilledError(AdapterError):
+    """A protected FOK order was definitively killed without any fill."""
+
+
+def _is_definitive_fok_no_fill(exc: BaseException) -> bool:
+    """Recognize only the pinned SDK's explicit FOK kill response."""
+
+    try:
+        from polymarket.errors import RequestRejectedError
+    except ImportError:
+        return False
+    if not isinstance(exc, RequestRejectedError):
+        return False
+    message = " ".join(str(exc).casefold().split())
+    return (
+        "order couldn't be fully filled" in message
+        and "fok orders are fully filled or killed" in message
+    )
+
+
 @dataclass(frozen=True)
 class Credentials:
     signer_private_key: str = field(repr=False)
@@ -610,6 +630,10 @@ class LivePolymarketAdapter:
         try:
             return self.client.post_order(signed_order)
         except Exception as exc:
+            if _is_definitive_fok_no_fill(exc):
+                raise OrderNotFilledError(
+                    "protected FOK order was killed without a fill"
+                ) from exc
             raise AdapterError(f"CLOB order submission failed: {exc}") from exc
 
     def cancel_order(self, order_id: str) -> dict[str, Any]:

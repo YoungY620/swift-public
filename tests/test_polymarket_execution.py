@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
+import types
 import unittest
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from execution.polymarket.artifact import ArtifactError, load_and_validate_jsonl
 from execution.polymarket.cli import _planning_summary
-from execution.polymarket.engine import _cap_to_signed_market_quantity
+from execution.polymarket.engine import (
+    ExecutionError,
+    UncertainExecutionError,
+    _cap_to_signed_market_quantity,
+    execute_orders,
+    verify_receipts,
+)
 from execution.polymarket.ledger import LedgerError, SQLiteLedger
 from execution.polymarket.models import (
     BookLevel,
@@ -22,6 +31,8 @@ from execution.polymarket.planner import PlanningError, build_execution_plan
 from execution.polymarket.sdk_adapter import (
     AdapterError,
     LivePolymarketAdapter,
+    OrderNotFilledError,
+    STANDARD_EXCHANGE,
 )
 
 
@@ -60,6 +71,7 @@ def market(
     bids: tuple[tuple[str, str], ...] = (("0.49", "100"),),
     asks: tuple[tuple[str, str], ...] = (("0.51", "100"),),
     minimum: str = "1",
+    fee_rate: str = "0.04",
     condition: str = CONDITION,
     token: str = TOKEN,
 ) -> MarketSnapshot:
@@ -75,7 +87,7 @@ def market(
         neg_risk=False,
         min_order_size=Decimal(minimum),
         tick_size=Decimal("0.01"),
-        fee_schedule=FeeSchedule(rate=Decimal("0.04"), exponent=Decimal("1")),
+        fee_schedule=FeeSchedule(rate=Decimal(fee_rate), exponent=Decimal("1")),
         bids=tuple(BookLevel(Decimal(price), Decimal(size)) for price, size in bids),
         asks=tuple(BookLevel(Decimal(price), Decimal(size)) for price, size in asks),
         book_timestamp="2026-08-18T00:00:00Z",
@@ -474,6 +486,298 @@ class ProtectedMarketOrderTests(unittest.TestCase):
         self.assertEqual(sum(fill.quantity for fill in capped.fills), capped.quantity)
         self.assertEqual(capped.gross_notional, capped.vwap * capped.quantity)
         self.assertLessEqual(capped.worst_case_cash_effect, planned.worst_case_cash_effect)
+
+
+class PostOrderClassificationTests(unittest.TestCase):
+    @staticmethod
+    def sdk_modules():
+        polymarket = types.ModuleType("polymarket")
+        errors = types.ModuleType("polymarket.errors")
+
+        class RequestRejectedError(RuntimeError):
+            pass
+
+        errors.RequestRejectedError = RequestRejectedError
+        polymarket.errors = errors
+        return polymarket, errors, RequestRejectedError
+
+    @staticmethod
+    def adapter(error: BaseException) -> LivePolymarketAdapter:
+        class RejectingClient:
+            def post_order(self, _signed_order):
+                raise error
+
+        adapter = LivePolymarketAdapter.__new__(LivePolymarketAdapter)
+        adapter.client = RejectingClient()
+        return adapter
+
+    def test_fixed_sdk_fok_kill_is_a_definitive_no_fill(self) -> None:
+        polymarket, errors, rejected = self.sdk_modules()
+        error = rejected(
+            "order couldn't be fully filled. FOK orders are fully filled or killed."
+        )
+        with patch.dict(
+            sys.modules,
+            {"polymarket": polymarket, "polymarket.errors": errors},
+        ):
+            with self.assertRaises(OrderNotFilledError):
+                self.adapter(error).post_order(object())
+
+    def test_other_sdk_rejection_is_not_misclassified_as_no_fill(self) -> None:
+        polymarket, errors, rejected = self.sdk_modules()
+        with patch.dict(
+            sys.modules,
+            {"polymarket": polymarket, "polymarket.errors": errors},
+        ):
+            with self.assertRaises(AdapterError) as raised:
+                self.adapter(rejected("invalid signature")).post_order(object())
+        self.assertNotIsInstance(raised.exception, OrderNotFilledError)
+
+    def test_network_error_remains_an_unknown_submission_failure(self) -> None:
+        polymarket, errors, _ = self.sdk_modules()
+        with patch.dict(
+            sys.modules,
+            {"polymarket": polymarket, "polymarket.errors": errors},
+        ):
+            with self.assertRaises(AdapterError) as raised:
+                self.adapter(TimeoutError("request timed out")).post_order(object())
+        self.assertNotIsInstance(raised.exception, OrderNotFilledError)
+
+
+@dataclass
+class AcceptedOrderFixture:
+    ok: bool
+    order_id: str
+    trade_ids: tuple[str, ...]
+
+    def model_dump(self, *, mode: str):
+        self.mode = mode
+        return {
+            "ok": self.ok,
+            "order_id": self.order_id,
+            "trade_ids": list(self.trade_ids),
+        }
+
+
+class NoFillThenFillAdapter:
+    wallet = "0x" + "1" * 40
+    signer = "0x" + "2" * 40
+    wallet_type = "DEPOSIT_WALLET"
+
+    def __init__(self, markets: dict[str, MarketSnapshot]) -> None:
+        self.markets = markets
+        self.cash = Decimal("100")
+        self.tokens = {token: Decimal("0") for token in markets}
+        self.current_token = ""
+        self.current_quantity = Decimal("0")
+        self.current_price = Decimal("0")
+        self.post_count = 0
+        self.trades: dict[str, dict[str, object]] = {}
+
+    def health(self):
+        return {"closed_only": False, "geoblock": {"blocked": False}}
+
+    def open_orders(self):
+        return ()
+
+    def market_snapshot(self, trade_intent: TradeIntent):
+        return self.markets[trade_intent.instrument_identifier]
+
+    def positions(self):
+        return tuple(
+            {"token_id": token, "size": str(size)}
+            for token, size in self.tokens.items()
+            if size > 0
+        )
+
+    def collateral_balance(self):
+        return self.cash
+
+    def conditional_balance(self, token_id: str):
+        return self.tokens[token_id]
+
+    def balance_allowance(self, *, asset_type: str, token_id: str | None = None):
+        balance = self.cash if asset_type == "COLLATERAL" else self.tokens[str(token_id)]
+        return {
+            "balance": str(balance),
+            "allowances": {STANDARD_EXCHANGE: "1000000"},
+        }
+
+    def create_market_order(
+        self,
+        *,
+        token_id: str,
+        price_limit: Decimal,
+        quantity: Decimal,
+        side: str,
+        max_buy_spend: Decimal | None = None,
+    ):
+        self.current_token = token_id
+        self.current_quantity = quantity
+        self.current_price = price_limit
+        return SignedOrderFixture(salt=self.post_count + 1, signature="0xsigned")
+
+    def signed_market_order_quantity(self, _signed_order, *, side: str):
+        self.side = side
+        return self.current_quantity
+
+    def post_order(self, _signed_order):
+        self.post_count += 1
+        if self.post_count == 1:
+            raise OrderNotFilledError("protected FOK order was killed without a fill")
+        order_id = f"order-{self.post_count}"
+        trade_id = f"trade-{self.post_count}"
+        self.tokens[self.current_token] += self.current_quantity
+        self.cash -= self.current_quantity * self.current_price
+        self.trades[trade_id] = {
+            "id": trade_id,
+            "status": "CONFIRMED",
+            "token_id": self.current_token,
+            "side": "buy",
+            "size": str(self.current_quantity),
+            "price": str(self.current_price),
+            "taker_order_id": order_id,
+            "maker_orders": [],
+        }
+        return AcceptedOrderFixture(True, order_id, (trade_id,))
+
+    def order(self, order_id: str):
+        suffix = order_id.rsplit("-", 1)[-1]
+        return {"id": order_id, "status": "MATCHED", "associate_trades": (f"trade-{suffix}",)}
+
+    def order_if_open(self, _order_id: str):
+        return None
+
+    def wait_for_settlement(self, _response, *, timeout_seconds: float):
+        self.timeout_seconds = timeout_seconds
+        return ()
+
+    def account_trades(self, trade_ids):
+        return tuple(self.trades[trade_id] for trade_id in trade_ids)
+
+
+class ExecuteNoFillTests(unittest.TestCase):
+    def test_definitive_no_fill_warns_and_does_not_stop_later_orders(self) -> None:
+        second_condition = "0x" + "b" * 64
+        second_token = "987654321"
+        intents = [
+            intent(),
+            intent(condition=second_condition, token=second_token),
+        ]
+        markets = {
+            TOKEN: market(asks=(("0.50", "100"),), fee_rate="0"),
+            second_token: market(
+                asks=(("0.50", "100"),),
+                condition=second_condition,
+                token=second_token,
+                fee_rate="0",
+            ),
+        }
+        plan = build_execution_plan(
+            intents=intents,
+            markets=markets,
+            positions={},
+            available_cash=Decimal("100"),
+            limits=RiskLimits(
+                minimum_cash_reserve=Decimal("0"),
+                max_price_deviation_bps=0,
+            ),
+        )
+        ledger_path = Path(tempfile.mkdtemp()) / "ledger.sqlite3"
+        ledger = SQLiteLedger(
+            path=ledger_path,
+            execution_id="execution-no-fill",
+            lease_owner="runner-a",
+        )
+        claim = ledger.claim_run(
+            artifact_sha256="a" * 64,
+            planned_notional=Decimal("10"),
+            daily_notional_limit=Decimal("20"),
+        )
+        adapter = NoFillThenFillAdapter(markets)
+        summary = execute_orders(
+            adapter=adapter,  # type: ignore[arg-type]
+            orders=plan.orders,
+            limits=RiskLimits(
+                minimum_cash_reserve=Decimal("0"),
+                max_price_deviation_bps=0,
+            ),
+            ledger=ledger,
+            execution_id="execution-no-fill",
+            execution_claim=claim,
+            planning={"source_intent_count": 2},
+            pre_execution_cancellation={"remaining_open_order_count": 0},
+        )
+        self.assertEqual(summary["status"], "COMPLETED_WITH_WARNINGS")
+        self.assertEqual(
+            [receipt["status"] for receipt in summary["receipts"]],
+            ["NO_FILL", "FULL"],
+        )
+        self.assertEqual(adapter.post_count, 2)
+        self.assertEqual(ledger.get(ledger.run_key)["state"], "COMPLETED")
+        self.assertTrue(
+            all(
+                ledger.get(ledger.order_key(index))["state"] == "VERIFIED"
+                for index in (1, 2)
+            )
+        )
+        verification = verify_receipts(
+            adapter=adapter,  # type: ignore[arg-type]
+            summary=summary,
+        )
+        self.assertEqual(
+            [order["status"] for order in verification["orders"]],
+            ["NO_FILL", "FULL"],
+        )
+        self.assertIn("planned_cash_limit", summary["receipts"][1])
+        invalid_no_fill = json.loads(json.dumps(summary))
+        invalid_no_fill["receipts"][0]["code"] = "UNKNOWN"
+        with self.assertRaisesRegex(ExecutionError, "FOK kill proof"):
+            verify_receipts(
+                adapter=adapter,  # type: ignore[arg-type]
+                summary=invalid_no_fill,
+            )
+
+    def test_unclassified_submission_error_remains_uncertain(self) -> None:
+        class TimeoutAdapter(NoFillThenFillAdapter):
+            def post_order(self, _signed_order):
+                raise AdapterError("network timeout")
+
+        markets = {TOKEN: market(asks=(("0.50", "100"),), fee_rate="0")}
+        plan = build_execution_plan(
+            intents=[intent()],
+            markets=markets,
+            positions={},
+            available_cash=Decimal("100"),
+            limits=RiskLimits(
+                minimum_cash_reserve=Decimal("0"),
+                max_price_deviation_bps=0,
+            ),
+        )
+        ledger = SQLiteLedger(
+            path=Path(tempfile.mkdtemp()) / "ledger.sqlite3",
+            execution_id="execution-timeout",
+            lease_owner="runner-a",
+        )
+        claim = ledger.claim_run(
+            artifact_sha256="b" * 64,
+            planned_notional=Decimal("5"),
+            daily_notional_limit=Decimal("20"),
+        )
+        with self.assertRaises(UncertainExecutionError):
+            execute_orders(
+                adapter=TimeoutAdapter(markets),  # type: ignore[arg-type]
+                orders=plan.orders,
+                limits=RiskLimits(
+                    minimum_cash_reserve=Decimal("0"),
+                    max_price_deviation_bps=0,
+                ),
+                ledger=ledger,
+                execution_id="execution-timeout",
+                execution_claim=claim,
+                planning={"source_intent_count": 1},
+            )
+        self.assertEqual(ledger.get(ledger.run_key)["state"], "UNCERTAIN")
 
 
 class CancellationAdapterFixture:

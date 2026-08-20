@@ -193,7 +193,6 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
     soft_edge_override_reason = str(document.get("soft_edge_override_reason") or "").strip()
     if soft_edge_override and not soft_edge_override_reason:
         raise TradeMathError("soft_edge_override_reason is required when soft_edge_override is true")
-    min_order_shares = number(document.get("min_order_shares", 0.0), "min_order_shares", minimum=0.0)
     current = document.get("current_position") or {}
     if not isinstance(current, dict):
         raise TradeMathError("current_position must be an object")
@@ -202,6 +201,21 @@ def evaluate_trade(document: dict[str, Any]) -> dict[str, Any]:
     book = document.get("book")
     if not isinstance(book, dict):
         raise TradeMathError("book must be an object")
+    if "min_order_size" not in book:
+        raise TradeMathError("book.min_order_size is required")
+    min_order_shares = number(
+        book.get("min_order_size"), "book.min_order_size", minimum=0.0
+    )
+    if min_order_shares <= 0:
+        raise TradeMathError("book.min_order_size must be greater than zero")
+    if document.get("min_order_shares") is not None:
+        legacy_minimum = number(
+            document.get("min_order_shares"), "min_order_shares", minimum=0.0
+        )
+        if abs(legacy_minimum - min_order_shares) > 1e-9:
+            raise TradeMathError(
+                "min_order_shares differs from the venue order book minimum"
+            )
     asks = normalize_levels(book.get("asks", []), bids=False)
     bids = normalize_levels(book.get("bids", []), bids=True)
 

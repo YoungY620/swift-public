@@ -93,15 +93,16 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertIn("Send final production iteration status to Feishu", self.workflow)
         self.assertIn("github.event_name == 'workflow_run'", self.workflow)
 
-    def test_automatic_audits_trip_a_fail_closed_production_breaker(self) -> None:
+    def test_automatic_audits_trip_a_tiered_production_breaker(self) -> None:
         self.assertIn("Trip production circuit breaker on serious findings", self.workflow)
         self.assertIn("actions/workflows/forecast-edge.yml/disable", self.workflow)
         self.assertIn("POLYMARKET_LIVE_TRADING_ENABLED", self.workflow)
         self.assertIn("actions: write", self.workflow)
         self.assertIn("github.event_name == 'workflow_run'", self.workflow)
         self.assertIn("inputs['trip-circuit-breaker'] == true", self.workflow)
-        self.assertIn("(.status == \"FAIL\")", self.workflow)
-        self.assertIn("and .status == \"INSUFFICIENT_EVIDENCE\"", self.workflow)
+        self.assertIn("--agent-judgment-valid", self.workflow)
+        self.assertIn("EXEC-UNCERTAIN", MODULE_PATH.read_text(encoding="utf-8"))
+        self.assertNotIn('and .status == "INSUFFICIENT_EVIDENCE"', self.workflow)
         self.assertIn("FORECAST_EDGE_AUTOMATION_PAUSED", self.workflow)
 
     def test_audit_agent_receives_only_the_model_secret(self) -> None:
@@ -120,7 +121,7 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         )
         agent_start = self.workflow.index("      - name: Run read-only Kimi Code Judge agent\n")
         agent_end = self.workflow.index(
-            "\n      - name: Validate agent judgment or produce fail-closed audit",
+            "\n      - name: Validate agent judgment or produce warning fallback",
             agent_start,
         )
         agent_step = self.workflow[agent_start:agent_end]
@@ -295,12 +296,143 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertIn("release.missing", normalized["missing_evidence"])
         audit_module.validate_response(normalized, self.rubric, self.evidence, self.schema)
 
-    def test_fallback_is_schema_valid_and_fail_closed(self) -> None:
+    def test_fallback_is_schema_valid_and_warns_without_fabricating_judgments(self) -> None:
         response = audit_module.fallback_response(self.rubric, "123", "invalid response")
         errors = list(Draft202012Validator(self.schema).iter_errors(response))
         self.assertEqual(errors, [])
-        self.assertEqual(response["overall_status"], "INSUFFICIENT_EVIDENCE")
-        self.assertTrue(all(item["status"] == "INSUFFICIENT_EVIDENCE" for item in response["checks"]))
+        self.assertEqual(response["overall_status"], "WARN")
+        self.assertTrue(all(item["status"] == "WARN" for item in response["checks"]))
+        self.assertIn("agent_response.validated_judgment", response["missing_evidence"])
+
+    def test_invalid_agent_output_does_not_trip_an_otherwise_safe_run(self) -> None:
+        response = audit_module.fallback_response(self.rubric, "123", "timeout")
+        self.assertEqual(
+            audit_module.classify_serious_findings(
+                response, self.evidence, agent_judgment_valid=False
+            ),
+            [],
+        )
+
+    def test_only_valid_explicit_critical_agent_failures_trip(self) -> None:
+        response = self.response()
+        response["overall_status"] = "FAIL"
+        response["checks"][0]["status"] = "FAIL"
+        self.assertEqual(
+            audit_module.classify_serious_findings(
+                response, self.evidence, agent_judgment_valid=False
+            ),
+            [],
+        )
+        self.assertIn(
+            response["checks"][0]["id"],
+            audit_module.classify_serious_findings(
+                response, self.evidence, agent_judgment_valid=True
+            ),
+        )
+
+    def test_definitive_fok_no_fill_is_not_serious(self) -> None:
+        evidence = dict(self.evidence)
+        evidence["diagnostics"] = {
+            "receipt": {
+                "status": "COMPLETED_WITH_WARNINGS",
+                "pre_execution_cancellation": {"remaining_open_order_count": 0},
+                "receipts": [
+                    {
+                        "status": "NO_FILL",
+                        "code": "FOK_NOT_FILLED",
+                        "order_id": None,
+                        "order_type": "FOK",
+                        "execution_style": "protected_market",
+                        "side": "buy",
+                        "planned_quantity": "5",
+                        "filled_quantity": "0",
+                        "planned_limit_price": "0.50",
+                        "actual_vwap": "0",
+                        "collateral_effect": "0",
+                        "before_token_balance": "10",
+                        "after_token_balance": "10",
+                        "before_collateral_balance": "20",
+                        "after_collateral_balance": "20",
+                        "trades": [],
+                        "transaction_hashes": [],
+                    }
+                ],
+            },
+            "preflight": {"open_order_count": 0},
+            "verification": {"open_order_count": 0, "orders": []},
+        }
+        self.assertEqual(
+            audit_module.classify_serious_findings(
+                self.response(), evidence, agent_judgment_valid=True
+            ),
+            [],
+        )
+
+    def test_uncertain_partial_open_and_protection_violations_trip(self) -> None:
+        evidence = dict(self.evidence)
+        evidence["diagnostics"] = {
+            "summary": {"execution_status": "UNCERTAIN"},
+            "receipt": {
+                "status": "COMPLETED_WITH_WARNINGS",
+                "pre_execution_cancellation": {"remaining_open_order_count": 1},
+                "receipts": [
+                    {"status": "PARTIAL"},
+                    {
+                        "status": "FULL",
+                        "side": "buy",
+                        "planned_quantity": "5",
+                        "filled_quantity": "6",
+                        "planned_limit_price": "0.50",
+                        "planned_cash_limit": "2.50",
+                        "actual_vwap": "0.60",
+                        "collateral_effect": "3.60",
+                    },
+                ],
+            },
+            "preflight": {"open_order_count": 0},
+            "verification": {"open_order_count": 1, "orders": [{"open": True}]},
+        }
+        findings = audit_module.classify_serious_findings(
+            self.response(), evidence, agent_judgment_valid=True
+        )
+        for expected in (
+            "EXEC-UNCERTAIN",
+            "EXEC-PARTIAL",
+            "EXEC-OPEN-ORDERS",
+            "EXEC-PROTECTION",
+            "EXEC-RECEIPT-INTEGRITY",
+        ):
+            self.assertIn(expected, findings)
+
+    def test_missing_diagnostics_only_trip_after_transaction_step_started(self) -> None:
+        evidence = dict(self.evidence)
+        evidence["diagnostics"] = {"metadata": {"found": False}}
+        evidence["jobs"] = [
+            {
+                "name": "execution / execute",
+                "steps": [
+                    {"name": "Validate EC2 runner and private execution configuration", "conclusion": "failure"}
+                ],
+            }
+        ]
+        self.assertNotIn(
+            "EXEC-DIAGNOSTICS",
+            audit_module.classify_serious_findings(
+                self.response(), evidence, agent_judgment_valid=True
+            ),
+        )
+        evidence["jobs"][0]["steps"].append(
+            {
+                "name": "Validate, cancel open orders, price, execute FOK market orders, and verify locally",
+                "conclusion": "failure",
+            }
+        )
+        self.assertIn(
+            "EXEC-DIAGNOSTICS",
+            audit_module.classify_serious_findings(
+                self.response(), evidence, agent_judgment_valid=True
+            ),
+        )
 
 
 if __name__ == "__main__":

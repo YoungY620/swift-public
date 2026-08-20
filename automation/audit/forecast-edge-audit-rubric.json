@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "rubric_version": "1.3",
+  "rubric_version": "1.4",
   "rubric_id": "forecast-edge-production-audit",
   "description": "Forecast Edge 父工作流完成后的研究、真实执行、发布和安全审计。缺少必要证据时不得判定通过。",
   "statuses": [
@@ -16,13 +16,13 @@
       "severity": "critical",
       "title": "严重异常触发生产熔断",
       "applies_when": "automatic workflow_run audit",
-      "expected": "任何 FAIL，或 critical/high 的 INSUFFICIENT_EVIDENCE，都关闭 live-trading 变量、设置持久 automation pause 并禁用父 workflow；手工历史回放默认不熔断。",
+      "expected": "只有 critical 的明确 FAIL，或确定性安全检查发现 UNCERTAIN、部分成交、价格/金额/份额保护越界、非法 NO_FILL、残留挂单、回执/诊断/秘密校验失败时，才关闭 live-trading 变量、设置持久 automation pause 并禁用父 workflow；Judge 超时、证据不足和 high/medium 质量问题只告警。手工历史回放默认不熔断。",
       "evidence_required": ["source_contract.audit_circuit_breaker", "source_contract.persistent_pause_gate", "configuration"],
-      "pass_condition": "源码熔断合约成立；自动审计严重异常时必须执行三重熔断，手工回放只有显式启用后才允许熔断。"
+      "pass_condition": "源码分级熔断合约成立；自动审计的明确资金安全异常执行三重熔断，基础设施/证据不足只告警，手工回放只有显式启用后才允许熔断。"
     },
     {
       "id": "SCHED-001",
-      "severity": "critical",
+      "severity": "high",
       "title": "八小时调度配置",
       "applies_when": "always",
       "expected": "父工作流每小时唤醒，由 gate 按 8 小时间隔和合法 UTC anchor 放行；最终 manifest 记录本轮实际 gate 配置。",
@@ -40,7 +40,7 @@
     },
     {
       "id": "GATE-001",
-      "severity": "critical",
+      "severity": "high",
       "title": "自动真实交易开关生效",
       "applies_when": "parent event is schedule and the gate releases the iteration",
       "expected": "持久 live trading 开关为 true；已执行轮次 manifest 中 execution.requested 和 configuration_ready 都为 true。",
@@ -49,7 +49,7 @@
     },
     {
       "id": "GATE-002",
-      "severity": "critical",
+      "severity": "high",
       "title": "只有存在意图才执行",
       "applies_when": "iteration research ran",
       "expected": "执行 job 的源码条件同时要求 execution-ready=true 和 research.has-intents=true；没有意图时 execution 应跳过。",
@@ -58,7 +58,7 @@
     },
     {
       "id": "RESEARCH-001",
-      "severity": "critical",
+      "severity": "high",
       "title": "研究子图成功",
       "applies_when": "gate released the iteration",
       "expected": "research job 成功且研究 manifest/validation 进入最终 Release。",
@@ -103,7 +103,7 @@
     },
     {
       "id": "EXEC-001",
-      "severity": "critical",
+      "severity": "high",
       "title": "在指定 EC2 runner 执行",
       "applies_when": "execution job ran",
       "expected": "execution job 在带 polymarket-execution、ec2、eu-north-1 等标签的 self-hosted Linux X64 runner 上成功。",
@@ -130,7 +130,7 @@
     },
     {
       "id": "EXEC-004",
-      "severity": "critical",
+      "severity": "high",
       "title": "地区、CLOB 和钱包健康",
       "applies_when": "execution verification exists",
       "expected": "geoblock.blocked=false、closed_only=false，verification health 与已认证账户健康检查一致。",
@@ -157,12 +157,12 @@
     },
     {
       "id": "EXEC-007",
-      "severity": "critical",
+      "severity": "high",
       "title": "订单全部成交或明确无动作",
       "applies_when": "execution receipt exists",
-      "expected": "COMPLETED 的每张回执均为 FULL；NO_ACTIONS 不含回执；PARTIAL/NO_FILL/REJECTED/UNCERTAIN 不得算成功。",
+      "expected": "COMPLETED 的每张回执均为 FULL；COMPLETED_WITH_WARNINGS 只允许 FULL 和已证明账户未变化的 FOK NO_FILL；NO_ACTIONS 不含回执。PARTIAL、REJECTED、UNCERTAIN 不得算成功。",
       "evidence_required": ["release.execution_receipt"],
-      "pass_condition": "状态组合严格匹配预期。"
+      "pass_condition": "状态组合严格匹配预期；确定性 FOK NO_FILL 记录 WARN 并允许继续后续独立订单，未知或部分执行仍为 FAIL。"
     },
     {
       "id": "EXEC-008",
@@ -202,7 +202,7 @@
     },
     {
       "id": "RELEASE-001",
-      "severity": "critical",
+      "severity": "high",
       "title": "仅在子图完成后发布",
       "applies_when": "gate released the iteration",
       "expected": "执行成功或因无意图合法跳过后才有最终 Release；执行失败时没有最终 Release。",

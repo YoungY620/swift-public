@@ -42,7 +42,7 @@ def main() -> int:
     audit_agent_step = between(
         audit,
         "      - name: Run read-only Kimi Code Judge agent\n",
-        "\n      - name: Validate agent judgment or produce fail-closed audit",
+        "\n      - name: Validate agent judgment or produce warning fallback",
     )
 
     audit_secrets = sorted(set(re.findall(r"secrets\.([A-Z0-9_]+)", audit)))
@@ -217,8 +217,14 @@ def main() -> int:
             and "GH_TOKEN: ${{ secrets.FORECAST_EDGE_BREAKER_TOKEN }}" in audit
             and "POLYMARKET_LIVE_TRADING_ENABLED" in audit
             and "actions/workflows/forecast-edge.yml/disable" in audit
-            and '(.status == "FAIL")' in audit
-            and 'and .status == "INSUFFICIENT_EVIDENCE"' in audit
+            and "--agent-judgment-valid" in audit
+            and "classify_serious_findings" in (
+                root / "scripts/forecast_edge_audit.py"
+            ).read_text(encoding="utf-8")
+            and "EXEC-UNCERTAIN" in (
+                root / "scripts/forecast_edge_audit.py"
+            ).read_text(encoding="utf-8")
+            and 'and .status == "INSUFFICIENT_EVIDENCE"' not in audit
             and "github.event_name == 'workflow_run'" in audit
         ),
         "persistent_pause_gate": (

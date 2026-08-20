@@ -113,7 +113,7 @@ min(
 
 A single market's total cost (existing cost plus new entry) never exceeds 5% of bankroll by default. Keep the fraction configurable via `max_position_fraction`; the remaining cap is `max(0, max_position_fraction × bankroll - current_cost)`.
 
-Respect token minimum order size. If the computed position is smaller, do not place or recommend the order.
+Respect the token minimum order size read from the adapter-normalized live order book. Pass that book unchanged to `trade_math.py`; do not supply a guessed or hard-coded replacement. If the computed position is smaller, do not place or recommend the order.
 
 After calculating standalone caps for all retained opportunities, send them together in one `portfolio_allocate.py` request. Its sequential allocation, not independently repeated per-market cash budgets, determines tentative BUY and ADD amounts. A failed post-allocation portfolio review may revise the shared input and rerun it; retain only the accepted result.
 

@@ -24,6 +24,7 @@ from .models import (
 from .planner import build_execution_plan
 from .sdk_adapter import (
     LivePolymarketAdapter,
+    OrderNotFilledError,
     required_exchange_allowance,
 )
 
@@ -341,6 +342,7 @@ def _verify_fill(
         "planned_quantity": decimal_string(order.quantity),
         "filled_quantity": decimal_string(filled),
         "planned_limit_price": decimal_string(order.limit_price),
+        "planned_cash_limit": decimal_string(order.worst_case_cash_effect),
         "actual_vwap": decimal_string(vwap),
         "collateral_effect": decimal_string(cash_effect),
         "before_token_balance": decimal_string(before_token),
@@ -350,6 +352,56 @@ def _verify_fill(
         "failed_trade_ids": failed,
         "transaction_hashes": list(transaction_hashes),
         "trades": filtered,
+    }
+
+
+def _definitive_no_fill_receipt(
+    *,
+    adapter: LivePolymarketAdapter,
+    order: PlannedOrder,
+    before_token: Decimal,
+    before_cash: Decimal,
+) -> dict[str, Any]:
+    """Prove an SDK FOK rejection did not change the account."""
+
+    after_token = adapter.conditional_balance(order.token_id)
+    after_cash = adapter.collateral_balance()
+    if abs(after_token - before_token) > SHARE_QUANTUM:
+        raise UncertainExecutionError(
+            "outcome-token balance changed after a definitive FOK no-fill response"
+        )
+    if abs(after_cash - before_cash) > Decimal("0.01"):
+        raise UncertainExecutionError(
+            "collateral balance changed after a definitive FOK no-fill response"
+        )
+    if adapter.open_orders():
+        raise UncertainExecutionError(
+            "account has an open order after a definitive FOK no-fill response"
+        )
+    return {
+        "intent_index": order.intent_index,
+        "order_id": None,
+        "market_id": order.market_id,
+        "token_id": order.token_id,
+        "side": order.side,
+        "order_type": "FOK",
+        "execution_style": "protected_market",
+        "status": "NO_FILL",
+        "code": "FOK_NOT_FILLED",
+        "message": "protected FOK order was killed without a fill",
+        "planned_quantity": decimal_string(order.quantity),
+        "filled_quantity": "0",
+        "planned_limit_price": decimal_string(order.limit_price),
+        "planned_cash_limit": decimal_string(order.worst_case_cash_effect),
+        "actual_vwap": "0",
+        "collateral_effect": "0",
+        "before_token_balance": decimal_string(before_token),
+        "after_token_balance": decimal_string(after_token),
+        "before_collateral_balance": decimal_string(before_cash),
+        "after_collateral_balance": decimal_string(after_cash),
+        "failed_trade_ids": [],
+        "transaction_hashes": [],
+        "trades": [],
     }
 
 
@@ -395,7 +447,7 @@ def execute_orders(
             if previous and previous.get("state") == "VERIFIED":
                 receipt = json.loads(str(previous["receipt"]))
                 receipts.append(receipt)
-                if receipt.get("status") != "FULL":
+                if receipt.get("status") not in {"FULL", "NO_FILL"}:
                     raise ExecutionError(
                         f"intent {original.intent_index} previously ended as "
                         f"{receipt.get('status', 'UNKNOWN')}; later orders remain stopped"
@@ -468,6 +520,17 @@ def execute_orders(
                 account_may_have_changed = True
                 try:
                     response = adapter.post_order(newly_signed)
+                except OrderNotFilledError:
+                    receipt = _definitive_no_fill_receipt(
+                        adapter=adapter,
+                        order=current,
+                        before_token=before_token,
+                        before_cash=before_cash,
+                    )
+                    ledger.mark_order_terminal(current.intent_index, receipt)
+                    receipts.append(receipt)
+                    account_may_have_changed = False
+                    continue
                 except Exception as exc:
                     raise UncertainExecutionError(
                         "CLOB submission did not return a definitive response"
@@ -545,15 +608,27 @@ def execute_orders(
                     f"intent {current.intent_index} ended as {receipt['status']}; "
                     "remaining orders were stopped"
                 )
+        warning_receipts = [
+            receipt for receipt in receipts if receipt.get("status") != "FULL"
+        ]
         summary = {
             "schema_version": "1.0",
             "completed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "status": "COMPLETED",
+            "status": "COMPLETED_WITH_WARNINGS" if warning_receipts else "COMPLETED",
             "execution_id": execution_id,
             "claim": execution_claim,
             "planning": planning,
             "pre_execution_cancellation": pre_execution_cancellation or {},
             "receipts": receipts,
+            "warnings": [
+                {
+                    "intent_index": receipt.get("intent_index"),
+                    "status": receipt.get("status"),
+                    "code": receipt.get("code"),
+                    "message": receipt.get("message"),
+                }
+                for receipt in warning_receipts
+            ],
         }
         ledger.complete(summary)
         return summary
@@ -609,11 +684,47 @@ def verify_receipts(
     checks: list[dict[str, Any]] = []
     expected_final_cash: Decimal | None = None
     for receipt in receipts:
-        if not isinstance(receipt, dict) or receipt.get("status") != "FULL":
-            raise ExecutionError("post-execution verification requires every receipt to be FULL")
-        order_id = str(receipt.get("order_id", ""))
-        if not order_id or adapter.order_if_open(order_id) is not None:
-            raise UncertainExecutionError(f"order {order_id or '<missing>'} is still open")
+        if not isinstance(receipt, dict) or receipt.get("status") not in {
+            "FULL",
+            "NO_FILL",
+        }:
+            raise ExecutionError(
+                "post-execution verification accepts only FULL or definitive NO_FILL receipts"
+            )
+        status = str(receipt["status"])
+        order_id = str(receipt.get("order_id") or "")
+        if status == "FULL":
+            if not order_id or adapter.order_if_open(order_id) is not None:
+                raise UncertainExecutionError(
+                    f"order {order_id or '<missing>'} is still open"
+                )
+        else:
+            if receipt.get("code") != "FOK_NOT_FILLED":
+                raise ExecutionError("a definitive NO_FILL receipt has no FOK kill proof")
+            if order_id:
+                raise ExecutionError("a definitive NO_FILL receipt must not contain an order id")
+            if decimal_value(receipt.get("filled_quantity"), "no-fill quantity") != ZERO:
+                raise ExecutionError("a definitive NO_FILL receipt contains a fill")
+            if decimal_value(receipt.get("collateral_effect"), "no-fill cash effect") != ZERO:
+                raise ExecutionError("a definitive NO_FILL receipt changed collateral")
+            if receipt.get("trades") or receipt.get("transaction_hashes"):
+                raise ExecutionError("a definitive NO_FILL receipt contains trade evidence")
+            before_token = decimal_value(
+                receipt.get("before_token_balance"), "no-fill prior token balance"
+            )
+            after_token = decimal_value(
+                receipt.get("after_token_balance"), "no-fill final token balance"
+            )
+            before_cash = decimal_value(
+                receipt.get("before_collateral_balance"), "no-fill prior collateral balance"
+            )
+            after_cash = decimal_value(
+                receipt.get("after_collateral_balance"), "no-fill final collateral balance"
+            )
+            if abs(after_token - before_token) > SHARE_QUANTUM:
+                raise ExecutionError("a definitive NO_FILL receipt changed token balance")
+            if abs(after_cash - before_cash) > Decimal("0.01"):
+                raise ExecutionError("a definitive NO_FILL receipt changed collateral balance")
         token_id = str(receipt.get("token_id", ""))
         if not token_id:
             raise ExecutionError("execution receipt is missing its outcome token id")
@@ -630,8 +741,9 @@ def verify_receipts(
         )
         checks.append(
             {
-                "order_id": order_id,
+                "order_id": order_id or None,
                 "token_id": token_id,
+                "status": status,
                 "open": False,
                 "position_balance": decimal_string(actual_token),
             }

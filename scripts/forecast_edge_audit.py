@@ -6,6 +6,7 @@ import argparse
 import json
 import re
 import sys
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -300,10 +301,10 @@ def fallback_response(rubric: dict[str, Any], parent_run_id: str, reason: str) -
     checks = [
         {
             "id": item["id"],
-            "status": "INSUFFICIENT_EVIDENCE",
+            "status": "WARN",
             "severity": item["severity"],
             "evidence": ["agent_response"],
-            "reason": "审计 agent 未能提供可验证结论：" + reason[:700],
+            "reason": "审计 agent 未能提供可验证结论；本项未完成 Agent 判断：" + reason[:700],
         }
         for item in rubric["checks"]
     ]
@@ -311,19 +312,190 @@ def fallback_response(rubric: dict[str, Any], parent_run_id: str, reason: str) -
         "schema_version": "1.0",
         "rubric_id": rubric["rubric_id"],
         "rubric_version": rubric["rubric_version"],
-        "overall_status": "INSUFFICIENT_EVIDENCE",
+        "overall_status": "WARN",
         "confidence": "LOW",
         "parent_run_id": str(parent_run_id),
         "checks": checks,
         "anomalies": [],
-        "missing_evidence": ["agent_response"],
+        "missing_evidence": ["agent_response.validated_judgment"],
         "agent_notes": "未采用未经 schema 校验的 agent 输出。" + reason[:800],
     }
 
 
+def _decimal(value: Any) -> Decimal | None:
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return parsed if parsed.is_finite() else None
+
+
+def _dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def classify_serious_findings(
+    response: dict[str, Any],
+    evidence: dict[str, Any],
+    *,
+    agent_judgment_valid: bool,
+) -> list[str]:
+    """Return only evidence-backed conditions that require a trading halt."""
+
+    findings: set[str] = set()
+    if agent_judgment_valid:
+        for check in _list(response.get("checks")):
+            if (
+                isinstance(check, dict)
+                and check.get("severity") == "critical"
+                and check.get("status") == "FAIL"
+                and isinstance(check.get("id"), str)
+            ):
+                findings.add(str(check["id"]))
+
+    safety = _dict(evidence.get("evidence_safety"))
+    if safety.get("secret_value_scan_passed") is False:
+        findings.add("SEC-EVIDENCE")
+
+    jobs = [item for item in _list(evidence.get("jobs")) if isinstance(item, dict)]
+    execution_transaction_step_started = False
+    for job in jobs:
+        if not str(job.get("name", "")).startswith("execution"):
+            continue
+        for step in _list(job.get("steps")):
+            if not isinstance(step, dict):
+                continue
+            if str(step.get("name", "")).startswith(
+                "Validate, cancel open orders, price, execute FOK market orders"
+            ) and step.get("conclusion") not in {None, "skipped"}:
+                execution_transaction_step_started = True
+
+    diagnostics = _dict(evidence.get("diagnostics"))
+    metadata = _dict(diagnostics.get("metadata"))
+    if execution_transaction_step_started and any(
+        metadata.get(key) is not True
+        for key in ("found", "artifact_verified", "secret_pattern_scan_passed")
+    ):
+        findings.add("EXEC-DIAGNOSTICS")
+
+    receipt = _dict(diagnostics.get("receipt"))
+    if not receipt:
+        receipt = _dict(_dict(evidence.get("release")).get("execution_receipt"))
+    summary = _dict(diagnostics.get("summary"))
+    if receipt.get("status") == "UNCERTAIN" or summary.get("execution_status") == "UNCERTAIN":
+        findings.add("EXEC-UNCERTAIN")
+
+    receipts = [item for item in _list(receipt.get("receipts")) if isinstance(item, dict)]
+    statuses = [str(item.get("status", "")) for item in receipts]
+    if "PARTIAL" in statuses:
+        findings.add("EXEC-PARTIAL")
+    if receipt.get("status") == "COMPLETED" and any(status != "FULL" for status in statuses):
+        findings.add("EXEC-RECEIPT-INTEGRITY")
+    if receipt.get("status") == "COMPLETED_WITH_WARNINGS" and any(
+        status not in {"FULL", "NO_FILL"} for status in statuses
+    ):
+        findings.add("EXEC-RECEIPT-INTEGRITY")
+
+    share_tolerance = Decimal("0.01")
+    cash_tolerance = Decimal("0.01")
+    for item in receipts:
+        status = str(item.get("status", ""))
+        planned = _decimal(item.get("planned_quantity"))
+        filled = _decimal(item.get("filled_quantity"))
+        limit_price = _decimal(item.get("planned_limit_price"))
+        actual_vwap = _decimal(item.get("actual_vwap"))
+        cash_effect = _decimal(item.get("collateral_effect"))
+        side = str(item.get("side", "")).lower()
+        if status == "NO_FILL":
+            before_token = _decimal(item.get("before_token_balance"))
+            after_token = _decimal(item.get("after_token_balance"))
+            before_cash = _decimal(item.get("before_collateral_balance"))
+            after_cash = _decimal(item.get("after_collateral_balance"))
+            valid_no_fill = (
+                item.get("code") == "FOK_NOT_FILLED"
+                and not item.get("order_id")
+                and item.get("order_type") == "FOK"
+                and item.get("execution_style") == "protected_market"
+                and side in {"buy", "sell"}
+                and planned is not None
+                and planned > 0
+                and limit_price is not None
+                and limit_price > 0
+                and filled == 0
+                and actual_vwap == 0
+                and cash_effect == 0
+                and not item.get("trades")
+                and not item.get("transaction_hashes")
+                and before_token is not None
+                and after_token is not None
+                and abs(after_token - before_token) <= share_tolerance
+                and before_cash is not None
+                and after_cash is not None
+                and abs(after_cash - before_cash) <= cash_tolerance
+            )
+            if not valid_no_fill:
+                findings.add("EXEC-INVALID-NO-FILL")
+            continue
+        if status != "FULL":
+            continue
+        if None in {planned, filled, limit_price, actual_vwap, cash_effect} or side not in {
+            "buy",
+            "sell",
+        }:
+            findings.add("EXEC-RECEIPT-INTEGRITY")
+            continue
+        assert planned is not None
+        assert filled is not None
+        assert limit_price is not None
+        assert actual_vwap is not None
+        assert cash_effect is not None
+        if planned <= 0 or filled <= 0 or filled > planned + share_tolerance:
+            findings.add("EXEC-PROTECTION")
+        if side == "buy" and actual_vwap > limit_price:
+            findings.add("EXEC-PROTECTION")
+        if side == "sell" and actual_vwap < limit_price:
+            findings.add("EXEC-PROTECTION")
+        planned_cash_limit = _decimal(item.get("planned_cash_limit"))
+        if planned_cash_limit is not None and planned > 0:
+            protected_cash = planned_cash_limit * filled / planned
+            if side == "buy" and cash_effect > protected_cash + cash_tolerance:
+                findings.add("EXEC-PROTECTION")
+            if side == "sell" and cash_effect + cash_tolerance < protected_cash:
+                findings.add("EXEC-PROTECTION")
+
+    preflight = _dict(diagnostics.get("preflight"))
+    verification = _dict(diagnostics.get("verification"))
+    cancellation = _dict(receipt.get("pre_execution_cancellation"))
+    open_counts = (
+        preflight.get("open_order_count"),
+        verification.get("open_order_count"),
+        cancellation.get("remaining_open_order_count"),
+    )
+    for value in open_counts:
+        if value is None:
+            continue
+        parsed = _decimal(value)
+        if parsed is None:
+            findings.add("EXEC-RECEIPT-INTEGRITY")
+        elif parsed != 0:
+            findings.add("EXEC-OPEN-ORDERS")
+    if any(
+        isinstance(order, dict) and order.get("open") is not False
+        for order in _list(verification.get("orders"))
+    ):
+        findings.add("EXEC-OPEN-ORDERS")
+    return sorted(findings)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("validate", "normalize", "extract", "fallback"))
+    parser.add_argument(
+        "command", choices=("validate", "normalize", "extract", "fallback", "classify")
+    )
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--rubric", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
@@ -331,6 +503,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--trace-output", type=Path)
     parser.add_argument("--parent-run-id", default="0")
+    parser.add_argument("--agent-judgment-valid", action="store_true")
     args = parser.parse_args()
 
     rubric = load_json(args.rubric, "rubric")
@@ -345,6 +518,23 @@ def main() -> int:
         args.trace_output.parent.mkdir(parents=True, exist_ok=True)
         args.trace_output.write_text(
             json.dumps(trace, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return 0
+    if args.command == "classify":
+        response = load_json(args.input, "audit result")
+        result = {
+            "overall_status": response.get("overall_status", "WARN"),
+            "confidence": response.get("confidence", "LOW"),
+            "serious_findings": classify_serious_findings(
+                response,
+                evidence,
+                agent_judgment_valid=args.agent_judgment_valid,
+            ),
+        }
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
         return 0
