@@ -114,7 +114,10 @@ def _scan_public_tree(root: Path) -> None:
         "private key": re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
         "GitHub token": re.compile(r"(?:github_pat_|gh[oprsu]_)[A-Za-z0-9_]{20,}"),
         "AWS access key": re.compile(r"(?:AKIA|ASIA)[A-Z0-9]{16}"),
-        "AWS account id": re.compile(r"(?<![0-9])[0-9]{12}(?![0-9])"),
+        "AWS account id": re.compile(
+            r"(?:aws|account(?:[_ -]?id)?)\D{0,24}(?<![0-9.])[0-9]{12}(?![0-9.])",
+            re.I,
+        ),
         "EC2 hostname": re.compile(r"\bec2-[a-z0-9.-]+\.compute\.amazonaws\.com\b", re.I),
         "local user path": re.compile(r"/(?:Users|home)/[^/\s]+/"),
         "SSH fingerprint": re.compile(r"\bSHA256:[A-Za-z0-9+/]{20,}={0,2}\b"),

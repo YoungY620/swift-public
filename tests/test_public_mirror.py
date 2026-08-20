@@ -50,6 +50,19 @@ class PublicMirrorTests(unittest.TestCase):
             with self.assertRaises(PUBLIC.PublicMirrorError):
                 PUBLIC._scan_public_tree(root)
 
+    def test_decimal_precision_is_not_mistaken_for_an_aws_account(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "math.py").write_text(
+                'value = Decimal("1.000000000000")\n', encoding="utf-8"
+            )
+            PUBLIC._scan_public_tree(root)
+            (root / "config.txt").write_text(
+                "AWS account id: 123456789012\n", encoding="utf-8"
+            )
+            with self.assertRaises(PUBLIC.PublicMirrorError):
+                PUBLIC._scan_public_tree(root)
+
 
 if __name__ == "__main__":
     unittest.main()
