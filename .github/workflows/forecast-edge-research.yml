@@ -520,7 +520,9 @@ jobs:
         run: |
           set -o pipefail
           set +e
-          stdbuf -oL -eL kimi --yolo --skills-dir "$GITHUB_WORKSPACE/skills" \
+          # Kimi Code prompt mode (-p) uses auto permission by default; no
+          # separate interactive approval-mode flag is valid here.
+          stdbuf -oL -eL kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
             --output-format stream-json \
             -p "$(<"$ORIGINAL_PROMPT_PATH")" \
             2> >(stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-1.stderr" >&2) \
@@ -574,7 +576,8 @@ jobs:
         run: |
           set -o pipefail
           set +e
-          stdbuf -oL -eL kimi --yolo --skills-dir "$GITHUB_WORKSPACE/skills" \
+          # Kimi Code prompt mode is already unattended and auto-approved.
+          stdbuf -oL -eL kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
             --output-format stream-json \
             -p "$(<"$REPAIR_PROMPT_PATH")" \
             2> >(stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-2.stderr" >&2) \
@@ -629,7 +632,8 @@ jobs:
         run: |
           set -o pipefail
           set +e
-          stdbuf -oL -eL kimi --yolo --skills-dir "$GITHUB_WORKSPACE/skills" \
+          # Kimi Code prompt mode is already unattended and auto-approved.
+          stdbuf -oL -eL kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
             --output-format stream-json \
             -p "$(<"$REPAIR_PROMPT_PATH")" \
             2> >(stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-3.stderr" >&2) \
@@ -684,7 +688,8 @@ jobs:
         run: |
           set -o pipefail
           set +e
-          stdbuf -oL -eL kimi --yolo --skills-dir "$GITHUB_WORKSPACE/skills" \
+          # Kimi Code prompt mode is already unattended and auto-approved.
+          stdbuf -oL -eL kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
             --output-format stream-json \
             -p "$(<"$REPAIR_PROMPT_PATH")" \
             2> >(stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-4.stderr" >&2) \

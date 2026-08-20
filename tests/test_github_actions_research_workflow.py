@@ -126,7 +126,8 @@ class WorkflowContractTests(unittest.TestCase):
             start=1,
         ):
             step = self.step(self.research, name)
-            self.assertIn("kimi --yolo", step)
+            self.assertIn("kimi --skills-dir", step)
+            self.assertNotIn("--yolo", step)
             self.assertIn("--output-format stream-json", step)
             self.assertIn(
                 f'| stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-{attempt}.stream.jsonl"',
@@ -139,7 +140,8 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertIn("status=${PIPESTATUS[0]}", step)
 
         audit_agent = self.step(self.audit, "Run read-only Kimi Code Judge agent")
-        self.assertIn("kimi --yolo", audit_agent)
+        self.assertIn("kimi --agent-file", audit_agent)
+        self.assertNotIn("--yolo", audit_agent)
         self.assertIn(
             '| stdbuf -oL tee "$AUDIT_AGENT_RAW_RESPONSE_PATH"', audit_agent
         )
