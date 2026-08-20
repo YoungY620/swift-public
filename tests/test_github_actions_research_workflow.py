@@ -38,7 +38,16 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("needs.research.outputs.has-intents == 'true'", self.parent)
         self.assertIn("needs.gate.outputs.execution-ready == 'true'", self.parent)
         self.assertIn("inputs['execute-live-trades']", self.parent)
+        self.assertIn("inputs['research-only']", self.parent)
         self.assertNotIn("workflow_run:", self.parent)
+
+    def test_manual_research_only_bypasses_pause_without_execution(self) -> None:
+        self.assertIn("research-only:", self.parent)
+        self.assertIn(
+            'research-only cannot be combined with execute-live-trades', self.parent
+        )
+        self.assertIn('"$RESEARCH_ONLY" != "true"', self.parent)
+        self.assertIn('"$EVENT_NAME" == "workflow_dispatch"', self.parent)
 
     def test_parent_manifest_records_the_effective_schedule_gate(self) -> None:
         self.assertIn("interval-hours=$interval", self.parent)
@@ -102,6 +111,36 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn('cat "$VALIDATION_SUMMARY_PATH"', self.research)
         self.assertNotRegex(self.research, r"sed -n .*kimi-attempt-[1-4]\.stderr")
         self.assertNotIn("HTTP 200: $canonical_url", self.research)
+
+    def test_kimi_attempts_stream_cli_events_and_retain_raw_jsonl(self) -> None:
+        for attempt, name in enumerate(
+            (
+                "Run Kimi Code — initial attempt",
+                "Run Kimi Code — repair 1 of 3",
+                "Run Kimi Code — repair 2 of 3",
+                "Run Kimi Code — repair 3 of 3",
+            ),
+            start=1,
+        ):
+            step = self.step(self.research, name)
+            self.assertIn("--output-format stream-json", step)
+            self.assertIn(
+                f'| stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-{attempt}.stream.jsonl"',
+                step,
+            )
+            self.assertIn(
+                f'2> >(stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-{attempt}.stderr" >&2)',
+                step,
+            )
+            self.assertIn("status=${PIPESTATUS[0]}", step)
+
+        audit_agent = self.step(self.audit, "Run read-only Kimi Code Judge agent")
+        self.assertIn(
+            '| stdbuf -oL tee "$AUDIT_AGENT_RAW_RESPONSE_PATH"', audit_agent
+        )
+        self.assertIn('tee "$AUDIT_RUNTIME_DIR/agent.stderr" >&2', audit_agent)
+        self.assertIn("kimi_status=${PIPESTATUS[0]}", audit_agent)
+        self.assertNotIn('> "$AUDIT_AGENT_RAW_RESPONSE_PATH"', audit_agent)
 
     def test_parent_publishes_only_after_optional_execution_resolves(self) -> None:
         self.assertIn("needs: [gate, research, execution]", self.parent)

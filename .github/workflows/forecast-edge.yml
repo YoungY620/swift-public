@@ -12,6 +12,11 @@ on:
         required: false
         default: false
         type: boolean
+      research-only:
+        description: Run research while production automation is paused; never execute trade intents
+        required: false
+        default: false
+        type: boolean
 
 permissions: {}
 
@@ -38,6 +43,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           MANUAL_EXECUTION: ${{ inputs['execute-live-trades'] || false }}
+          RESEARCH_ONLY: ${{ inputs['research-only'] || false }}
           INTERVAL_HOURS: ${{ vars.FORECAST_EDGE_INTERVAL_HOURS || '8' }}
           ANCHOR_UTC_HOUR: ${{ vars.FORECAST_EDGE_ANCHOR_UTC_HOUR || '2' }}
           LIVE_TRADING_ENABLED: ${{ vars.POLYMARKET_LIVE_TRADING_ENABLED || 'false' }}
@@ -71,7 +77,13 @@ jobs:
           fi
 
           should_run=false
-          if [[ "$AUTOMATION_PAUSED" == "true" ]]; then
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$RESEARCH_ONLY" == "true" ]]; then
+            if [[ "$MANUAL_EXECUTION" == "true" ]]; then
+              echo "::error::research-only cannot be combined with execute-live-trades"
+              exit 1
+            fi
+            should_run=true
+          elif [[ "$AUTOMATION_PAUSED" == "true" ]]; then
             echo "::warning::Forecast Edge automation is paused by the production circuit breaker"
           elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             should_run=true
@@ -100,7 +112,8 @@ jobs:
           fi
 
           execution_requested=false
-          if [[ "$AUTOMATION_PAUSED" != "true" && \
+          if [[ "$RESEARCH_ONLY" != "true" && \
+                "$AUTOMATION_PAUSED" != "true" && \
                 ("$LIVE_TRADING_ENABLED" == "true" || "$MANUAL_EXECUTION" == "true") ]]; then
             execution_requested=true
           fi

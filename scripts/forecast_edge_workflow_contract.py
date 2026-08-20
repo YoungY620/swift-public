@@ -100,10 +100,17 @@ def main() -> int:
         ),
         "agentic_judge_trace": (
             "--output-format stream-json" in audit_agent_step
+            and '| stdbuf -oL tee "$AUDIT_AGENT_RAW_RESPONSE_PATH"' in audit_agent_step
+            and 'tee "$AUDIT_RUNTIME_DIR/agent.stderr" >&2' in audit_agent_step
             and "--trace-output \"$AUDIT_AGENT_TRACE_PATH\"" in audit_agent_step
             and "extract_agent_stream" in
             (root / "scripts/forecast_edge_audit.py").read_text(encoding="utf-8")
             and audit_agent_secrets == ["KIMI_CODE_API_KEY"]
+        ),
+        "research_kimi_live_stream": (
+            research.count("--output-format stream-json") >= 4
+            and research.count("status=${PIPESTATUS[0]}") >= 4
+            and research.count("| stdbuf -oL tee \"$RUNTIME_DIR/kimi-attempt-") >= 4
         ),
         "final_iteration_notification": (
             "  notify:\n" in audit

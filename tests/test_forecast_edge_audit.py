@@ -76,6 +76,8 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertIn("Run read-only Kimi Code Judge agent", self.workflow)
         self.assertIn('--agent-file "$AUDIT_AGENT_PROFILE_PATH"', self.workflow)
         self.assertIn("--output-format stream-json", self.workflow)
+        self.assertIn('| stdbuf -oL tee "$AUDIT_AGENT_RAW_RESPONSE_PATH"', self.workflow)
+        self.assertIn('tee "$AUDIT_RUNTIME_DIR/agent.stderr" >&2', self.workflow)
         self.assertIn('--trace-output "$AUDIT_AGENT_TRACE_PATH"', self.workflow)
         profile = AGENT_PROFILE_PATH.read_text(encoding="utf-8")
         self.assertIn("- Read", profile)

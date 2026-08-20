@@ -88,7 +88,7 @@ jobs:
             echo "::error::The research runner must expose Bash 4 or newer"
             exit 1
           fi
-          for required_tool in curl gh jq npm python3 scp sha256sum ssh ssh-keygen ssh-keyscan tar timeout; do
+          for required_tool in curl gh jq npm python3 scp sha256sum ssh ssh-keygen ssh-keyscan stdbuf tar tee timeout; do
             if ! command -v "$required_tool" >/dev/null; then
               echo "::error::The research runner is missing required tool: $required_tool"
               exit 1
@@ -517,13 +517,18 @@ jobs:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
         shell: bash
         run: |
-          set -euo pipefail
-          if ! kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+          set -o pipefail
+          set +e
+          stdbuf -oL -eL kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+            --output-format stream-json \
             -p "$(<"$ORIGINAL_PROMPT_PATH")" \
-            > "$RUNTIME_DIR/kimi-attempt-1.stdout" \
-            2> "$RUNTIME_DIR/kimi-attempt-1.stderr"; then
+            2> >(stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-1.stderr" >&2) \
+            | stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-1.stream.jsonl"
+          status=${PIPESTATUS[0]}
+          set -e
+          if (( status != 0 )); then
             echo "::error::Kimi initial attempt failed; private diagnostics were retained for repair"
-            exit 1
+            exit "$status"
           fi
 
       - name: Validate initial trade intents
@@ -566,13 +571,18 @@ jobs:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
         shell: bash
         run: |
-          set -euo pipefail
-          if ! kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+          set -o pipefail
+          set +e
+          stdbuf -oL -eL kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+            --output-format stream-json \
             -p "$(<"$REPAIR_PROMPT_PATH")" \
-            > "$RUNTIME_DIR/kimi-attempt-2.stdout" \
-            2> "$RUNTIME_DIR/kimi-attempt-2.stderr"; then
+            2> >(stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-2.stderr" >&2) \
+            | stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-2.stream.jsonl"
+          status=${PIPESTATUS[0]}
+          set -e
+          if (( status != 0 )); then
             echo "::error::Kimi repair attempt 1 failed; private diagnostics were retained"
-            exit 1
+            exit "$status"
           fi
 
       - name: Validate repaired trade intents — 1 of 3
@@ -616,13 +626,18 @@ jobs:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
         shell: bash
         run: |
-          set -euo pipefail
-          if ! kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+          set -o pipefail
+          set +e
+          stdbuf -oL -eL kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+            --output-format stream-json \
             -p "$(<"$REPAIR_PROMPT_PATH")" \
-            > "$RUNTIME_DIR/kimi-attempt-3.stdout" \
-            2> "$RUNTIME_DIR/kimi-attempt-3.stderr"; then
+            2> >(stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-3.stderr" >&2) \
+            | stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-3.stream.jsonl"
+          status=${PIPESTATUS[0]}
+          set -e
+          if (( status != 0 )); then
             echo "::error::Kimi repair attempt 2 failed; private diagnostics were retained"
-            exit 1
+            exit "$status"
           fi
 
       - name: Validate repaired trade intents — 2 of 3
@@ -666,13 +681,18 @@ jobs:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
         shell: bash
         run: |
-          set -euo pipefail
-          if ! kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+          set -o pipefail
+          set +e
+          stdbuf -oL -eL kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+            --output-format stream-json \
             -p "$(<"$REPAIR_PROMPT_PATH")" \
-            > "$RUNTIME_DIR/kimi-attempt-4.stdout" \
-            2> "$RUNTIME_DIR/kimi-attempt-4.stderr"; then
+            2> >(stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-4.stderr" >&2) \
+            | stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-4.stream.jsonl"
+          status=${PIPESTATUS[0]}
+          set -e
+          if (( status != 0 )); then
             echo "::error::Kimi repair attempt 3 failed; private diagnostics were retained"
-            exit 1
+            exit "$status"
           fi
 
       - name: Validate repaired trade intents — 3 of 3
