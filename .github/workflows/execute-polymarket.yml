@@ -3,10 +3,6 @@ name: Execute private Polymarket trade intents
 on:
   workflow_call:
     inputs:
-      handoff-directory:
-        description: Absolute private handoff directory on the persistent EC2 runner
-        required: true
-        type: string
       trade-intents-sha256:
         required: true
         type: string
@@ -29,7 +25,6 @@ jobs:
       contents: read
     environment: polymarket-production
     env:
-      HANDOFF_DIR: ${{ inputs.handoff-directory }}
       TRADE_INTENTS_SHA256: ${{ inputs.trade-intents-sha256 }}
       SERVER_SECRET_PATH: /home/ubuntu/poly-edge-live/runtime/secrets.json
       POLYMARKET_MAX_PRICE_DEVIATION_BPS: ${{ vars.POLYMARKET_MAX_PRICE_DEVIATION_BPS || '100' }}
@@ -60,21 +55,8 @@ jobs:
             echo "::error::The execution job is not running on the registered Linux X64 EC2 runner"
             exit 1
           fi
-          if [[ ! "$HANDOFF_DIR" =~ ^/home/ubuntu/poly-edge-workflows/[0-9]+-[0-9]+$ ]]; then
-            echo "::error::Private handoff directory is outside the approved EC2 runtime root"
-            exit 1
-          fi
-          if [[ ! -d "$HANDOFF_DIR" || ! -f "$HANDOFF_DIR/trade-intents.jsonl" ]]; then
-            echo "::error::Private research handoff is unavailable on the EC2 runner"
-            exit 1
-          fi
-          if [[ "$(stat -c '%U' "$HANDOFF_DIR")" != "ubuntu" || \
-                "$(stat -c '%a' "$HANDOFF_DIR")" != "700" ]]; then
-            echo "::error::Private research handoff ownership or permissions are unsafe"
-            exit 1
-          fi
           if [[ ! "$TRADE_INTENTS_SHA256" =~ ^[a-f0-9]{64}$ ]]; then
-            echo "::error::Research handoff digest is invalid"
+            echo "::error::Research artifact digest is invalid"
             exit 1
           fi
           if [[ -L "$SERVER_SECRET_PATH" || ! -f "$SERVER_SECRET_PATH" || \
@@ -95,26 +77,42 @@ jobs:
           done
           runtime_dir="$RUNNER_TEMP/polymarket-execution-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           install -d -m 700 "$runtime_dir"
+          install -d -m 700 "$runtime_dir/research-handoff" "$runtime_dir/execution-output"
           install -d -m 700 "$(dirname "$LEDGER_PATH")"
           install -d -m 700 "$PERSISTENT_DIAGNOSTICS_ROOT"
           : > "$runtime_dir/phase-events.ndjson"
           chmod 600 "$runtime_dir/phase-events.ndjson"
           {
             echo "RUNTIME_DIR=$runtime_dir"
+            echo "RESEARCH_HANDOFF_DIR=$runtime_dir/research-handoff"
+            echo "EXECUTION_OUTPUT_DIR=$runtime_dir/execution-output"
             echo "LOCAL_INTENTS_PATH=$runtime_dir/trade-intents.jsonl"
             echo "LOCAL_LIMITS_PATH=$runtime_dir/risk-limits.json"
             echo "PYTHON_VENV_DIR=$runtime_dir/venv"
             echo "DIAGNOSTICS_ARCHIVE_PATH=$runtime_dir/execution-diagnostics.tar.gz"
           } >> "$GITHUB_ENV"
 
-      - name: Load and verify private trade-intent handoff locally
+      - name: Download research handoff artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: forecast-edge-research-handoff-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/polymarket-execution-${{ github.run_id }}-${{ github.run_attempt }}/research-handoff
+
+      - name: Load and verify research trade-intent artifact locally
         shell: bash
         run: |
           set -euo pipefail
-          install -m 600 "$HANDOFF_DIR/trade-intents.jsonl" "$LOCAL_INTENTS_PATH"
+          test -s "$RESEARCH_HANDOFF_DIR/trade-intents.jsonl"
+          test -s "$RESEARCH_HANDOFF_DIR/trade-intents.sha256"
+          expected_checksum_line="$TRADE_INTENTS_SHA256  trade-intents.jsonl"
+          if [[ "$(<"$RESEARCH_HANDOFF_DIR/trade-intents.sha256")" != "$expected_checksum_line" ]]; then
+            echo "::error::Research artifact checksum file does not match the workflow output"
+            exit 1
+          fi
+          install -m 600 "$RESEARCH_HANDOFF_DIR/trade-intents.jsonl" "$LOCAL_INTENTS_PATH"
           actual_digest=$(sha256sum "$LOCAL_INTENTS_PATH" | cut -d ' ' -f 1)
           if [[ "$actual_digest" != "$TRADE_INTENTS_SHA256" ]]; then
-            echo "::error::Private trade-intent handoff failed its research digest"
+            echo "::error::Trade-intent artifact failed its research digest"
             exit 1
           fi
           if [[ ! -s "$LOCAL_INTENTS_PATH" ]]; then
@@ -248,9 +246,9 @@ jobs:
             --output "$RUNTIME_DIR/verification.json" \
             --execution-id "$EXECUTION_ID"
           install -m 600 "$RUNTIME_DIR/receipt.json" \
-            "$HANDOFF_DIR/execution-receipt.json"
+            "$EXECUTION_OUTPUT_DIR/execution-receipt.json"
           install -m 600 "$RUNTIME_DIR/verification.json" \
-            "$HANDOFF_DIR/execution-verification.json"
+            "$EXECUTION_OUTPUT_DIR/execution-verification.json"
 
       - name: Build and persist secret-free execution diagnostics
         if: ${{ always() }}
@@ -285,7 +283,7 @@ jobs:
           printf '%s  %s\n' "$archive_sha256" execution-diagnostics.tar.gz \
             > "$RUNTIME_DIR/execution-diagnostics.sha256"
           chmod 600 "$RUNTIME_DIR/execution-diagnostics.sha256"
-          for destination in "$HANDOFF_DIR" "$persistent_dir"; do
+          for destination in "$EXECUTION_OUTPUT_DIR" "$persistent_dir"; do
             install -m 600 "$DIAGNOSTICS_ARCHIVE_PATH" \
               "$destination/execution-diagnostics.tar.gz"
             install -m 600 "$RUNTIME_DIR/execution-diagnostics.sha256" \
@@ -302,10 +300,12 @@ jobs:
         with:
           name: polymarket-execution-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ env.HANDOFF_DIR }}/execution-diagnostics.tar.gz
-            ${{ env.HANDOFF_DIR }}/execution-diagnostics.sha256
-            ${{ env.HANDOFF_DIR }}/execution-diagnostic-summary.json
-            ${{ env.HANDOFF_DIR }}/execution-diagnostic-manifest.json
+            ${{ runner.temp }}/polymarket-execution-${{ github.run_id }}-${{ github.run_attempt }}/execution-output/execution-receipt.json
+            ${{ runner.temp }}/polymarket-execution-${{ github.run_id }}-${{ github.run_attempt }}/execution-output/execution-verification.json
+            ${{ runner.temp }}/polymarket-execution-${{ github.run_id }}-${{ github.run_attempt }}/execution-output/execution-diagnostics.tar.gz
+            ${{ runner.temp }}/polymarket-execution-${{ github.run_id }}-${{ github.run_attempt }}/execution-output/execution-diagnostics.sha256
+            ${{ runner.temp }}/polymarket-execution-${{ github.run_id }}-${{ github.run_attempt }}/execution-output/execution-diagnostic-summary.json
+            ${{ runner.temp }}/polymarket-execution-${{ github.run_id }}-${{ github.run_attempt }}/execution-output/execution-diagnostic-manifest.json
           if-no-files-found: error
           retention-days: 90
           compression-level: 0
@@ -314,10 +314,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -s "$HANDOFF_DIR/execution-receipt.json"
-          test -s "$HANDOFF_DIR/execution-verification.json"
-          test -s "$HANDOFF_DIR/execution-diagnostics.tar.gz"
-          test -s "$HANDOFF_DIR/execution-diagnostics.sha256"
+          test -s "$EXECUTION_OUTPUT_DIR/execution-receipt.json"
+          test -s "$EXECUTION_OUTPUT_DIR/execution-verification.json"
+          test -s "$EXECUTION_OUTPUT_DIR/execution-diagnostics.tar.gz"
+          test -s "$EXECUTION_OUTPUT_DIR/execution-diagnostics.sha256"
 
       - name: Remove private execution runtime
         if: ${{ always() }}

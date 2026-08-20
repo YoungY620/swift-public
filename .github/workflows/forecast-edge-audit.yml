@@ -273,6 +273,63 @@ jobs:
           done
           jq -s '.' "$release_dir/downloaded-assets.ndjson" > "$release_dir/downloaded-assets.json"
 
+      - name: Collect and verify research diagnostic artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          diagnostics_dir="$AUDIT_EVIDENCE_DIR/research-diagnostics"
+          files_dir="$diagnostics_dir/files"
+          install -d -m 700 "$files_dir"
+          run_attempt=$(jq -r '.run_attempt' "$AUDIT_EVIDENCE_DIR/run.json")
+          artifact_name="forecast-edge-research-diagnostics-$PARENT_RUN_ID-$run_attempt"
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID/artifacts?per_page=100" \
+            | jq -s '[.[].artifacts[]]' > "$diagnostics_dir/artifacts.json"
+          artifact_count=$(jq --arg name "$artifact_name" \
+            '[.[] | select(.name == $name)] | length' "$diagnostics_dir/artifacts.json")
+          if [[ "$artifact_count" -gt 1 ]]; then
+            echo "::error::Parent run has duplicate research diagnostic artifacts"
+            exit 1
+          fi
+          expired=false
+          if [[ "$artifact_count" -eq 1 ]]; then
+            expired=$(jq -r --arg name "$artifact_name" \
+              '.[] | select(.name == $name) | .expired' \
+              "$diagnostics_dir/artifacts.json")
+          fi
+          if [[ "$artifact_count" -eq 1 && "$expired" != "true" ]]; then
+            gh run download "$PARENT_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "$artifact_name" --dir "$files_dir"
+            secret_pattern='-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9]{20,}|0x[0-9a-fA-F]{130}|[Aa]uthorization[[:space:]]*:[[:space:]]*(Bearer|Basic)[[:space:]]+[A-Za-z0-9._~+/=-]{8,}|[Pp]assword[[:space:]]*[:=][[:space:]]*[^[:space:]]{8,}'
+            if LC_ALL=C grep -RIEq -- "$secret_pattern" "$files_dir"; then
+              echo "::error::Research diagnostic artifact contains secret-like material"
+              exit 1
+            fi
+            : > "$diagnostics_dir/files.ndjson"
+            while IFS= read -r source; do
+              relative=${source#"$files_dir/"}
+              jq -cn \
+                --arg path "$relative" \
+                --arg sha256 "$(sha256sum "$source" | cut -d ' ' -f 1)" \
+                --arg size "$(stat -c '%s' "$source")" \
+                '{path:$path,sha256:$sha256,size:($size|tonumber)}' \
+                >> "$diagnostics_dir/files.ndjson"
+            done < <(find "$files_dir" -type f -print | sort)
+            jq -n \
+              --arg name "$artifact_name" \
+              --slurpfile files "$diagnostics_dir/files.ndjson" \
+              '{schema_version:"1.0",found:true,artifact_verified:true,artifact_name:$name,expired:false,secret_pattern_scan_passed:true,files:$files}' \
+              > "$diagnostics_dir/metadata.json"
+          else
+            jq -n \
+              --arg name "$artifact_name" \
+              --argjson expired "$expired" \
+              '{schema_version:"1.0",found:false,artifact_verified:false,artifact_name:$name,expired:$expired,secret_pattern_scan_passed:null,files:[]}' \
+              > "$diagnostics_dir/metadata.json"
+          fi
+
       - name: Collect and verify execution diagnostic artifact
         env:
           GH_TOKEN: ${{ github.token }}
@@ -358,6 +415,7 @@ jobs:
             --slurpfile execution_verification "${release_dir}/execution-verification.json" \
             --slurpfile release_diagnostic_summary "${release_dir}/execution-diagnostic-summary.json" \
             --slurpfile release_diagnostic_manifest "${release_dir}/execution-diagnostic-manifest.json" \
+            --slurpfile research_diagnostic_metadata "$AUDIT_EVIDENCE_DIR/research-diagnostics/metadata.json" \
             --slurpfile diagnostic_metadata "$AUDIT_EVIDENCE_DIR/diagnostics/metadata.json" \
             --slurpfile diagnostic_summary "$AUDIT_EVIDENCE_DIR/diagnostics/diagnostic-summary.json" \
             --slurpfile diagnostic_manifest "$AUDIT_EVIDENCE_DIR/diagnostics/diagnostic-manifest.json" \
@@ -381,6 +439,10 @@ jobs:
                 execution_verification:($execution_verification[0] // null),
                 execution_diagnostic_summary:($release_diagnostic_summary[0] // null),
                 execution_diagnostic_manifest:($release_diagnostic_manifest[0] // null)
+              },
+              research_diagnostics:{
+                metadata:$research_diagnostic_metadata[0],
+                evidence_root:"evidence/research-diagnostics/files"
               },
               diagnostics:{
                 metadata:$diagnostic_metadata[0],

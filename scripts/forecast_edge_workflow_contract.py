@@ -27,7 +27,7 @@ def main() -> int:
         encoding="utf-8"
     )
     combined = parent + research + execution
-    release = between(parent, "  release:\n", "\n  cleanup:\n")
+    release = between(parent, "  release:\n")
     execution_call = between(parent, "  execution:\n", "\n  release:\n")
     execution_step = between(
         execution,
@@ -46,6 +46,7 @@ def main() -> int:
     )
 
     audit_secrets = sorted(set(re.findall(r"secrets\.([A-Z0-9_]+)", audit)))
+    research_secrets = sorted(set(re.findall(r"secrets\.([A-Z0-9_]+)", research)))
     audit_agent_secrets = sorted(
         set(re.findall(r"secrets\.([A-Z0-9_]+)", audit_agent_step))
     )
@@ -83,7 +84,36 @@ def main() -> int:
             and execution.index("Validate, cancel open orders, price, execute FOK market orders, and verify locally")
             < execution.index("Build and persist secret-free execution diagnostics")
             < execution.index("Upload private-fork execution diagnostics for post-run Judge")
-            and "actions/upload-artifact" not in research
+        ),
+        "research_ec2_isolation": (
+            "runs-on: ubuntu-latest" in research
+            and "self-hosted" not in research
+            and "POLYMARKET_EC2" not in research
+            and "EC2_HOST" not in research
+            and re.search(r"\b(?:ssh|scp)\b", research) is None
+            and "POLYMARKET_EC2" not in parent
+            and re.search(r"\b(?:ssh|scp)\b", parent) is None
+        ),
+        "research_artifact_handoff": (
+            "Build secret-free research artifact handoff" in research
+            and "forecast-edge-research-handoff-${{ github.run_id }}-${{ github.run_attempt }}" in research
+            and "actions/upload-artifact@v4" in research
+            and "Download research handoff artifact" in execution
+            and "actions/download-artifact@v4" in execution
+            and "trade-intents.sha256" in execution
+            and "Download completed research handoff artifact" in parent
+            and "actions/download-artifact@v4" in parent
+        ),
+        "research_diagnostics": (
+            "Prepare secret-free research diagnostics" in research
+            and "Upload research diagnostics for post-run Judge" in research
+            and "forecast-edge-research-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}" in research
+            and "kimi-sessions" in research
+            and "wire.jsonl" in research
+            and "output.log" in research
+            and "Collect and verify research diagnostic artifact" in audit
+            and "research_diagnostics" in audit
+            and "retention-days: 90" in research
         ),
         "execution_diagnostics": (
             "build_polymarket_execution_diagnostics.py" in diagnostics_step
@@ -161,6 +191,7 @@ def main() -> int:
         "credential_isolation": (
             "SERVER_SECRET_PATH: /home/ubuntu/poly-edge-live/runtime/secrets.json" in execution
             and "secrets.POLYMARKET_" not in execution
+            and research_secrets == ["KIMI_CODE_API_KEY"]
             and audit_agent_secrets == ["KIMI_CODE_API_KEY"]
         ),
         "audit_circuit_breaker": (

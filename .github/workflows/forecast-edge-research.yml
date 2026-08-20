@@ -2,24 +2,8 @@ name: Forecast Edge private research
 
 on:
   workflow_call:
-    inputs:
-      handoff-directory:
-        description: Absolute private handoff directory on the persistent EC2 host
-        required: true
-        type: string
-      ec2-host:
-        required: true
-        type: string
-      ec2-user:
-        required: true
-        type: string
-      ec2-host-fingerprint:
-        required: true
-        type: string
     secrets:
       KIMI_CODE_API_KEY:
-        required: true
-      POLYMARKET_EC2_SSH_PRIVATE_KEY:
         required: true
     outputs:
       has-intents:
@@ -38,10 +22,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     permissions:
+      actions: write
       contents: read
     outputs:
-      has-intents: ${{ steps.private-handoff.outputs.has-intents }}
-      trade-intents-sha256: ${{ steps.private-handoff.outputs.trade-intents-sha256 }}
+      has-intents: ${{ steps.artifact-handoff.outputs.has-intents }}
+      trade-intents-sha256: ${{ steps.artifact-handoff.outputs.trade-intents-sha256 }}
       release-tag: ${{ steps.release-package.outputs.release-tag }}
       generated-at: ${{ steps.release-package.outputs.generated-at }}
     env:
@@ -60,10 +45,6 @@ jobs:
       TRADE_INTENT_SCHEMA_PATH: ${{ github.workspace }}/schemas/trade-intent.schema.json
       MARKET_ADAPTER_REGISTRY: ${{ github.workspace }}/skills/forecast-edge/config/adapters.json
       MARKET_ADAPTER_GUIDE: ${{ github.workspace }}/skills/forecast-edge/references/market-adapters.md
-      REMOTE_HANDOFF_DIR: ${{ inputs.handoff-directory }}
-      EC2_HOST: ${{ inputs.ec2-host }}
-      EC2_USER: ${{ inputs.ec2-user }}
-      EC2_HOST_FINGERPRINT: ${{ inputs.ec2-host-fingerprint }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -73,7 +54,6 @@ jobs:
       - name: Validate workflow configuration
         env:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
-          EC2_SSH_PRIVATE_KEY: ${{ secrets.POLYMARKET_EC2_SSH_PRIVATE_KEY }}
         shell: bash
         run: |
           set -euo pipefail
@@ -81,15 +61,11 @@ jobs:
             echo "::error::Required Actions secret KIMI_CODE_API_KEY is not configured"
             exit 1
           fi
-          if [[ -z "$EC2_SSH_PRIVATE_KEY" ]]; then
-            echo "::error::Required Actions secret POLYMARKET_EC2_SSH_PRIVATE_KEY is not configured"
-            exit 1
-          fi
           if (( BASH_VERSINFO[0] < 4 )); then
             echo "::error::The research runner must expose Bash 4 or newer"
             exit 1
           fi
-          for required_tool in awk curl find gh jq npm python3 scp setsid sha256sum ssh ssh-keygen ssh-keyscan stat stdbuf tar tee; do
+          for required_tool in awk curl find gh jq npm python3 setsid sha256sum stat stdbuf tar tee; do
             if ! command -v "$required_tool" >/dev/null; then
               echo "::error::The research runner is missing required tool: $required_tool"
               exit 1
@@ -155,18 +131,6 @@ jobs:
             echo "::error::The final Release publishes trade intents only after execution resolves; set ALLOW_PUBLIC_TRADE_INTENTS=true only after accepting that post-execution disclosure"
             exit 1
           fi
-          if [[ ! "$REMOTE_HANDOFF_DIR" =~ ^/home/ubuntu/poly-edge-workflows/[0-9]+-[0-9]+$ ]]; then
-            echo "::error::Private handoff directory is outside the approved EC2 runtime root"
-            exit 1
-          fi
-          if [[ ! "$EC2_HOST" =~ ^[A-Za-z0-9.-]+$ || ! "$EC2_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
-            echo "::error::EC2 SSH host or user is invalid"
-            exit 1
-          fi
-          if [[ ! "$EC2_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/=]+$ ]]; then
-            echo "::error::EC2 SSH host fingerprint is invalid"
-            exit 1
-          fi
           runtime_dir="$RUNNER_TEMP/forecast-edge-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           reports_dir="$runtime_dir/reports"
           release_assets_dir="$runtime_dir/release-assets"
@@ -195,32 +159,9 @@ jobs:
             echo "REPORT_ARCHIVE_PATH=$release_assets_dir/forecast-edge-research-report.tar.gz"
             echo "RELEASE_MANIFEST_PATH=$release_assets_dir/research-release-manifest.json"
             echo "RESEARCH_HANDOFF_ARCHIVE=$runtime_dir/research-handoff.tar.gz"
-            echo "SSH_KEY_PATH=$runtime_dir/ec2-key"
-            echo "KNOWN_HOSTS_PATH=$runtime_dir/known_hosts"
             echo "KIMI_CODE_HOME=$RUNNER_TEMP/kimi-code-home"
             echo "PYTHON_VENV_DIR=$runtime_dir/python-venv"
           } >> "$GITHUB_ENV"
-
-      - name: Configure authenticated EC2 handoff channel
-        env:
-          EC2_SSH_PRIVATE_KEY: ${{ secrets.POLYMARKET_EC2_SSH_PRIVATE_KEY }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          umask 077
-          printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > "$SSH_KEY_PATH"
-          ssh-keyscan -T 15 -t ed25519 "$EC2_HOST" > "$KNOWN_HOSTS_PATH" 2>/dev/null
-          scanned_fingerprint=$(ssh-keygen -lf "$KNOWN_HOSTS_PATH" -E sha256 | awk '{print $2}')
-          if [[ "$scanned_fingerprint" != "$EC2_HOST_FINGERPRINT" ]]; then
-            echo "::error::Persistent EC2 SSH host key does not match the configured fingerprint"
-            exit 1
-          fi
-          ssh -i "$SSH_KEY_PATH" \
-            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            -o "UserKnownHostsFile=$KNOWN_HOSTS_PATH" \
-            "$EC2_USER@$EC2_HOST" -- \
-            install -d -m 700 "$REMOTE_HANDOFF_DIR"
-          rm -f "$SSH_KEY_PATH" "$KNOWN_HOSTS_PATH"
 
       - name: Probe Kimi model availability
         env:
@@ -1104,23 +1045,18 @@ jobs:
             printf '_本轮没有通过策略门槛且需要执行的交易意图。_\n' >> "$RUNTIME_DIR/issue.md"
           fi
 
-      - name: Stage private research handoff on EC2
-        id: private-handoff
+      - name: Build secret-free research artifact handoff
+        id: artifact-handoff
         env:
-          EC2_SSH_PRIVATE_KEY: ${{ secrets.POLYMARKET_EC2_SSH_PRIVATE_KEY }}
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
         shell: bash
         run: |
           set -euo pipefail
           umask 077
-          printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > "$SSH_KEY_PATH"
-          ssh-keyscan -T 15 -t ed25519 "$EC2_HOST" > "$KNOWN_HOSTS_PATH" 2>/dev/null
-          scanned_fingerprint=$(ssh-keygen -lf "$KNOWN_HOSTS_PATH" -E sha256 | awk '{print $2}')
-          if [[ "$scanned_fingerprint" != "$EC2_HOST_FINGERPRINT" ]]; then
-            echo "::error::Persistent EC2 SSH host key does not match the configured fingerprint"
-            exit 1
-          fi
-          handoff_root="$RUNTIME_DIR/private-handoff"
+          handoff_root="$RUNTIME_DIR/artifact-handoff"
+          artifact_root="$RUNTIME_DIR/research-artifact"
           install -d -m 700 "$handoff_root/release-assets"
+          install -d -m 700 "$artifact_root"
           install -m 600 "$REPORT_ARCHIVE_PATH" "$handoff_root/release-assets/"
           install -m 600 "$RELEASE_MANIFEST_PATH" "$handoff_root/release-assets/"
           install -m 600 "$RELEASE_ASSETS_DIR/validation-summary.json" \
@@ -1136,41 +1072,110 @@ jobs:
           )
           install -m 600 "$RUNTIME_DIR/release-notes.md" "$handoff_root/"
           install -m 600 "$RUNTIME_DIR/issue.md" "$handoff_root/"
-          tar -C "$handoff_root" -czf "$RESEARCH_HANDOFF_ARCHIVE" \
-            release-assets release-notes.md issue.md
-
           trade_intents_digest=$(sha256sum "$TRADE_INTENTS_PATH" | cut -d ' ' -f 1)
           has_intents=false
           if [[ -s "$TRADE_INTENTS_PATH" ]]; then
             has_intents=true
           fi
-          ssh_options=(
-            -i "$SSH_KEY_PATH"
-            -o BatchMode=yes
-            -o IdentitiesOnly=yes
-            -o StrictHostKeyChecking=yes
-            -o "UserKnownHostsFile=$KNOWN_HOSTS_PATH"
-          )
-          scp "${ssh_options[@]}" \
-            "$RESEARCH_HANDOFF_ARCHIVE" \
-            "$TRADE_INTENTS_PATH" \
-            "$EC2_USER@$EC2_HOST:$REMOTE_HANDOFF_DIR/"
-          ssh "${ssh_options[@]}" "$EC2_USER@$EC2_HOST" -- \
-            chmod 600 \
-              "$REMOTE_HANDOFF_DIR/research-handoff.tar.gz" \
-              "$REMOTE_HANDOFF_DIR/trade-intents.jsonl"
+
+          secret_pattern='-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9]{20,}|0x[0-9a-fA-F]{130}|[Aa]uthorization[[:space:]]*:[[:space:]]*(Bearer|Basic)[[:space:]]+[A-Za-z0-9._~+/=-]{8,}|[Pp]assword[[:space:]]*[:=][[:space:]]*[^[:space:]]{8,}'
+          archive_scan="$RUNTIME_DIR/research-archive-scan"
+          install -d -m 700 "$archive_scan"
+          tar -xzf "$REPORT_ARCHIVE_PATH" -C "$archive_scan"
+          if grep -RFq -- "$KIMI_MODEL_API_KEY" \
+               "$handoff_root" "$archive_scan" "$TRADE_INTENTS_PATH" || \
+             LC_ALL=C grep -RIEq -- "$secret_pattern" \
+               "$handoff_root" "$archive_scan" "$TRADE_INTENTS_PATH"; then
+            echo "::error::Research handoff contains protected credential-like material"
+            exit 1
+          fi
+          find "$archive_scan" -depth -delete
+
+          tar -C "$handoff_root" -czf "$RESEARCH_HANDOFF_ARCHIVE" \
+            release-assets release-notes.md issue.md
+          install -m 600 "$RESEARCH_HANDOFF_ARCHIVE" "$artifact_root/"
+          install -m 600 "$TRADE_INTENTS_PATH" "$artifact_root/trade-intents.jsonl"
+          printf '%s  %s\n' "$trade_intents_digest" trade-intents.jsonl \
+            > "$artifact_root/trade-intents.sha256"
+          chmod 600 "$artifact_root/trade-intents.sha256"
           echo "has-intents=$has_intents" >> "$GITHUB_OUTPUT"
           echo "trade-intents-sha256=$trade_intents_digest" >> "$GITHUB_OUTPUT"
 
-      - name: Report validation diagnostics on failure
-        if: ${{ failure() }}
+      - name: Upload research handoff for downstream jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: forecast-edge-research-handoff-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/forecast-edge-${{ github.run_id }}-${{ github.run_attempt }}/research-artifact
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Prepare secret-free research diagnostics
+        id: research-diagnostics
+        if: ${{ always() }}
+        env:
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
         shell: bash
         run: |
-          if [[ -s "$VALIDATION_ERRORS_PATH" ]]; then
-            echo "::notice::Detailed validation diagnostics remain private and were not written to Actions logs"
+          set -euo pipefail
+          diagnostics_root="$RUNNER_TEMP/forecast-edge-research-diagnostics-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          staging_root="$diagnostics_root.staging"
+          find "$staging_root" -depth -delete 2>/dev/null || true
+          install -d -m 700 "$staging_root/runtime" "$staging_root/kimi-sessions"
+          jq -n \
+            --arg schema_version "1.0" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg commit_sha "$GITHUB_SHA" \
+            '{schema_version:$schema_version,repository:$repository,workflow_run_id:$run_id,workflow_run_attempt:$run_attempt,commit_sha:$commit_sha}' \
+            > "$staging_root/diagnostic-metadata.json"
+          chmod 600 "$staging_root/diagnostic-metadata.json"
+          if [[ -n "${RUNTIME_DIR:-}" && -d "$RUNTIME_DIR" ]]; then
+            for candidate in \
+              kimi-attempt-*.stream.jsonl kimi-attempt-*.stderr \
+              iteration-validation.stdout validation-errors.txt validation-summary.json \
+              report-validation.json current-reports-manifest.json \
+              history-release-tags.json url_verification.json; do
+              while IFS= read -r source; do
+                install -m 600 "$source" "$staging_root/runtime/$(basename "$source")"
+              done < <(find "$RUNTIME_DIR" -maxdepth 1 -type f -name "$candidate" -print)
+            done
           fi
+          if [[ -n "${KIMI_CODE_HOME:-}" && -d "$KIMI_CODE_HOME/sessions" ]]; then
+            while IFS= read -r source; do
+              relative=${source#"$KIMI_CODE_HOME/sessions/"}
+              destination="$staging_root/kimi-sessions/$relative"
+              install -d -m 700 "$(dirname "$destination")"
+              install -m 600 "$source" "$destination"
+            done < <(
+              find "$KIMI_CODE_HOME/sessions" -type f \
+                \( -name wire.jsonl -o -name output.log \) -print
+            )
+          fi
+          secret_pattern='-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9]{20,}|0x[0-9a-fA-F]{130}|[Aa]uthorization[[:space:]]*:[[:space:]]*(Bearer|Basic)[[:space:]]+[A-Za-z0-9._~+/=-]{8,}|[Pp]assword[[:space:]]*[:=][[:space:]]*[^[:space:]]{8,}'
+          exact_secret_found=false
+          if [[ -n "$KIMI_MODEL_API_KEY" ]] && \
+             grep -RFq -- "$KIMI_MODEL_API_KEY" "$staging_root"; then
+            exact_secret_found=true
+          fi
+          if [[ "$exact_secret_found" == "true" ]] || \
+             LC_ALL=C grep -RIEq -- "$secret_pattern" "$staging_root"; then
+            find "$staging_root" -depth -delete
+            echo "::error::Research diagnostics contain protected credential-like material"
+            exit 1
+          fi
+          find "$diagnostics_root" -depth -delete 2>/dev/null || true
+          mv "$staging_root" "$diagnostics_root"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
 
-      - name: Remove EC2 SSH identity
-        if: ${{ always() }}
-        shell: bash
-        run: rm -f "${SSH_KEY_PATH:-}" "${KNOWN_HOSTS_PATH:-}"
+      - name: Upload research diagnostics for post-run Judge
+        if: ${{ always() && steps.research-diagnostics.outputs.ready == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: forecast-edge-research-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/forecast-edge-research-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 90
+          compression-level: 6

@@ -32,7 +32,6 @@ jobs:
       should-run: ${{ steps.gate.outputs.should-run }}
       execution-requested: ${{ steps.gate.outputs.execution-requested }}
       execution-ready: ${{ steps.gate.outputs.execution-ready }}
-      handoff-directory: ${{ steps.gate.outputs.handoff-directory }}
       interval-hours: ${{ steps.gate.outputs.interval-hours }}
       anchor-utc-hour: ${{ steps.gate.outputs.anchor-utc-hour }}
       gate-event-name: ${{ steps.gate.outputs.gate-event-name }}
@@ -50,14 +49,10 @@ jobs:
           AUTOMATION_PAUSED: ${{ vars.FORECAST_EDGE_AUTOMATION_PAUSED || 'false' }}
           FORECAST_EDGE_MARKET_ADAPTERS: ${{ vars.FORECAST_EDGE_MARKET_ADAPTERS }}
           FORECAST_EDGE_MARKET_ACCOUNTS_JSON: ${{ vars.FORECAST_EDGE_MARKET_ACCOUNTS_JSON }}
-          EC2_HOST: ${{ vars.POLYMARKET_EC2_HOST }}
-          EC2_USER: ${{ vars.POLYMARKET_EC2_USER }}
-          EC2_HOST_FINGERPRINT: ${{ vars.POLYMARKET_EC2_HOST_FINGERPRINT }}
           KIMI_CODE_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
           FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}
-          EC2_SSH_PRIVATE_KEY: ${{ secrets.POLYMARKET_EC2_SSH_PRIVATE_KEY }}
         shell: bash
         run: |
           set -euo pipefail
@@ -97,9 +92,7 @@ jobs:
           if [[ "$should_run" == "true" ]]; then
             missing_research=()
             for name in FORECAST_EDGE_MARKET_ADAPTERS FORECAST_EDGE_MARKET_ACCOUNTS_JSON \
-              EC2_HOST EC2_USER EC2_HOST_FINGERPRINT \
-              KIMI_CODE_API_KEY FEISHU_APP_ID FEISHU_APP_SECRET FEISHU_CHAT_ID \
-              EC2_SSH_PRIVATE_KEY; do
+              KIMI_CODE_API_KEY FEISHU_APP_ID FEISHU_APP_SECRET FEISHU_CHAT_ID; do
               if [[ -z "${!name:-}" ]]; then
                 missing_research+=("$name")
               fi
@@ -118,12 +111,10 @@ jobs:
             execution_requested=true
           fi
           execution_ready=$execution_requested
-          handoff_directory="/home/ubuntu/poly-edge-workflows/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           {
             echo "should-run=$should_run"
             echo "execution-requested=$execution_requested"
             echo "execution-ready=$execution_ready"
-            echo "handoff-directory=$handoff_directory"
             echo "interval-hours=$interval"
             echo "anchor-utc-hour=$anchor"
             echo "gate-event-name=$EVENT_NAME"
@@ -134,16 +125,11 @@ jobs:
     needs: gate
     if: ${{ needs.gate.outputs.should-run == 'true' }}
     permissions:
+      actions: write
       contents: read
     uses: ./.github/workflows/forecast-edge-research.yml
-    with:
-      handoff-directory: ${{ needs.gate.outputs.handoff-directory }}
-      ec2-host: ${{ vars.POLYMARKET_EC2_HOST }}
-      ec2-user: ${{ vars.POLYMARKET_EC2_USER }}
-      ec2-host-fingerprint: ${{ vars.POLYMARKET_EC2_HOST_FINGERPRINT }}
     secrets:
       KIMI_CODE_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
-      POLYMARKET_EC2_SSH_PRIVATE_KEY: ${{ secrets.POLYMARKET_EC2_SSH_PRIVATE_KEY }}
 
   execution:
     needs: [gate, research]
@@ -155,7 +141,6 @@ jobs:
       contents: read
     uses: ./.github/workflows/execute-polymarket.yml
     with:
-      handoff-directory: ${{ needs.gate.outputs.handoff-directory }}
       trade-intents-sha256: ${{ needs.research.outputs.trade-intents-sha256 }}
 
   release:
@@ -167,13 +152,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
+      actions: read
       contents: write
       issues: write
     env:
-      REMOTE_HANDOFF_DIR: ${{ needs.gate.outputs.handoff-directory }}
-      EC2_HOST: ${{ vars.POLYMARKET_EC2_HOST }}
-      EC2_USER: ${{ vars.POLYMARKET_EC2_USER }}
-      EC2_HOST_FINGERPRINT: ${{ vars.POLYMARKET_EC2_HOST_FINGERPRINT }}
       RELEASE_TAG: ${{ needs.research.outputs.release-tag }}
       GENERATED_AT: ${{ needs.research.outputs.generated-at }}
       TRADE_INTENTS_SHA256: ${{ needs.research.outputs.trade-intents-sha256 }}
@@ -192,52 +174,31 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download private completed handoff
-        env:
-          EC2_SSH_PRIVATE_KEY: ${{ secrets.POLYMARKET_EC2_SSH_PRIVATE_KEY }}
+      - name: Prepare final release workspace
         shell: bash
         run: |
           set -euo pipefail
           runtime_dir="$RUNNER_TEMP/forecast-edge-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           install -d -m 700 "$runtime_dir"
-          ssh_key_path="$runtime_dir/ec2-key"
-          known_hosts_path="$runtime_dir/known_hosts"
-          umask 077
-          printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > "$ssh_key_path"
-          ssh-keyscan -T 15 -t ed25519 "$EC2_HOST" > "$known_hosts_path" 2>/dev/null
-          scanned_fingerprint=$(ssh-keygen -lf "$known_hosts_path" -E sha256 | awk '{print $2}')
-          if [[ "$scanned_fingerprint" != "$EC2_HOST_FINGERPRINT" ]]; then
-            echo "::error::Persistent EC2 SSH host key does not match the configured fingerprint"
-            exit 1
-          fi
-          ssh_options=(
-            -i "$ssh_key_path"
-            -o BatchMode=yes
-            -o IdentitiesOnly=yes
-            -o StrictHostKeyChecking=yes
-            -o "UserKnownHostsFile=$known_hosts_path"
-          )
-          scp "${ssh_options[@]}" \
-            "$EC2_USER@$EC2_HOST:$REMOTE_HANDOFF_DIR/research-handoff.tar.gz" \
-            "$EC2_USER@$EC2_HOST:$REMOTE_HANDOFF_DIR/trade-intents.jsonl" \
-            "$runtime_dir/"
-          if [[ "$EXECUTION_RESULT" == "success" ]]; then
-            scp "${ssh_options[@]}" \
-              "$EC2_USER@$EC2_HOST:$REMOTE_HANDOFF_DIR/execution-receipt.json" \
-              "$EC2_USER@$EC2_HOST:$REMOTE_HANDOFF_DIR/execution-verification.json" \
-              "$EC2_USER@$EC2_HOST:$REMOTE_HANDOFF_DIR/execution-diagnostics.tar.gz" \
-              "$EC2_USER@$EC2_HOST:$REMOTE_HANDOFF_DIR/execution-diagnostics.sha256" \
-              "$EC2_USER@$EC2_HOST:$REMOTE_HANDOFF_DIR/execution-diagnostic-summary.json" \
-              "$EC2_USER@$EC2_HOST:$REMOTE_HANDOFF_DIR/execution-diagnostic-manifest.json" \
-              "$runtime_dir/"
-          fi
-          rm -f "$ssh_key_path" "$known_hosts_path"
           {
             echo "RELEASE_RUNTIME_DIR=$runtime_dir"
             echo "RELEASE_ASSETS_DIR=$runtime_dir/release-assets"
             echo "ISSUE_BODY_PATH=$runtime_dir/issue.md"
             echo "RELEASE_NOTES_PATH=$runtime_dir/release-notes.md"
           } >> "$GITHUB_ENV"
+
+      - name: Download completed research handoff artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: forecast-edge-research-handoff-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/forecast-edge-release-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Download completed execution artifact
+        if: ${{ needs.execution.result == 'success' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: polymarket-execution-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/forecast-edge-release-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Verify and extract private research package
         shell: bash
@@ -563,52 +524,3 @@ jobs:
           )
           jq -e '.code == 0 and (.data.message_id | type == "string" and length > 0)' \
             <<< "$send_response" >/dev/null
-
-  cleanup:
-    needs: [gate, research, execution, release]
-    if: >-
-      always() &&
-      needs.gate.outputs.should-run == 'true' &&
-      needs.gate.outputs.handoff-directory != ''
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions: {}
-    env:
-      REMOTE_HANDOFF_DIR: ${{ needs.gate.outputs.handoff-directory }}
-      EC2_HOST: ${{ vars.POLYMARKET_EC2_HOST }}
-      EC2_USER: ${{ vars.POLYMARKET_EC2_USER }}
-      EC2_HOST_FINGERPRINT: ${{ vars.POLYMARKET_EC2_HOST_FINGERPRINT }}
-    steps:
-      - name: Remove private EC2 handoff directory
-        env:
-          EC2_SSH_PRIVATE_KEY: ${{ secrets.POLYMARKET_EC2_SSH_PRIVATE_KEY }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! "$REMOTE_HANDOFF_DIR" =~ ^/home/ubuntu/poly-edge-workflows/[0-9]+-[0-9]+$ ]]; then
-            echo "::error::Refusing to remove an unapproved EC2 path"
-            exit 1
-          fi
-          runtime_dir="$RUNNER_TEMP/forecast-edge-cleanup-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          install -d -m 700 "$runtime_dir"
-          key_path="$runtime_dir/ec2-key"
-          known_hosts="$runtime_dir/known_hosts"
-          umask 077
-          printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > "$key_path"
-          ssh-keyscan -T 15 -t ed25519 "$EC2_HOST" > "$known_hosts" 2>/dev/null
-          scanned_fingerprint=$(ssh-keygen -lf "$known_hosts" -E sha256 | awk '{print $2}')
-          if [[ "$scanned_fingerprint" != "$EC2_HOST_FINGERPRINT" ]]; then
-            echo "::error::Persistent EC2 SSH host key does not match the configured fingerprint"
-            exit 1
-          fi
-          ssh -i "$key_path" \
-            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            -o "UserKnownHostsFile=$known_hosts" \
-            "$EC2_USER@$EC2_HOST" bash -s -- "$REMOTE_HANDOFF_DIR" <<'REMOTE'
-          set -euo pipefail
-          handoff_dir=$1
-          if [[ -d "$handoff_dir" ]]; then
-            find "$handoff_dir" -depth -delete
-          fi
-          REMOTE
-          rm -f "$key_path" "$known_hosts"

@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "rubric_version": "1.2",
+  "rubric_version": "1.3",
   "rubric_id": "forecast-edge-production-audit",
   "description": "Forecast Edge 父工作流完成后的研究、真实执行、发布和安全审计。缺少必要证据时不得判定通过。",
   "statuses": [
@@ -77,11 +77,20 @@
     {
       "id": "HANDOFF-002",
       "severity": "critical",
-      "title": "执行完成前不发布意图",
+      "title": "研究与执行通过 Actions artifact 摘要交接",
       "applies_when": "gate released the iteration",
-      "expected": "研究阶段不创建包含交易意图的 Actions artifact；执行诊断 artifact 只能在订单阶段结束后创建；父 workflow 仅在 execution success 或合法 skipped 后发布。",
-      "evidence_required": ["source_contract.diagnostics_after_execution", "source_contract.release_after_execution", "jobs", "release.published_at"],
-      "pass_condition": "源码时序约束成立，诊断 artifact 晚于执行阶段，Release 发布时间不早于 execution job 完成时间；失败执行不存在最终 Release。"
+      "expected": "研究仅在 GitHub-hosted runner 上运行，不接触 EC2；摘要绑定的研究 handoff artifact 由 execution 下载，执行诊断 artifact 只能在订单阶段结束后创建；父 workflow 仅在 execution success 或合法 skipped 后发布。",
+      "evidence_required": ["source_contract.research_ec2_isolation", "source_contract.research_artifact_handoff", "source_contract.diagnostics_after_execution", "source_contract.release_after_execution", "jobs", "release.published_at"],
+      "pass_condition": "research 无 EC2/SSH 路径且 artifact 摘要交接成立；执行诊断 artifact 晚于执行阶段，Release 发布时间不早于 execution job 完成时间；失败执行不存在最终 Release。"
+    },
+    {
+      "id": "OBS-000",
+      "severity": "high",
+      "title": "研究 Agent 诊断证据完整且无秘密",
+      "applies_when": "research job ran",
+      "expected": "每次研究成功或失败都上传经过秘密扫描的 Kimi Code stream、stderr、session/sub-agent wire 和 task 输出以及校验日志，供 Judge Agent 逐文件检查。",
+      "evidence_required": ["source_contract.research_diagnostics", "research_diagnostics.metadata", "research_diagnostics.evidence_root", "evidence_safety"],
+      "pass_condition": "artifact_verified=true、secret_pattern_scan_passed=true，并存在与本轮实际研究路径相符的 stream/session/validation 证据；没有产生某类事件时不得伪造。"
     },
     {
       "id": "OBS-001",

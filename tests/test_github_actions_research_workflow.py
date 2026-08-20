@@ -65,7 +65,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("types:\n      - completed", self.audit)
         self.assertNotIn("cron:", self.audit)
 
-    def test_parent_grants_reusable_children_only_checkout_permission(self) -> None:
+    def test_parent_grants_children_artifact_and_checkout_permissions(self) -> None:
         research_call = self.parent[
             self.parent.index("  research:\n") : self.parent.index("\n  execution:\n")
         ]
@@ -73,7 +73,7 @@ class WorkflowContractTests(unittest.TestCase):
             self.parent.index("  execution:\n") : self.parent.index("\n  release:\n")
         ]
         self.assertIn("contents: read", research_call)
-        self.assertNotIn("actions: write", research_call)
+        self.assertIn("actions: write", research_call)
         for child_call in (research_call, execution_call):
             self.assertIn("contents: read", child_call)
             self.assertNotIn("contents: write", child_call)
@@ -83,10 +83,11 @@ class WorkflowContractTests(unittest.TestCase):
         for child in (self.research, self.execution):
             self.assertIn("workflow_call:", child)
             self.assertNotIn("workflow_run:", child)
-            self.assertNotIn("actions/download-artifact", child)
             self.assertNotIn("gh release create", child)
             self.assertNotIn("gh issue create", child)
-        self.assertNotIn("actions/upload-artifact", self.research)
+        self.assertNotIn("actions/download-artifact", self.research)
+        self.assertIn("actions/download-artifact@v4", self.execution)
+        self.assertIn("actions/upload-artifact@v4", self.research)
         self.assertIn("actions/upload-artifact@v4", self.execution)
         self.assertNotIn("cron:", self.research)
 
@@ -96,20 +97,29 @@ class WorkflowContractTests(unittest.TestCase):
         validate = self.step(self.research, "Validate workflow configuration")
         self.assertIn("BASH_VERSINFO[0] < 4", validate)
         self.assertIn(
-            "awk curl find gh jq npm python3 scp setsid sha256sum ssh ssh-keygen ssh-keyscan stat stdbuf tar tee",
+            "awk curl find gh jq npm python3 setsid sha256sum stat stdbuf tar tee",
             validate,
         )
 
-    def test_private_trade_intents_are_staged_on_mode_0700_ec2_storage(self) -> None:
-        configure = self.step(self.research, "Configure authenticated EC2 handoff channel")
-        stage = self.step(self.research, "Stage private research handoff on EC2")
-        self.assertIn('install -d -m 700 "$REMOTE_HANDOFF_DIR"', configure)
-        self.assertIn('rm -f "$SSH_KEY_PATH" "$KNOWN_HOSTS_PATH"', configure)
-        self.assertIn("secrets.POLYMARKET_EC2_SSH_PRIVATE_KEY", stage)
-        self.assertIn("EC2_HOST_FINGERPRINT", stage)
+    def test_trade_intents_use_digest_bound_actions_artifact_without_ec2(self) -> None:
+        stage = self.step(self.research, "Build secret-free research artifact handoff")
+        upload = self.step(self.research, "Upload research handoff for downstream jobs")
+        download = self.step(self.execution, "Download research handoff artifact")
+        self.assertIn('install -d -m 700 "$artifact_root"', stage)
         self.assertIn('"$TRADE_INTENTS_PATH"', stage)
         self.assertIn("trade-intents.jsonl", stage)
-        self.assertIn("chmod 600", stage)
+        self.assertIn("trade-intents.sha256", stage)
+        self.assertIn("forecast-edge-research-handoff-", upload)
+        self.assertIn("forecast-edge-research-handoff-", download)
+        for forbidden in (
+            "POLYMARKET_EC2_SSH_PRIVATE_KEY",
+            "EC2_HOST_FINGERPRINT",
+            "ssh-keyscan",
+            "scp ",
+            "ssh ",
+        ):
+            self.assertNotIn(forbidden, self.research)
+            self.assertNotIn(forbidden, self.parent)
         self.assertNotIn("trade-intents.jsonl", self.step(
             self.research, "Build current-iteration research Release"
         ))
@@ -179,18 +189,24 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertLess(release_index, issue_index)
         self.assertLess(issue_index, feishu_index)
 
-    def test_cleanup_only_runs_for_an_iteration_that_started(self) -> None:
-        cleanup = self.parent[self.parent.index("  cleanup:\n") :]
-        self.assertIn("needs.gate.outputs.should-run == 'true'", cleanup)
-        self.assertIn('if [[ -d "$handoff_dir" ]]', cleanup)
+    def test_parent_has_no_ec2_handoff_cleanup_or_ssh_credentials(self) -> None:
+        self.assertNotIn("  cleanup:\n", self.parent)
+        self.assertNotIn("POLYMARKET_EC2_SSH_PRIVATE_KEY", self.parent)
+        self.assertNotIn("handoff-directory", self.parent)
+        self.assertNotIn("ssh-keyscan", self.parent)
 
-    def test_only_post_execution_diagnostics_use_private_fork_artifacts(self) -> None:
+    def test_research_handoff_and_diagnostics_use_private_fork_artifacts(self) -> None:
         combined = self.parent + self.research + self.execution
-        self.assertNotIn("actions/upload-artifact", self.research)
         self.assertNotIn("actions/download-artifact", self.research)
+        self.assertGreaterEqual(self.research.count("actions/upload-artifact@v4"), 2)
+        self.assertIn("Upload research diagnostics for post-run Judge", self.research)
+        self.assertIn("wire.jsonl", self.research)
+        self.assertIn("output.log", self.research)
+        self.assertIn("retention-days: 90", self.research)
+        self.assertIn("actions/download-artifact@v4", self.execution)
         self.assertIn("actions/upload-artifact@v4", self.execution)
         self.assertIn("Upload private-fork execution diagnostics for post-run Judge", self.execution)
-        self.assertNotIn("forecast-edge-trade-intents", combined)
+        self.assertIn("forecast-edge-research-handoff-", combined)
 
     def test_execution_gate_checks_toggle_without_loading_trading_credentials(self) -> None:
         gate = self.step(self.parent, "Validate schedule and private workflow configuration")
@@ -268,12 +284,9 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("max_price_deviation_bps", self.execution)
         self.assertNotIn("max_notional_deviation_bps", self.execution)
 
-    def test_research_uses_only_model_and_ec2_handoff_secrets(self) -> None:
+    def test_research_uses_only_model_secret(self) -> None:
         configured = set(re.findall(r"secrets\.([A-Z0-9_]+)", self.research))
-        self.assertEqual(
-            configured,
-            {"KIMI_CODE_API_KEY", "POLYMARKET_EC2_SSH_PRIVATE_KEY"},
-        )
+        self.assertEqual(configured, {"KIMI_CODE_API_KEY"})
         research_call = self.parent[
             self.parent.index("  research:\n") : self.parent.index("\n  execution:\n")
         ]
@@ -289,7 +302,7 @@ class WorkflowContractTests(unittest.TestCase):
     def test_multi_venue_release_package_is_staged_without_publishing(self) -> None:
         restore = self.step(self.research, "Restore recent research Releases")
         package = self.step(self.research, "Build current-iteration research Release")
-        stage = self.step(self.research, "Stage private research handoff on EC2")
+        stage = self.step(self.research, "Build secret-free research artifact handoff")
         self.assertIn("gh release download", restore)
         self.assertIn("report_archive_sha256", restore)
         self.assertIn('"${current_report_directories[@]}"', package)
