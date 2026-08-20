@@ -48,14 +48,42 @@ jobs:
           LIVE_TRADING_ENABLED: ${{ vars.POLYMARKET_LIVE_TRADING_ENABLED || 'false' }}
           AUTOMATION_PAUSED: ${{ vars.FORECAST_EDGE_AUTOMATION_PAUSED || 'false' }}
           FORECAST_EDGE_MARKET_ADAPTERS: ${{ vars.FORECAST_EDGE_MARKET_ADAPTERS }}
-          FORECAST_EDGE_MARKET_ACCOUNTS_JSON: ${{ vars.FORECAST_EDGE_MARKET_ACCOUNTS_JSON }}
+          FORECAST_EDGE_MARKET_ACCOUNTS_JSON: ${{ secrets.FORECAST_EDGE_MARKET_ACCOUNTS_JSON }}
           KIMI_CODE_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
           FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}
+          FORECAST_EDGE_BREAKER_TOKEN: ${{ secrets.FORECAST_EDGE_BREAKER_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
+          missing_configuration=()
+          for name in FORECAST_EDGE_MARKET_ADAPTERS FORECAST_EDGE_MARKET_ACCOUNTS_JSON \
+            KIMI_CODE_API_KEY FEISHU_APP_ID FEISHU_APP_SECRET FEISHU_CHAT_ID \
+            FORECAST_EDGE_BREAKER_TOKEN; do
+            if [[ -z "${!name:-}" ]]; then
+              missing_configuration+=("$name")
+            fi
+          done
+
+          # A public mirror (or a private fork that has not been configured yet)
+          # must be a harmless no-op.  Keep the gate successful and explicitly
+          # skip every downstream job instead of failing or attempting research.
+          if (( ${#missing_configuration[@]} > 0 )); then
+            printf '::notice::Forecast Edge is not configured; skipping this run (missing: %s)\n' \
+              "${missing_configuration[*]}"
+            {
+              echo "should-run=false"
+              echo "execution-requested=false"
+              echo "execution-ready=false"
+              echo "interval-hours=0"
+              echo "anchor-utc-hour=0"
+              echo "gate-event-name=$EVENT_NAME"
+              echo "automation-paused=$AUTOMATION_PAUSED"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if [[ ! "$INTERVAL_HOURS" =~ ^[0-9]+$ ]]; then
             echo "::error::FORECAST_EDGE_INTERVAL_HOURS must be an integer greater than or equal to 6"
             exit 1
@@ -90,18 +118,7 @@ jobs:
           fi
 
           if [[ "$should_run" == "true" ]]; then
-            missing_research=()
-            for name in FORECAST_EDGE_MARKET_ADAPTERS FORECAST_EDGE_MARKET_ACCOUNTS_JSON \
-              KIMI_CODE_API_KEY FEISHU_APP_ID FEISHU_APP_SECRET FEISHU_CHAT_ID; do
-              if [[ -z "${!name:-}" ]]; then
-                missing_research+=("$name")
-              fi
-            done
-            if (( ${#missing_research[@]} > 0 )); then
-              printf '::error::Missing parent workflow configuration: %s\n' \
-                "${missing_research[*]}"
-              exit 1
-            fi
+            : # Required configuration was checked before schedule evaluation.
           fi
 
           execution_requested=false
@@ -130,6 +147,7 @@ jobs:
     uses: ./.github/workflows/forecast-edge-research.yml
     secrets:
       KIMI_CODE_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+      FORECAST_EDGE_MARKET_ACCOUNTS_JSON: ${{ secrets.FORECAST_EDGE_MARKET_ACCOUNTS_JSON }}
 
   execution:
     needs: [gate, research]

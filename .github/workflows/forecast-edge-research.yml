@@ -4,7 +4,9 @@ on:
   workflow_call:
     secrets:
       KIMI_CODE_API_KEY:
-        required: true
+        required: false
+      FORECAST_EDGE_MARKET_ACCOUNTS_JSON:
+        required: false
     outputs:
       has-intents:
         value: ${{ jobs.research.outputs.has-intents }}
@@ -31,7 +33,7 @@ jobs:
       generated-at: ${{ steps.release-package.outputs.generated-at }}
     env:
       ENABLED_PREDICTION_MARKETS: ${{ vars.FORECAST_EDGE_MARKET_ADAPTERS }}
-      MARKET_ACCOUNTS_JSON: ${{ vars.FORECAST_EDGE_MARKET_ACCOUNTS_JSON }}
+      MARKET_ACCOUNTS_JSON: ${{ secrets.FORECAST_EDGE_MARKET_ACCOUNTS_JSON }}
       HISTORY_RELEASE_COUNT: ${{ vars.FORECAST_EDGE_HISTORY_RELEASE_COUNT || '2' }}
       REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
       ALLOW_PUBLIC_TRADE_INTENTS: ${{ vars.ALLOW_PUBLIC_TRADE_INTENTS || 'false' }}

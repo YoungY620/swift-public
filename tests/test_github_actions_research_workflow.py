@@ -65,6 +65,15 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("types:\n      - completed", self.audit)
         self.assertNotIn("cron:", self.audit)
 
+    def test_missing_audit_secrets_skip_agent_and_notification(self) -> None:
+        select = self.step(
+            self.audit, "Select completed iterations that need agent review"
+        )
+        self.assertIn("missing_configuration=()", select)
+        self.assertIn("Forecast Edge audit is not configured; skipping this run", select)
+        self.assertIn('echo "audit-applicable=false"', select)
+        self.assertIn("exit 0", select)
+
     def test_parent_grants_children_artifact_and_checkout_permissions(self) -> None:
         research_call = self.parent[
             self.parent.index("  research:\n") : self.parent.index("\n  execution:\n")
@@ -284,9 +293,12 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("max_price_deviation_bps", self.execution)
         self.assertNotIn("max_notional_deviation_bps", self.execution)
 
-    def test_research_uses_only_model_secret(self) -> None:
+    def test_research_uses_only_model_and_account_identity_secrets(self) -> None:
         configured = set(re.findall(r"secrets\.([A-Z0-9_]+)", self.research))
-        self.assertEqual(configured, {"KIMI_CODE_API_KEY"})
+        self.assertEqual(
+            configured,
+            {"KIMI_CODE_API_KEY", "FORECAST_EDGE_MARKET_ACCOUNTS_JSON"},
+        )
         research_call = self.parent[
             self.parent.index("  research:\n") : self.parent.index("\n  execution:\n")
         ]
@@ -312,17 +324,34 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn(".reports[] | .json_asset, .markdown_asset", stage)
         self.assertNotIn("gh release create", self.research)
 
-    def test_market_adapters_and_accounts_are_explicit_variables(self) -> None:
+    def test_market_adapter_is_variable_and_account_identity_is_secret(self) -> None:
         self.assertIn(
             "ENABLED_PREDICTION_MARKETS: ${{ vars.FORECAST_EDGE_MARKET_ADAPTERS }}",
             self.research,
         )
         self.assertIn(
-            "MARKET_ACCOUNTS_JSON: ${{ vars.FORECAST_EDGE_MARKET_ACCOUNTS_JSON }}",
+            "MARKET_ACCOUNTS_JSON: ${{ secrets.FORECAST_EDGE_MARKET_ACCOUNTS_JSON }}",
             self.research,
         )
+        self.assertNotIn("vars.FORECAST_EDGE_MARKET_ACCOUNTS_JSON", self.parent)
+        self.assertNotIn("vars.FORECAST_EDGE_MARKET_ACCOUNTS_JSON", self.research)
         self.assertNotIn("|| 'polymarket'", self.research)
         self.assertNotIn("vars.POLYMARKET_ACCOUNT", self.research)
+
+    def test_missing_private_configuration_skips_all_downstream_jobs(self) -> None:
+        gate = self.step(
+            self.parent, "Validate schedule and private workflow configuration"
+        )
+        self.assertIn("missing_configuration=()", gate)
+        self.assertIn("Forecast Edge is not configured; skipping this run", gate)
+        self.assertIn('echo "should-run=false"', gate)
+        self.assertIn('echo "execution-requested=false"', gate)
+        self.assertIn('echo "execution-ready=false"', gate)
+        self.assertIn("exit 0", gate)
+        self.assertLess(
+            gate.index("missing_configuration=()"),
+            gate.index("FORECAST_EDGE_INTERVAL_HOURS must be an integer"),
+        )
 
     def test_all_validation_attempts_use_multi_venue_validator(self) -> None:
         self.assertEqual(self.research.count("scripts/validate_research_iteration.py"), 4)

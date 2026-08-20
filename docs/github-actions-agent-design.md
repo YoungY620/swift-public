@@ -126,16 +126,17 @@ GitHub Release 继承仓库可见性。private repository 中的 Release 受仓�
 | 名称 | 类型 | 原因 |
 | --- | --- | --- |
 | `KIMI_CODE_API_KEY` | Actions Secret，必需 | 可调用付费模型，泄露后可被滥用。 |
+| `FORECAST_EDGE_MARKET_ACCOUNTS_JSON` | Actions Secret，必需 | adapter 到账户输入的 JSON object；账户名、profile URL 和钱包地址属于操作者身份信息。 |
 | `FEISHU_APP_ID` | Actions Secret，必需 | 与 App Secret 配对获取应用身份 token。 |
 | `FEISHU_APP_SECRET` | Actions Secret，必需 | 飞书应用凭据，泄露后可被滥用。 |
 | `FEISHU_CHAT_ID` | Actions Secret，必需 | 将通知限定路由到机器人与接收人的私聊。 |
+| `FORECAST_EDGE_BREAKER_TOKEN` | Actions Secret，必需 | Judge 发现严重异常时关闭交易、暂停调度并禁用父 workflow。 |
 
 以下值不属于凭据，使用 Repository Variables；不得为了隐藏公开标识而增加 Secret：
 
 | 名称 | 默认值 | 用途 |
 | --- | --- | --- |
 | `FORECAST_EDGE_MARKET_ADAPTERS` | 无，必需 | 逗号分隔的已注册 adapter 列表。 |
-| `FORECAST_EDGE_MARKET_ACCOUNTS_JSON` | 无，必需 | adapter 到公开账户输入的 JSON object，必须与启用列表精确对应。 |
 | `FORECAST_EDGE_INTERVAL_HOURS` | `8` | 定时 iteration 间隔，整数且至少 6。 |
 | `FORECAST_EDGE_ANCHOR_UTC_HOUR` | `2` | 定时窗口的 UTC 锚点。 |
 | `FORECAST_EDGE_HISTORY_RELEASE_COUNT` | `2` | 恢复多少个最近单轮 Release，允许 2–20。 |
@@ -143,7 +144,9 @@ GitHub Release 继承仓库可见性。private repository 中的 Release 受仓�
 | `ALLOW_PUBLIC_TRADE_INTENTS` | `false` | public repository 中对公开 JSONL 的显式风险确认。 |
 | `ALLOW_PUBLIC_RESEARCH_RELEASES` | `false` | public repository 中对公开研究报告的显式风险确认。 |
 
-稳定且公开的实现参数直接写在 Workflow：Kimi Code 为 `0.37.2`、模型名为 `kimi-for-coding`、provider URL 与类型、telemetry 开关、重试次数、总 timeout、900 秒无事件 timeout 和文件名。venue 和账户不是实现常量，必须通过上述通用 Repository Variables 显式配置。`${{ github.token }}` 是 GitHub 为每次 Run 自动生成的短期 token，也不需要用户设置。
+稳定且公开的实现参数直接写在 Workflow：Kimi Code 为 `0.37.2`、模型名为 `kimi-for-coding`、provider URL 与类型、telemetry 开关、重试次数、总 timeout、900 秒无事件 timeout 和文件名。venue 不是实现常量，必须通过上述通用 Repository Variable 显式配置；账户输入只通过 Actions Secret 提供。`${{ github.token }}` 是 GitHub 为每次 Run 自动生成的短期 token，也不需要用户设置。
+
+父图先做 fail-closed 配置 gate。任一必需 Secret 或 Variable 缺失时，gate 自身成功结束并输出 `should-run=false`、`execution-ready=false`；research、execution、release 以及后续 Judge 均不启动。这样未配置的 fork 或 public mirror 不会因为一次定时唤醒而访问模型、市场、账户或通知服务。
 
 父图、研究子图和执行子图都不接收任何 Polymarket 签名私钥、CLOB Secret、VPN Secret 或 Kalshi Secret。Polymarket 凭据只存在于 EC2 本地 mode-0600 文件；父图只判断交易开关与意图是否存在，服务器本地执行器负责凭据完整性校验。
 
@@ -156,7 +159,7 @@ GitHub Release 继承仓库可见性。private repository 中的 Release 受仓�
 ## Post-run Agent Judge 与熔断
 
 `.github/workflows/forecast-edge-audit.yml` 由父 workflow 的 `workflow_run` 事件触发。Kimi Code 使用专用只读 Agent profile：主 Agent 必须主动 `Read` 证据并调用只读 `explore` subagent，再由主 Agent 复核；`Bash`、写文件、凭据、登录态和交易工具均禁止。CLI 使用 `--output-format stream-json`，确定性 harness 要求实际出现完整的 `Read` 和 `Agent` tool call 链，单次普通模型回答会被降级为 `INSUFFICIENT_EVIDENCE`。严重 FAIL 或高/关键项证据不足会关闭 live-trading、暂停调度并禁用父 workflow；熔断操作本身也写入最终飞书通知。
-熔断步骤优先使用专用 Actions Secret `FORECAST_EDGE_BREAKER_TOKEN`，未配置时只回退到默认 token 并在权限不足时 fail closed。该 secret 不是 Polymarket 凭据，不会传入 Judge Agent，不会被诊断打包器读取，也不会写入日志或 Release；配置它之前应保持父 workflow 禁用和 live trading 关闭。
+熔断步骤使用专用 Actions Secret `FORECAST_EDGE_BREAKER_TOKEN`。该 secret 不是 Polymarket 凭据，不会传入 Judge Agent，不会被诊断打包器读取，也不会写入日志或 Release；未配置时父 workflow 和 audit 都只完成 no-op gate，不进入生产 iteration。
 
 ## JSONL 交易意图契约
 

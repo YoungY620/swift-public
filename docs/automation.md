@@ -20,9 +20,9 @@ JSONL 的每一行都必须包含 `(venue, multi_market_identifier, instrument_i
 
 该 workflow 的提示词位于 `automation/prompts/`，通知模板位于 `automation/templates/`。不要把账户、凭据或聊天目标写入这些文件。研究子图只接收模型 API Key，不接收 EC2 地址、SSH Key、签名私钥或 CLOB 凭据。
 
-必须显式设置 `FORECAST_EDGE_MARKET_ADAPTERS` 和 `FORECAST_EDGE_MARKET_ACCOUNTS_JSON`；前者是逗号分隔的已注册 adapter 列表，后者是 adapter 到公开账户输入的 JSON object。workflow 不默认启用任何市场，也没有 venue 专属变量回退。
+必须显式设置 Repository Variable `FORECAST_EDGE_MARKET_ADAPTERS` 和 Actions Secret `FORECAST_EDGE_MARKET_ACCOUNTS_JSON`；前者是逗号分隔的已注册 adapter 列表，后者是 adapter 到账户输入的 JSON object。账户名、profile URL 和钱包地址按身份信息保护，即使 venue 可公开查询也不得进入代码或 Repository Variable。workflow 不默认启用任何市场，也没有 venue 专属变量回退。
 
-自动审计的严重失败会触发三重熔断：关闭 `POLYMARKET_LIVE_TRADING_ENABLED`、设置 `FORECAST_EDGE_AUTOMATION_PAUSED=true` 并禁用父 workflow。修改仓库 Variables/禁用 workflow 的权限不能依赖默认 `GITHUB_TOKEN`；生产仓库应额外配置 GitHub Actions Secret `FORECAST_EDGE_BREAKER_TOKEN`（最小的 Actions 写权限）。该 token 只在熔断步骤使用，不传给 Kimi Code Agent，也不进入任何诊断、Release 或通知内容。
+自动审计的严重失败会触发三重熔断：关闭 `POLYMARKET_LIVE_TRADING_ENABLED`、设置 `FORECAST_EDGE_AUTOMATION_PAUSED=true` 并禁用父 workflow。修改仓库 Variables/禁用 workflow 的权限不依赖默认 `GITHUB_TOKEN`；生产仓库必须配置 GitHub Actions Secret `FORECAST_EDGE_BREAKER_TOKEN`（最小的 Actions 写权限）。该 token 只在配置 gate 与熔断步骤检查/使用，不传给 Kimi Code Agent，也不进入任何诊断、Release 或通知内容。
 
 `.github/workflows/execute-polymarket.yml` 只消费成功研究子图生成、经 SHA-256 绑定并重新验证过的私有交易意图。它直接运行在 `poly-edge-ec2-eu-north-1` Linux/X64 self-hosted runner 上，不再从 Mac SSH 中转。只有显式启用交易、存在交易意图且 EC2 本地凭据文件安全可用时才进入执行路径；执行代码位于 `execution/` 和对应的 `scripts/`。
 

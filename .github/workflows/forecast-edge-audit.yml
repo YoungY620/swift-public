@@ -38,6 +38,11 @@ jobs:
     env:
       PARENT_RUN_ID: ${{ github.event.workflow_run.id || inputs['parent-run-id'] }}
       EXPECTED_PARENT_WORKFLOW: Forecast Edge research and optional execution
+      KIMI_CODE_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+      FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+      FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+      FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}
+      FORECAST_EDGE_BREAKER_TOKEN: ${{ secrets.FORECAST_EDGE_BREAKER_TOKEN }}
     steps:
       - name: Select completed iterations that need agent review
         id: select
@@ -46,6 +51,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          missing_configuration=()
+          for name in KIMI_CODE_API_KEY FEISHU_APP_ID FEISHU_APP_SECRET FEISHU_CHAT_ID \
+            FORECAST_EDGE_BREAKER_TOKEN; do
+            if [[ -z "${!name:-}" ]]; then
+              missing_configuration+=("$name")
+            fi
+          done
+          if (( ${#missing_configuration[@]} > 0 )); then
+            printf '::notice::Forecast Edge audit is not configured; skipping this run (missing: %s)\n' \
+              "${missing_configuration[*]}"
+            echo "audit-applicable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [[ ! "$PARENT_RUN_ID" =~ ^[0-9]+$ ]]; then
             echo "::error::parent-run-id must be a GitHub Actions run id"
             exit 1
@@ -617,7 +635,7 @@ jobs:
         id: breaker
         if: ${{ always() && steps.classify.outputs.trip_required == 'true' }}
         env:
-          GH_TOKEN: ${{ secrets.FORECAST_EDGE_BREAKER_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.FORECAST_EDGE_BREAKER_TOKEN }}
           SERIOUS_FINDINGS: ${{ steps.classify.outputs.serious_findings }}
         shell: bash
         run: |

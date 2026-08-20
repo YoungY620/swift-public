@@ -142,6 +142,11 @@ def main() -> int:
             (root / "scripts/forecast_edge_audit.py").read_text(encoding="utf-8")
             and audit_agent_secrets == ["KIMI_CODE_API_KEY"]
         ),
+        "missing_audit_configuration_is_noop": (
+            "Forecast Edge audit is not configured; skipping this run" in audit
+            and 'echo "audit-applicable=false"' in audit
+            and "missing_configuration=()" in between(audit, "  select:\n", "\n  audit:\n")
+        ),
         "research_kimi_live_stream": (
             research.count("--output-format stream-json") >= 4
             and research.count("kimi --skills-dir") >= 4
@@ -191,12 +196,25 @@ def main() -> int:
         "credential_isolation": (
             "SERVER_SECRET_PATH: /home/ubuntu/poly-edge-live/runtime/secrets.json" in execution
             and "secrets.POLYMARKET_" not in execution
-            and research_secrets == ["KIMI_CODE_API_KEY"]
+            and research_secrets
+            == ["FORECAST_EDGE_MARKET_ACCOUNTS_JSON", "KIMI_CODE_API_KEY"]
             and audit_agent_secrets == ["KIMI_CODE_API_KEY"]
+        ),
+        "missing_configuration_is_noop": (
+            "missing_configuration=()" in parent
+            and "Forecast Edge is not configured; skipping this run" in parent
+            and 'echo "should-run=false"' in parent
+            and 'echo "execution-requested=false"' in parent
+            and 'echo "execution-ready=false"' in parent
+            and "FORECAST_EDGE_MARKET_ACCOUNTS_JSON: ${{ secrets.FORECAST_EDGE_MARKET_ACCOUNTS_JSON }}"
+            in parent
+            and "MARKET_ACCOUNTS_JSON: ${{ secrets.FORECAST_EDGE_MARKET_ACCOUNTS_JSON }}"
+            in research
+            and "vars.FORECAST_EDGE_MARKET_ACCOUNTS_JSON" not in combined
         ),
         "audit_circuit_breaker": (
             "Trip production circuit breaker on serious findings" in audit
-            and "secrets.FORECAST_EDGE_BREAKER_TOKEN || github.token" in audit
+            and "GH_TOKEN: ${{ secrets.FORECAST_EDGE_BREAKER_TOKEN }}" in audit
             and "POLYMARKET_LIVE_TRADING_ENABLED" in audit
             and "actions/workflows/forecast-edge.yml/disable" in audit
             and '(.status == "FAIL")' in audit

@@ -24,7 +24,7 @@ skills/forecast-edge/               核心研究 Skill
 
 Polymarket 的 Google/email、外部 wallet、legacy Proxy/Safe 与新 Deposit Wallet 认证映射、凭证初始化和 GitHub Environment 配置见 [docs/polymarket-authentication.md](docs/polymarket-authentication.md)。
 
-部署时必须显式配置 `FORECAST_EDGE_MARKET_ADAPTERS`，并通过 `FORECAST_EDGE_MARKET_ACCOUNTS_JSON` 为每个启用的 adapter 提供一个公开账户输入。核心 workflow 不提供默认 venue，也不读取任何 venue 专属的兼容账户变量。
+部署时必须显式配置 `FORECAST_EDGE_MARKET_ADAPTERS`，并通过同名 Actions Secret `FORECAST_EDGE_MARKET_ACCOUNTS_JSON` 为每个启用的 adapter 提供一个账户输入。账户名、profile URL 和钱包地址即使可公开查询，也属于操作者身份信息，不得写入代码、Repository Variable、日志或 public mirror。核心 workflow 不提供默认 venue，也不读取任何 venue 专属的兼容账户变量。
 
 每轮 research 必须生成并校验 `trade-intents.jsonl`；即使没有满足策略门槛的操作，也必须产出合法的空文件。只有通过统一 Schema、adapter 标识和账户快照校验的 JSONL 才能进入私有 handoff，并在研究与可选执行都结束后由父 workflow 统一发布。
 
