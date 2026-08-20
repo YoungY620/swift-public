@@ -9,6 +9,7 @@ Usage: run_kimi_code_with_idle_timeout.sh \
   --poll-seconds SECONDS \
   --stdout-log PATH \
   --stderr-log PATH \
+  [--activity-root PATH] \
   -- COMMAND [ARG ...]
 EOF
 }
@@ -41,6 +42,7 @@ idle_seconds=
 poll_seconds=10
 stdout_log=
 stderr_log=
+activity_root=
 while (( $# > 0 )); do
   case "$1" in
     --idle-seconds)
@@ -57,6 +59,10 @@ while (( $# > 0 )); do
       ;;
     --stderr-log)
       stderr_log=${2:-}
+      shift 2
+      ;;
+    --activity-root)
+      activity_root=${2:-}
       shift 2
       ;;
     --)
@@ -125,14 +131,23 @@ if [[ ! "$session_pid" =~ ^[1-9][0-9]*$ ]]; then
   exit 1
 fi
 
-total_bytes() {
-  local stdout_bytes stderr_bytes
+total_activity_bytes() {
+  local stdout_bytes stderr_bytes session_bytes
   stdout_bytes=$(stat -c '%s' "$stdout_log")
   stderr_bytes=$(stat -c '%s' "$stderr_log")
-  printf '%s\n' "$((stdout_bytes + stderr_bytes))"
+  session_bytes=0
+  if [[ -n "$activity_root" && -d "$activity_root" ]]; then
+    session_bytes=$(
+      find "$activity_root" -type f \
+        \( -name 'wire.jsonl' -o -name 'output.log' \) \
+        -exec stat -c '%s' {} + 2>/dev/null \
+        | awk '{ total += $1 } END { print total + 0 }'
+    )
+  fi
+  printf '%s\n' "$((stdout_bytes + stderr_bytes + session_bytes))"
 }
 
-last_bytes=$(total_bytes)
+last_bytes=$(total_activity_bytes)
 last_activity_epoch=$(date +%s)
 idle_timeout=false
 while kill -0 "$session_pid" 2>/dev/null; do
@@ -140,7 +155,7 @@ while kill -0 "$session_pid" 2>/dev/null; do
     break
   fi
   sleep "$poll_seconds"
-  current_bytes=$(total_bytes)
+  current_bytes=$(total_activity_bytes)
   current_epoch=$(date +%s)
   if (( current_bytes != last_bytes )); then
     last_bytes=$current_bytes
@@ -153,7 +168,7 @@ while kill -0 "$session_pid" 2>/dev/null; do
 
   idle_timeout=true
   printf '%s\n' \
-    "Kimi Code emitted no stdout or stderr for ${idle_seconds}s; terminating this attempt" \
+    "Kimi Code emitted no captured or session events for ${idle_seconds}s; terminating this attempt" \
     | tee -a "$stderr_log" >&2
   kill -TERM -- "-$session_pid" 2>/dev/null || true
   for _ in $(seq 1 20); do

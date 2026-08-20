@@ -96,7 +96,7 @@ class WorkflowContractTests(unittest.TestCase):
         validate = self.step(self.research, "Validate workflow configuration")
         self.assertIn("BASH_VERSINFO[0] < 4", validate)
         self.assertIn(
-            "curl gh jq npm python3 scp setsid sha256sum ssh ssh-keygen ssh-keyscan stat stdbuf tar tee",
+            "awk curl find gh jq npm python3 scp setsid sha256sum ssh ssh-keygen ssh-keyscan stat stdbuf tar tee",
             validate,
         )
 
@@ -144,6 +144,7 @@ class WorkflowContractTests(unittest.TestCase):
             )
             self.assertIn("scripts/run_kimi_code_with_idle_timeout.sh", step)
             self.assertIn('--idle-seconds "$KIMI_IDLE_TIMEOUT_SECONDS"', step)
+            self.assertIn('--activity-root "$KIMI_CODE_HOME/sessions"', step)
             self.assertIn("status=$?", step)
 
         self.assertIn('KIMI_IDLE_TIMEOUT_SECONDS: "900"', self.research)
@@ -151,6 +152,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn('| stdbuf -oL tee "$stdout_log"', self.kimi_watchdog)
         self.assertIn("current_bytes != last_bytes", self.kimi_watchdog)
         self.assertIn("current_epoch - last_activity_epoch < idle_seconds", self.kimi_watchdog)
+        self.assertIn("-name 'wire.jsonl' -o -name 'output.log'", self.kimi_watchdog)
         self.assertIn('kill -TERM -- "-$session_pid"', self.kimi_watchdog)
         self.assertIn('| tee -a "$stderr_log" >&2', self.kimi_watchdog)
         self.assertIn("exit 124", self.kimi_watchdog)

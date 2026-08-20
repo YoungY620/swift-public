@@ -89,7 +89,7 @@ jobs:
             echo "::error::The research runner must expose Bash 4 or newer"
             exit 1
           fi
-          for required_tool in curl gh jq npm python3 scp setsid sha256sum ssh ssh-keygen ssh-keyscan stat stdbuf tar tee; do
+          for required_tool in awk curl find gh jq npm python3 scp setsid sha256sum ssh ssh-keygen ssh-keyscan stat stdbuf tar tee; do
             if ! command -v "$required_tool" >/dev/null; then
               echo "::error::The research runner is missing required tool: $required_tool"
               exit 1
@@ -527,6 +527,7 @@ jobs:
             --poll-seconds 10 \
             --stdout-log "$RUNTIME_DIR/kimi-attempt-1.stream.jsonl" \
             --stderr-log "$RUNTIME_DIR/kimi-attempt-1.stderr" \
+            --activity-root "$KIMI_CODE_HOME/sessions" \
             -- kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
               --output-format stream-json \
               -p "$(<"$ORIGINAL_PROMPT_PATH")"
@@ -584,6 +585,7 @@ jobs:
             --poll-seconds 10 \
             --stdout-log "$RUNTIME_DIR/kimi-attempt-2.stream.jsonl" \
             --stderr-log "$RUNTIME_DIR/kimi-attempt-2.stderr" \
+            --activity-root "$KIMI_CODE_HOME/sessions" \
             -- kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
               --output-format stream-json \
               -p "$(<"$REPAIR_PROMPT_PATH")"
@@ -642,6 +644,7 @@ jobs:
             --poll-seconds 10 \
             --stdout-log "$RUNTIME_DIR/kimi-attempt-3.stream.jsonl" \
             --stderr-log "$RUNTIME_DIR/kimi-attempt-3.stderr" \
+            --activity-root "$KIMI_CODE_HOME/sessions" \
             -- kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
               --output-format stream-json \
               -p "$(<"$REPAIR_PROMPT_PATH")"
@@ -700,6 +703,7 @@ jobs:
             --poll-seconds 10 \
             --stdout-log "$RUNTIME_DIR/kimi-attempt-4.stream.jsonl" \
             --stderr-log "$RUNTIME_DIR/kimi-attempt-4.stderr" \
+            --activity-root "$KIMI_CODE_HOME/sessions" \
             -- kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
               --output-format stream-json \
               -p "$(<"$REPAIR_PROMPT_PATH")"

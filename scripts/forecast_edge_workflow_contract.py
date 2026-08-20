@@ -118,11 +118,13 @@ def main() -> int:
             and "--yolo" not in research
             and research.count("scripts/run_kimi_code_with_idle_timeout.sh") >= 4
             and research.count('--idle-seconds "$KIMI_IDLE_TIMEOUT_SECONDS"') >= 4
+            and research.count('--activity-root "$KIMI_CODE_HOME/sessions"') >= 4
             and 'KIMI_IDLE_TIMEOUT_SECONDS: "900"' in research
             and '2> >(stdbuf -oL tee "$stderr_log" >&2)' in kimi_watchdog
             and '| stdbuf -oL tee "$stdout_log"' in kimi_watchdog
             and "current_bytes != last_bytes" in kimi_watchdog
             and "current_epoch - last_activity_epoch < idle_seconds" in kimi_watchdog
+            and "-name 'wire.jsonl' -o -name 'output.log'" in kimi_watchdog
             and 'kill -TERM -- "-$session_pid"' in kimi_watchdog
             and "exit 124" in kimi_watchdog
         ),

@@ -84,7 +84,7 @@
 - `kimi -p "..."` 是非交互模式；该模式默认使用自动权限策略，不需要追加 `--auto` 或 `--yolo`，而且这些参数不能与 `-p` 同用。
 - CI 在 Workflow 中公开固定 `KIMI_MODEL_NAME=kimi-for-coding` 和 `KIMI_MODEL_BASE_URL=https://api.kimi.com/coding/v1`，只通过 `KIMI_MODEL_API_KEY` 环境变量注入 Secret。Agent 启动前调用 provider 的模型列表接口确认鉴权与模型可用性。
 - `--output-format stream-json` 输出的是 Kimi 的 Assistant/tool 运行事件流，不是业务交易 JSONL。因此交易 JSONL 必须由 prompt 指定 Agent 写到独立文件，不能直接把 CLI stdout 当成交易指令。
-- Workflow 同时流式保存 stdout JSONL 和 stderr。研究总时长仍由 job/step 上限约束；单次 attempt 只有在两条流连续 900 秒都没有任何字节增长时才以 `124` 终止并进入既有 repair 链，活跃输出会持续重置空闲计时。
+- Workflow 同时流式保存 stdout JSONL 和 stderr，并监测 Kimi Code 官方 session 目录中的主 Agent、sub-agent `wire.jsonl` 与后台任务 `output.log`。研究总时长仍由 job/step 上限约束；单次 attempt 只有在所有这些事件源连续 900 秒都没有任何字节增长时才以 `124` 终止并进入既有 repair 链，任一活跃事件都会持续重置空闲计时。
 - Workflow 使用 Actions npm cache 加速下载，但每个 iteration 仍固定安装并验证约定的 CLI 版本。
 
 ## 单轮最终 Release 与滚动历史窗口
