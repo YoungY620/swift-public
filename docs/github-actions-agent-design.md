@@ -55,7 +55,7 @@
 ### 已确定需求
 
 1. schedule gate 与完整 research job 都运行在 GitHub 托管的 `ubuntu-latest` runner；Kimi Code CLI 使用非交互模式。
-2. Kimi Code API Key 来自 GitHub Actions Secret；各 venue 的公开账户输入来自 Repository Variables。
+2. Kimi Code API Key 和各 venue 的账户输入都来自 GitHub Actions Secrets；账户名、profile URL 与钱包地址不进入 Repository Variables。
 3. 现有定时扫描 prompt 与新增固定 prompt 统一放进 `automation/prompts/`，并修改所有旧路径。
 4. 子图用多个可观察的 step 完成安装、配置检查、滚动历史 Release 恢复、账户快照、Agent 运行、Schema 校验、卖单持仓校验、重试和 artifact handoff；最终发布与通知由父图完成，不由一个总控脚本隐藏全部流程。
 5. Agent 生成可同时包含多个预测市场的 JSONL 交易意图。每一行必须是一个 JSON object，禁止 Schema 未声明的字段。

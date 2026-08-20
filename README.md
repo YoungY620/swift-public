@@ -8,7 +8,7 @@ Poly-edge 是面向多预测市场的长期概率优势研究与交易意图生�
 - `.github/workflows/forecast-edge-research.yml`：reusable 私有研究子图，只生成、校验并暂存报告与交易意图，不发布。
 - `.github/workflows/execute-polymarket.yml`：reusable 执行子图；仅在显式启用且交易配置齐全时消费私有交易意图。
 
-研究子图在 GitHub 托管的 `ubuntu-latest` runner 上，通过 `kimi --skills-dir "$GITHUB_WORKSPACE/skills"` 直接加载 `skills/forecast-edge`。研究产物先通过 SSH 写入长期 EC2 的逐次私有目录；交易执行完成或被明确跳过前，不创建 Release、Issue、Actions artifact，也不发送飞书通知。它依赖：
+研究子图在 GitHub 托管的 `ubuntu-latest` runner 上，通过 `kimi --skills-dir "$GITHUB_WORKSPACE/skills"` 直接加载 `skills/forecast-edge`。研究产物先写入 private-fork 的逐次 Actions handoff artifact；交易执行完成或被明确跳过前，不创建 Release、Issue 或飞书通知。它依赖：
 
 ```text
 automation/prompts/                 扫描与修复提示词
