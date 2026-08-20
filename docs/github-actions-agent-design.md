@@ -156,6 +156,7 @@ GitHub Release 继承仓库可见性。private repository 中的 Release 受仓�
 ## Post-run Agent Judge 与熔断
 
 `.github/workflows/forecast-edge-audit.yml` 由父 workflow 的 `workflow_run` 事件触发。Kimi Code 使用专用只读 Agent profile：主 Agent 必须主动 `Read` 证据并调用只读 `explore` subagent，再由主 Agent 复核；`Bash`、写文件、凭据、登录态和交易工具均禁止。CLI 使用 `--output-format stream-json`，确定性 harness 要求实际出现完整的 `Read` 和 `Agent` tool call 链，单次普通模型回答会被降级为 `INSUFFICIENT_EVIDENCE`。严重 FAIL 或高/关键项证据不足会关闭 live-trading、暂停调度并禁用父 workflow；熔断操作本身也写入最终飞书通知。
+熔断步骤优先使用专用 Actions Secret `FORECAST_EDGE_BREAKER_TOKEN`，未配置时只回退到默认 token 并在权限不足时 fail closed。该 secret 不是 Polymarket 凭据，不会传入 Judge Agent，不会被诊断打包器读取，也不会写入日志或 Release；配置它之前应保持父 workflow 禁用和 live trading 关闭。
 
 ## JSONL 交易意图契约
 
