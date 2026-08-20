@@ -51,7 +51,7 @@ jobs:
       REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
       ALLOW_PUBLIC_TRADE_INTENTS: ${{ vars.ALLOW_PUBLIC_TRADE_INTENTS || 'false' }}
       ALLOW_PUBLIC_RESEARCH_RELEASES: ${{ vars.ALLOW_PUBLIC_RESEARCH_RELEASES || 'false' }}
-      KIMI_CODE_VERSION: "0.37.0"
+      KIMI_CODE_VERSION: "0.37.2"
       KIMI_MODEL_NAME: kimi-for-coding
       KIMI_MODEL_PROVIDER_TYPE: kimi
       KIMI_MODEL_BASE_URL: https://api.kimi.com/coding/v1
@@ -219,6 +219,7 @@ jobs:
             -o "UserKnownHostsFile=$KNOWN_HOSTS_PATH" \
             "$EC2_USER@$EC2_HOST" -- \
             install -d -m 700 "$REMOTE_HANDOFF_DIR"
+          rm -f "$SSH_KEY_PATH" "$KNOWN_HOSTS_PATH"
 
       - name: Probe Kimi model availability
         env:
@@ -519,7 +520,7 @@ jobs:
         run: |
           set -o pipefail
           set +e
-          stdbuf -oL -eL kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+          stdbuf -oL -eL kimi --yolo --skills-dir "$GITHUB_WORKSPACE/skills" \
             --output-format stream-json \
             -p "$(<"$ORIGINAL_PROMPT_PATH")" \
             2> >(stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-1.stderr" >&2) \
@@ -573,7 +574,7 @@ jobs:
         run: |
           set -o pipefail
           set +e
-          stdbuf -oL -eL kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+          stdbuf -oL -eL kimi --yolo --skills-dir "$GITHUB_WORKSPACE/skills" \
             --output-format stream-json \
             -p "$(<"$REPAIR_PROMPT_PATH")" \
             2> >(stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-2.stderr" >&2) \
@@ -628,7 +629,7 @@ jobs:
         run: |
           set -o pipefail
           set +e
-          stdbuf -oL -eL kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+          stdbuf -oL -eL kimi --yolo --skills-dir "$GITHUB_WORKSPACE/skills" \
             --output-format stream-json \
             -p "$(<"$REPAIR_PROMPT_PATH")" \
             2> >(stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-3.stderr" >&2) \
@@ -683,7 +684,7 @@ jobs:
         run: |
           set -o pipefail
           set +e
-          stdbuf -oL -eL kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+          stdbuf -oL -eL kimi --yolo --skills-dir "$GITHUB_WORKSPACE/skills" \
             --output-format stream-json \
             -p "$(<"$REPAIR_PROMPT_PATH")" \
             2> >(stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-4.stderr" >&2) \
@@ -1087,9 +1088,19 @@ jobs:
 
       - name: Stage private research handoff on EC2
         id: private-handoff
+        env:
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.POLYMARKET_EC2_SSH_PRIVATE_KEY }}
         shell: bash
         run: |
           set -euo pipefail
+          umask 077
+          printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > "$SSH_KEY_PATH"
+          ssh-keyscan -T 15 -t ed25519 "$EC2_HOST" > "$KNOWN_HOSTS_PATH" 2>/dev/null
+          scanned_fingerprint=$(ssh-keygen -lf "$KNOWN_HOSTS_PATH" -E sha256 | awk '{print $2}')
+          if [[ "$scanned_fingerprint" != "$EC2_HOST_FINGERPRINT" ]]; then
+            echo "::error::Persistent EC2 SSH host key does not match the configured fingerprint"
+            exit 1
+          fi
           handoff_root="$RUNTIME_DIR/private-handoff"
           install -d -m 700 "$handoff_root/release-assets"
           install -m 600 "$REPORT_ARCHIVE_PATH" "$handoff_root/release-assets/"

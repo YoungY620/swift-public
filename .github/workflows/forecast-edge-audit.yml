@@ -84,7 +84,7 @@ jobs:
       PARENT_RUN_ID: ${{ github.event.workflow_run.id || inputs['parent-run-id'] }}
       EXPECTED_PARENT_WORKFLOW: Forecast Edge research and optional execution
       CIRCUIT_BREAKER_ENABLED: ${{ github.event_name == 'workflow_run' || inputs['trip-circuit-breaker'] == true }}
-      KIMI_CODE_VERSION: "0.37.0"
+      KIMI_CODE_VERSION: "0.37.2"
       KIMI_MODEL_NAME: kimi-for-coding
       KIMI_MODEL_PROVIDER_TYPE: kimi
       KIMI_MODEL_BASE_URL: https://api.kimi.com/coding/v1
@@ -425,7 +425,7 @@ jobs:
           install -m 600 "$AUDIT_PROMPT_PATH" "$AUDIT_AGENT_DIR/prompt.md"
           cd "$AUDIT_AGENT_DIR"
           set +e
-          stdbuf -oL -eL kimi --agent-file "$AUDIT_AGENT_PROFILE_PATH" \
+          stdbuf -oL -eL kimi --yolo --agent-file "$AUDIT_AGENT_PROFILE_PATH" \
             --output-format stream-json \
             -p "请遵循 prompt.md，作为只读 Judge Agent 主动检查本目录证据并输出最终审计 JSON。" \
             2> >(stdbuf -oL tee "$AUDIT_RUNTIME_DIR/agent.stderr" >&2) \

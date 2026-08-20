@@ -99,6 +99,9 @@ class WorkflowContractTests(unittest.TestCase):
         configure = self.step(self.research, "Configure authenticated EC2 handoff channel")
         stage = self.step(self.research, "Stage private research handoff on EC2")
         self.assertIn('install -d -m 700 "$REMOTE_HANDOFF_DIR"', configure)
+        self.assertIn('rm -f "$SSH_KEY_PATH" "$KNOWN_HOSTS_PATH"', configure)
+        self.assertIn("secrets.POLYMARKET_EC2_SSH_PRIVATE_KEY", stage)
+        self.assertIn("EC2_HOST_FINGERPRINT", stage)
         self.assertIn('"$TRADE_INTENTS_PATH"', stage)
         self.assertIn("trade-intents.jsonl", stage)
         self.assertIn("chmod 600", stage)
@@ -123,6 +126,7 @@ class WorkflowContractTests(unittest.TestCase):
             start=1,
         ):
             step = self.step(self.research, name)
+            self.assertIn("kimi --yolo", step)
             self.assertIn("--output-format stream-json", step)
             self.assertIn(
                 f'| stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-{attempt}.stream.jsonl"',
@@ -135,6 +139,7 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertIn("status=${PIPESTATUS[0]}", step)
 
         audit_agent = self.step(self.audit, "Run read-only Kimi Code Judge agent")
+        self.assertIn("kimi --yolo", audit_agent)
         self.assertIn(
             '| stdbuf -oL tee "$AUDIT_AGENT_RAW_RESPONSE_PATH"', audit_agent
         )
