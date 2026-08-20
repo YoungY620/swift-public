@@ -142,6 +142,7 @@ def main() -> int:
         ),
         "audit_circuit_breaker": (
             "Trip production circuit breaker on serious findings" in audit
+            and "secrets.FORECAST_EDGE_BREAKER_TOKEN || github.token" in audit
             and "POLYMARKET_LIVE_TRADING_ENABLED" in audit
             and "actions/workflows/forecast-edge.yml/disable" in audit
             and '(.status == "FAIL")' in audit

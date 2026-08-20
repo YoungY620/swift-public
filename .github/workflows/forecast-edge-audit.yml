@@ -545,7 +545,7 @@ jobs:
         id: breaker
         if: ${{ always() && steps.classify.outputs.trip_required == 'true' }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.FORECAST_EDGE_BREAKER_TOKEN || github.token }}
           SERIOUS_FINDINGS: ${{ steps.classify.outputs.serious_findings }}
         shell: bash
         run: |

@@ -103,7 +103,13 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         configured = set(re.findall(r"secrets\.([A-Z0-9_]+)", self.workflow))
         self.assertEqual(
             configured,
-            {"KIMI_CODE_API_KEY", "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_CHAT_ID"},
+            {
+                "KIMI_CODE_API_KEY",
+                "FEISHU_APP_ID",
+                "FEISHU_APP_SECRET",
+                "FEISHU_CHAT_ID",
+                "FORECAST_EDGE_BREAKER_TOKEN",
+            },
         )
         agent_start = self.workflow.index("      - name: Run read-only Kimi Code Judge agent\n")
         agent_end = self.workflow.index(
@@ -136,7 +142,7 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertTrue(boolean_items)
         self.assertTrue(all(boolean_items))
         self.assertEqual(contract["audit_agent_credential_count"], 1)
-        self.assertEqual(contract["audit_workflow_credential_count"], 4)
+        self.assertEqual(contract["audit_workflow_credential_count"], 5)
 
     def test_valid_complete_response_is_accepted(self) -> None:
         audit_module.validate_response(self.response(), self.rubric, self.evidence, self.schema)
