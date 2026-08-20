@@ -71,6 +71,12 @@ jobs:
     if: ${{ needs.select.outputs.audit-applicable == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      overall_status: ${{ steps.classify.outputs.overall_status }}
+      confidence: ${{ steps.classify.outputs.confidence }}
+      serious_findings: ${{ steps.classify.outputs.serious_findings }}
+      trip_required: ${{ steps.classify.outputs.trip_required }}
+      breaker_succeeded: ${{ steps.breaker.outputs.breaker_succeeded }}
     permissions:
       actions: write
       contents: read
@@ -122,7 +128,8 @@ jobs:
             echo "AUDIT_EVIDENCE_PATH=$runtime_dir/evidence/evidence.json"
             echo "AUDIT_AGENT_DIR=$runtime_dir/agent"
             echo "AUDIT_AGENT_RESPONSE_PATH=$runtime_dir/agent-response.json"
-            echo "AUDIT_AGENT_RAW_RESPONSE_PATH=$runtime_dir/agent-response.raw.txt"
+            echo "AUDIT_AGENT_RAW_RESPONSE_PATH=$runtime_dir/agent-response.raw.jsonl"
+            echo "AUDIT_AGENT_TRACE_PATH=$runtime_dir/agent-trace.json"
             echo "AUDIT_RESULT_PATH=$runtime_dir/audit-result.json"
             echo "KIMI_CODE_HOME=$RUNNER_TEMP/kimi-code-audit-home"
           } >> "$GITHUB_ENV"
@@ -237,7 +244,8 @@ jobs:
               assets:[.assets[] | {name,size,digest,created_at,updated_at}]
             }' "$release_api" > "$release_dir/metadata.json"
             for asset in iteration-release-manifest.json research-release-manifest.json \
-              validation-summary.json execution-receipt.json execution-verification.json; do
+              validation-summary.json execution-receipt.json execution-verification.json \
+              execution-diagnostic-summary.json execution-diagnostic-manifest.json; do
               if jq -e --arg asset "$asset" '.assets | any(.name == $asset)' "$release_api" >/dev/null; then
                 gh release download "$release_tag" --pattern "$asset" --dir "$release_dir"
               fi
@@ -246,14 +254,16 @@ jobs:
             jq -n '{found:false,assets:[]}' > "$release_dir/metadata.json"
           fi
           for optional_json in iteration-release-manifest.json research-release-manifest.json \
-            validation-summary.json execution-receipt.json execution-verification.json; do
+            validation-summary.json execution-receipt.json execution-verification.json \
+            execution-diagnostic-summary.json execution-diagnostic-manifest.json; do
             if [[ ! -f "$release_dir/$optional_json" ]]; then
               printf 'null\n' > "$release_dir/$optional_json"
             fi
           done
           : > "$release_dir/downloaded-assets.ndjson"
           for optional_json in iteration-release-manifest.json research-release-manifest.json \
-            validation-summary.json execution-receipt.json execution-verification.json; do
+            validation-summary.json execution-receipt.json execution-verification.json \
+            execution-diagnostic-summary.json execution-diagnostic-manifest.json; do
             if jq -e 'type != "null"' "$release_dir/$optional_json" >/dev/null; then
               jq -cn \
                 --arg name "$optional_json" \
@@ -262,6 +272,71 @@ jobs:
             fi
           done
           jq -s '.' "$release_dir/downloaded-assets.ndjson" > "$release_dir/downloaded-assets.json"
+
+      - name: Collect and verify execution diagnostic artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          diagnostics_dir="$AUDIT_EVIDENCE_DIR/diagnostics"
+          artifact_dir="$diagnostics_dir/artifact"
+          files_dir="$diagnostics_dir/files"
+          install -d -m 700 "$artifact_dir"
+          run_attempt=$(jq -r '.run_attempt' "$AUDIT_EVIDENCE_DIR/run.json")
+          artifact_name="polymarket-execution-diagnostics-$PARENT_RUN_ID-$run_attempt"
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID/artifacts?per_page=100" \
+            | jq -s '[.[].artifacts[]]' > "$diagnostics_dir/artifacts.json"
+          artifact_count=$(jq --arg name "$artifact_name" \
+            '[.[] | select(.name == $name)] | length' "$diagnostics_dir/artifacts.json")
+          if [[ "$artifact_count" -gt 1 ]]; then
+            echo "::error::Parent run has duplicate execution diagnostic artifacts"
+            exit 1
+          fi
+          if [[ "$artifact_count" -eq 1 ]] && \
+             [[ "$(jq -r --arg name "$artifact_name" \
+               '.[] | select(.name == $name) | .expired' \
+               "$diagnostics_dir/artifacts.json")" != "true" ]]; then
+            gh run download "$PARENT_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "$artifact_name" --dir "$artifact_dir"
+            for required in execution-diagnostics.tar.gz execution-diagnostics.sha256 \
+              execution-diagnostic-summary.json execution-diagnostic-manifest.json; do
+              test -s "$artifact_dir/$required"
+            done
+            python3 scripts/verify_polymarket_execution_diagnostics.py \
+              --archive "$artifact_dir/execution-diagnostics.tar.gz" \
+              --checksum "$artifact_dir/execution-diagnostics.sha256" \
+              --summary "$artifact_dir/execution-diagnostic-summary.json" \
+              --manifest "$artifact_dir/execution-diagnostic-manifest.json" \
+              --expected-run-id "$PARENT_RUN_ID" \
+              --destination "$files_dir" \
+              --output "$diagnostics_dir/metadata.json"
+          else
+            expired=false
+            if [[ "$artifact_count" -eq 1 ]]; then
+              expired=true
+            fi
+            jq -n \
+              --arg name "$artifact_name" \
+              --argjson expired "$expired" \
+              '{schema_version:"1.0",found:false,artifact_verified:false,artifact_name:$name,expired:$expired}' \
+              > "$diagnostics_dir/metadata.json"
+          fi
+          extracted="$files_dir/execution-diagnostics"
+          for optional_json in diagnostic-summary.json diagnostic-manifest.json \
+            plan.json preflight.json receipt.json verification.json ledger-snapshot.json; do
+            if [[ ! -f "$extracted/$optional_json" ]]; then
+              printf 'null\n' > "$diagnostics_dir/$optional_json"
+            else
+              install -m 600 "$extracted/$optional_json" "$diagnostics_dir/$optional_json"
+            fi
+          done
+          if [[ -f "$extracted/phase-events.ndjson" ]]; then
+            jq -s '.' "$extracted/phase-events.ndjson" > "$diagnostics_dir/phase-events.json"
+          else
+            printf '[]\n' > "$diagnostics_dir/phase-events.json"
+          fi
 
       - name: Normalize and safety-check audit evidence
         shell: bash
@@ -281,6 +356,17 @@ jobs:
             --slurpfile validation_summary "${release_dir}/validation-summary.json" \
             --slurpfile execution_receipt "${release_dir}/execution-receipt.json" \
             --slurpfile execution_verification "${release_dir}/execution-verification.json" \
+            --slurpfile release_diagnostic_summary "${release_dir}/execution-diagnostic-summary.json" \
+            --slurpfile release_diagnostic_manifest "${release_dir}/execution-diagnostic-manifest.json" \
+            --slurpfile diagnostic_metadata "$AUDIT_EVIDENCE_DIR/diagnostics/metadata.json" \
+            --slurpfile diagnostic_summary "$AUDIT_EVIDENCE_DIR/diagnostics/diagnostic-summary.json" \
+            --slurpfile diagnostic_manifest "$AUDIT_EVIDENCE_DIR/diagnostics/diagnostic-manifest.json" \
+            --slurpfile diagnostic_phases "$AUDIT_EVIDENCE_DIR/diagnostics/phase-events.json" \
+            --slurpfile diagnostic_plan "$AUDIT_EVIDENCE_DIR/diagnostics/plan.json" \
+            --slurpfile diagnostic_preflight "$AUDIT_EVIDENCE_DIR/diagnostics/preflight.json" \
+            --slurpfile diagnostic_receipt "$AUDIT_EVIDENCE_DIR/diagnostics/receipt.json" \
+            --slurpfile diagnostic_verification "$AUDIT_EVIDENCE_DIR/diagnostics/verification.json" \
+            --slurpfile diagnostic_ledger "$AUDIT_EVIDENCE_DIR/diagnostics/ledger-snapshot.json" \
             '{
               run:$run[0],
               jobs:$jobs[0],
@@ -292,13 +378,27 @@ jobs:
                 research_manifest:($research_manifest[0] // null),
                 validation_summary:($validation_summary[0] // null),
                 execution_receipt:($execution_receipt[0] // null),
-                execution_verification:($execution_verification[0] // null)
+                execution_verification:($execution_verification[0] // null),
+                execution_diagnostic_summary:($release_diagnostic_summary[0] // null),
+                execution_diagnostic_manifest:($release_diagnostic_manifest[0] // null)
+              },
+              diagnostics:{
+                metadata:$diagnostic_metadata[0],
+                summary:($diagnostic_summary[0] // null),
+                manifest:($diagnostic_manifest[0] // null),
+                phase_events:$diagnostic_phases[0],
+                plan:($diagnostic_plan[0] // null),
+                preflight:($diagnostic_preflight[0] // null),
+                receipt:($diagnostic_receipt[0] // null),
+                verification:($diagnostic_verification[0] // null),
+                ledger:($diagnostic_ledger[0] // null),
+                evidence_root:"evidence/diagnostics/files/execution-diagnostics"
               },
               evidence_safety:{secret_value_scan_passed:true},
               agent_response:{available:false}
             }' > "$AUDIT_EVIDENCE_PATH"
           if LC_ALL=C grep -aEq \
-            -- '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9]{20,}' \
+            -- '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9]{20,}|0x[0-9a-fA-F]{130}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}|[Aa]uthorization[[:space:]]*:[[:space:]]*(Bearer|Basic)[[:space:]]+[A-Za-z0-9._~+/=-]{8,}|^[Cc]ookie[[:space:]]*:[[:space:]]|^[Ss]et-[Cc]ookie[[:space:]]*:[[:space:]]' \
             "$AUDIT_EVIDENCE_PATH"; then
             echo "::error::Audit evidence contains secret-like material"
             exit 1
@@ -308,7 +408,7 @@ jobs:
             '.run.id == $run_id and (.jobs | type == "array") and (.configuration.interval_hours | type == "number")' \
             "$AUDIT_EVIDENCE_PATH" >/dev/null
 
-      - name: Run tool-free Kimi Code Agent audit
+      - name: Run read-only Kimi Code Judge agent
         id: audit-agent
         continue-on-error: true
         timeout-minutes: 10
@@ -318,23 +418,15 @@ jobs:
         run: |
           set -euo pipefail
           install -d -m 700 "$AUDIT_AGENT_DIR"
-          install -m 600 "$AUDIT_EVIDENCE_PATH" "$AUDIT_AGENT_DIR/evidence.json"
+          install -d -m 700 "$AUDIT_AGENT_DIR/evidence"
+          cp -R "$AUDIT_EVIDENCE_DIR/." "$AUDIT_AGENT_DIR/evidence/"
           install -m 600 "$AUDIT_RUBRIC_PATH" "$AUDIT_AGENT_DIR/rubric.json"
           install -m 600 "$AUDIT_SCHEMA_PATH" "$AUDIT_AGENT_DIR/audit.schema.json"
           install -m 600 "$AUDIT_PROMPT_PATH" "$AUDIT_AGENT_DIR/prompt.md"
-          {
-            sed -n '1,240p' "$AUDIT_AGENT_DIR/prompt.md"
-            printf '\n<rubric-data>\n'
-            jq -c '.' "$AUDIT_AGENT_DIR/rubric.json"
-            printf '</rubric-data>\n<schema-data>\n'
-            jq -c '.' "$AUDIT_AGENT_DIR/audit.schema.json"
-            printf '</schema-data>\n<evidence-data>\n'
-            jq -c '.' "$AUDIT_AGENT_DIR/evidence.json"
-            printf '</evidence-data>\n'
-          } > "$AUDIT_AGENT_DIR/rendered-prompt.txt"
           cd "$AUDIT_AGENT_DIR"
           kimi --agent-file "$AUDIT_AGENT_PROFILE_PATH" \
-            -p "$(<rendered-prompt.txt)" \
+            --output-format stream-json \
+            -p "请遵循 prompt.md，作为只读 Judge Agent 主动检查本目录证据并输出最终审计 JSON。" \
             > "$AUDIT_AGENT_RAW_RESPONSE_PATH" 2> "$AUDIT_RUNTIME_DIR/agent.stderr"
           if grep -Fq -- "$KIMI_MODEL_API_KEY" "$AUDIT_AGENT_RAW_RESPONSE_PATH"; then
             echo "::error::Audit agent response contained protected credential material"
@@ -345,7 +437,8 @@ jobs:
             --rubric "$AUDIT_RUBRIC_PATH" \
             --evidence "$AUDIT_EVIDENCE_PATH" \
             --schema "$AUDIT_SCHEMA_PATH" \
-            --output "$AUDIT_AGENT_RESPONSE_PATH"
+            --output "$AUDIT_AGENT_RESPONSE_PATH" \
+            --trace-output "$AUDIT_AGENT_TRACE_PATH"
           "$AUDIT_RUNTIME_DIR/python-venv/bin/python" "$GITHUB_WORKSPACE/scripts/forecast_edge_audit.py" normalize \
             --input "$AUDIT_AGENT_RESPONSE_PATH" \
             --rubric "$AUDIT_RUBRIC_PATH" \
@@ -379,6 +472,44 @@ jobs:
           fi
           jq -e --arg run_id "$PARENT_RUN_ID" '.parent_run_id == $run_id' "$AUDIT_RESULT_PATH" >/dev/null
 
+      - name: Classify audit outcome and breaker requirement
+        id: classify
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          overall=INSUFFICIENT_EVIDENCE
+          confidence=LOW
+          serious_findings='["AUDIT-INFRASTRUCTURE"]'
+          if [[ -n "${AUDIT_RESULT_PATH:-}" && -s "$AUDIT_RESULT_PATH" ]] && \
+             jq -e '.overall_status and .confidence and (.checks | type == "array")' \
+               "$AUDIT_RESULT_PATH" >/dev/null; then
+            overall=$(jq -r '.overall_status' "$AUDIT_RESULT_PATH")
+            confidence=$(jq -r '.confidence' "$AUDIT_RESULT_PATH")
+            serious_findings=$(jq -c '[
+              .checks[]
+              | select(
+                  (.status == "FAIL")
+                  or (
+                    (.severity == "critical" or .severity == "high")
+                    and .status == "INSUFFICIENT_EVIDENCE"
+                  )
+                )
+              | .id
+            ]' "$AUDIT_RESULT_PATH")
+          fi
+          trip_required=false
+          if [[ "$CIRCUIT_BREAKER_ENABLED" == "true" ]] && \
+             [[ "$(jq 'length' <<< "$serious_findings")" -gt 0 ]]; then
+            trip_required=true
+          fi
+          {
+            echo "overall_status=$overall"
+            echo "confidence=$confidence"
+            echo "serious_findings=$serious_findings"
+            echo "trip_required=$trip_required"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Publish sanitized audit summary
         shell: bash
         run: |
@@ -411,28 +542,15 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Trip production circuit breaker on serious findings
-        if: ${{ env.CIRCUIT_BREAKER_ENABLED == 'true' }}
+        id: breaker
+        if: ${{ always() && steps.classify.outputs.trip_required == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          SERIOUS_FINDINGS: ${{ steps.classify.outputs.serious_findings }}
         shell: bash
         run: |
           set -euo pipefail
-          serious_findings=$(jq '[
-            .checks[]
-            | select(
-                (.status == "FAIL")
-                or (
-                  (.severity == "critical" or .severity == "high")
-                  and .status == "INSUFFICIENT_EVIDENCE"
-                )
-              )
-            | .id
-          ]' "$AUDIT_RESULT_PATH")
-          if [[ "$(jq 'length' <<< "$serious_findings")" -eq 0 ]]; then
-            echo "No serious rubric finding; production circuit breaker remains armed and idle."
-            exit 0
-          fi
-
+          echo "breaker_succeeded=false" >> "$GITHUB_OUTPUT"
           breaker_failed=false
           if ! gh variable set POLYMARKET_LIVE_TRADING_ENABLED \
             --repo "$GITHUB_REPOSITORY" --body false; then
@@ -449,7 +567,7 @@ jobs:
             echo "::error::Could not disable the Forecast Edge parent workflow"
             breaker_failed=true
           fi
-          finding_ids=$(jq -r 'join(", ")' <<< "$serious_findings")
+          finding_ids=$(jq -r 'join(", ")' <<< "$SERIOUS_FINDINGS")
           {
             printf '\n## Production circuit breaker\n\n'
             printf -- '- Triggered: `true`\n'
@@ -461,6 +579,7 @@ jobs:
           if [[ "$breaker_failed" == "true" ]]; then
             exit 1
           fi
+          echo "breaker_succeeded=true" >> "$GITHUB_OUTPUT"
 
       - name: Enforce critical audit outcome
         shell: bash
@@ -482,3 +601,149 @@ jobs:
                 -d "$AUDIT_RUNTIME_DIR" ]]; then
             find "$AUDIT_RUNTIME_DIR" -depth -delete
           fi
+
+  notify:
+    needs: [select, audit]
+    if: >-
+      always() &&
+      github.event_name == 'workflow_run' &&
+      needs.select.outputs.audit-applicable == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    env:
+      PARENT_RUN_ID: ${{ github.event.workflow_run.id }}
+      AUDIT_JOB_RESULT: ${{ needs.audit.result }}
+      AUDIT_OVERALL_STATUS: ${{ needs.audit.outputs.overall_status }}
+      AUDIT_CONFIDENCE: ${{ needs.audit.outputs.confidence }}
+      SERIOUS_FINDINGS: ${{ needs.audit.outputs.serious_findings }}
+      TRIP_REQUIRED: ${{ needs.audit.outputs.trip_required }}
+      BREAKER_SUCCEEDED: ${{ needs.audit.outputs.breaker_succeeded }}
+    steps:
+      - name: Send final production iteration status to Feishu
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for required in FEISHU_APP_ID FEISHU_APP_SECRET FEISHU_CHAT_ID; do
+            if [[ -z "${!required:-}" ]]; then
+              echo "::error::Required Feishu notification secret is unavailable"
+              exit 1
+            fi
+          done
+
+          run_path="$RUNNER_TEMP/parent-run.json"
+          jobs_path="$RUNNER_TEMP/parent-jobs.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID" > "$run_path"
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID/jobs?per_page=100" \
+            | jq -s '[.[].jobs[]]' > "$jobs_path"
+          stage_result() {
+            jq -r --arg pattern "$1" '
+              [ .[] | select(.name | test($pattern)) | (.conclusion // "unknown") ] as $values
+              | if ($values | length) == 0 then "missing"
+                elif any($values[]; . == "failure" or . == "cancelled" or . == "timed_out") then "failure"
+                elif any($values[]; . == "success") then "success"
+                elif all($values[]; . == "skipped") then "skipped"
+                else ($values | unique | join(","))
+                end
+            ' "$jobs_path"
+          }
+          parent_conclusion=$(jq -r '.conclusion // "unknown"' "$run_path")
+          parent_url=$(jq -r '.html_url' "$run_path")
+          gate_result=$(stage_result '^gate(?: /|$)')
+          research_result=$(stage_result '^research(?: /|$)')
+          execution_result=$(stage_result '^execution(?: /|$)')
+          release_result=$(stage_result '^release(?: /|$)')
+          cleanup_result=$(stage_result '^cleanup(?: /|$)')
+          overall=${AUDIT_OVERALL_STATUS:-INSUFFICIENT_EVIDENCE}
+          confidence=${AUDIT_CONFIDENCE:-LOW}
+          audit_job=${AUDIT_JOB_RESULT:-failure}
+          if jq -e 'type == "array"' <<< "${SERIOUS_FINDINGS:-[]}" >/dev/null 2>&1; then
+            finding_ids=$(jq -r 'if length == 0 then "无" else join(", ") end' \
+              <<< "${SERIOUS_FINDINGS:-[]}")
+          else
+            finding_ids="AUDIT-INFRASTRUCTURE"
+          fi
+          breaker_status="未触发"
+          if [[ "${TRIP_REQUIRED:-false}" == "true" ]]; then
+            if [[ "${BREAKER_SUCCEEDED:-false}" == "true" ]]; then
+              breaker_status="已触发；交易已关闭、调度已暂停、父 workflow 已禁用"
+            else
+              breaker_status="需要触发但操作失败或不完整，请立即人工检查"
+            fi
+          fi
+
+          template=blue
+          if [[ "$parent_conclusion" != "success" || "$audit_job" != "success" || \
+                "$overall" == "FAIL" || "$overall" == "INSUFFICIENT_EVIDENCE" ]]; then
+            template=red
+          elif [[ "$overall" == "WARN" ]]; then
+            template=orange
+          fi
+          message_path="$RUNNER_TEMP/forecast-edge-final-status.md"
+          {
+            printf '**父流程**：[%s](%s) · `%s`\n' "$PARENT_RUN_ID" "$parent_url" "$parent_conclusion"
+            printf '**阶段**：gate `%s` · research `%s` · execution `%s` · release `%s` · cleanup `%s`\n' \
+              "$gate_result" "$research_result" "$execution_result" "$release_result" "$cleanup_result"
+            printf '**Agent Judge**：job `%s` · 结论 `%s` · 置信度 `%s`\n' \
+              "$audit_job" "$overall" "$confidence"
+            printf '**严重检查项**：%s\n' "$finding_ids"
+            printf '**生产熔断**：%s\n' "$breaker_status"
+            printf '**审计运行**：[%s](https://github.com/%s/actions/runs/%s)\n' \
+              "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+          } > "$message_path"
+
+          token_response=$(
+            jq -cn \
+              --arg app_id "$FEISHU_APP_ID" \
+              --arg app_secret "$FEISHU_APP_SECRET" \
+              '{app_id:$app_id, app_secret:$app_secret}' \
+              | curl --fail-with-body --silent --show-error \
+                  --retry 3 --retry-all-errors --retry-delay 2 --max-time 30 \
+                  --request POST \
+                  --header 'Content-Type: application/json; charset=utf-8' \
+                  --data-binary @- \
+                  https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal
+          )
+          tenant_token=$(jq -er \
+            'select(.code == 0) | .tenant_access_token | select(type == "string" and length > 0)' \
+            <<< "$token_response")
+          echo "::add-mask::$tenant_token"
+          message_payload=$(
+            jq -cn \
+              --arg receive_id "$FEISHU_CHAT_ID" \
+              --arg uuid "forecast-edge-final-$PARENT_RUN_ID-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+              --arg title "Forecast Edge 最终状态 — run $PARENT_RUN_ID" \
+              --arg template "$template" \
+              --rawfile message "$message_path" \
+              '{
+                receive_id:$receive_id,
+                msg_type:"interactive",
+                content:({
+                  schema:"2.0",
+                  config:{wide_screen_mode:true},
+                  header:{title:{tag:"plain_text",content:$title},template:$template},
+                  body:{elements:[{tag:"markdown",content:$message}]}
+                } | tojson),
+                uuid:$uuid
+              }'
+          )
+          send_response=$(
+            printf '%s' "$message_payload" \
+              | curl --fail-with-body --silent --show-error \
+                  --retry 3 --retry-all-errors --retry-delay 2 --max-time 30 \
+                  --request POST \
+                  --header "Authorization: Bearer $tenant_token" \
+                  --header 'Content-Type: application/json; charset=utf-8' \
+                  --data-binary @- \
+                  'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id'
+          )
+          jq -e '.code == 0 and (.data.message_id | type == "string" and length > 0)' \
+            <<< "$send_response" >/dev/null

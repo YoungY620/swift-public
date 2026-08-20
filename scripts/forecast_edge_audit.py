@@ -13,10 +13,19 @@ from jsonschema import Draft202012Validator
 
 
 ALLOWED_STATUSES = {"PASS", "WARN", "FAIL", "INSUFFICIENT_EVIDENCE", "NOT_APPLICABLE"}
+ALLOWED_AGENT_TOOLS = {"Read", "Grep", "Glob", "WebSearch", "FetchURL", "Agent"}
+REQUIRED_AGENT_TOOLS = {"Read", "Agent"}
 SECRET_PATTERNS = (
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
     re.compile(r"\b(?:POLYMARKET|AWS|KIMI|FEISHU|GITHUB)_[A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSPHRASE)\b"),
-    re.compile(r"\b(?:ghp|github_pat|sk)-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\b(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b"),
+    re.compile(r"\b0x[0-9a-fA-F]{130}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}\b"),
+    re.compile(r"(?i)authorization\s*:\s*(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"),
+    re.compile(r"(?im)^(?:cookie|set-cookie)\s*:\s*[^\r\n]{8,}$"),
+    re.compile(
+        r'(?i)"(?:private[_-]?key|password|api[_-]?key|api[_-]?secret|client[_-]?secret|passphrase|access[_-]?token|refresh[_-]?token|session[_-]?token|auth[_-]?token|cookie|mnemonic|seed[_-]?phrase)"\s*:\s*"[^"\r\n]+"'
+    ),
 )
 
 
@@ -78,6 +87,97 @@ def extract_last_json_object(text: str) -> dict[str, Any]:
     if candidate is None:
         raise AuditValidationError("agent output did not contain a JSON object")
     return candidate
+
+
+def extract_agent_stream(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Extract a final judgment and prove it came from a read-only agent run."""
+    for pattern in SECRET_PATTERNS:
+        if pattern.search(text):
+            raise AuditValidationError("audit output contains secret-like text")
+
+    events: list[dict[str, Any]] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise AuditValidationError(
+                f"agent stream line {line_number} is not JSON"
+            ) from exc
+        if not isinstance(event, dict):
+            raise AuditValidationError(
+                f"agent stream line {line_number} is not a JSON object"
+            )
+        events.append(event)
+
+    assistant_messages = 0
+    tool_calls: list[tuple[str, str]] = []
+    completed_tool_call_ids: set[str] = set()
+    final_content: str | None = None
+    for event in events:
+        role = event.get("role")
+        if role == "assistant":
+            assistant_messages += 1
+            content = event.get("content")
+            if isinstance(content, str) and content.strip():
+                final_content = content
+            calls = event.get("tool_calls", [])
+            if calls is None:
+                calls = []
+            if not isinstance(calls, list):
+                raise AuditValidationError("agent stream tool_calls is not an array")
+            for call in calls:
+                if not isinstance(call, dict):
+                    raise AuditValidationError("agent stream contains an invalid tool call")
+                function = call.get("function")
+                call_id = call.get("id")
+                if not isinstance(function, dict) or not isinstance(call_id, str):
+                    raise AuditValidationError("agent stream contains an incomplete tool call")
+                name = function.get("name")
+                if not isinstance(name, str) or not name:
+                    raise AuditValidationError("agent stream contains an unnamed tool call")
+                if name not in ALLOWED_AGENT_TOOLS:
+                    raise AuditValidationError(f"agent invoked forbidden tool {name}")
+                tool_calls.append((call_id, name))
+        elif role == "tool":
+            call_id = event.get("tool_call_id")
+            if isinstance(call_id, str):
+                completed_tool_call_ids.add(call_id)
+
+    observed_tools = {name for _, name in tool_calls}
+    missing_tools = sorted(REQUIRED_AGENT_TOOLS - observed_tools)
+    if missing_tools:
+        raise AuditValidationError(
+            "agent did not exercise required tools: " + ", ".join(missing_tools)
+        )
+    if len(tool_calls) < 2 or assistant_messages < 2:
+        raise AuditValidationError("agent stream does not show a multi-step tool-using run")
+    incomplete_calls = sorted(
+        call_id for call_id, _ in tool_calls if call_id not in completed_tool_call_ids
+    )
+    if incomplete_calls:
+        raise AuditValidationError("agent stream contains incomplete tool calls")
+    if final_content is None:
+        raise AuditValidationError("agent stream has no final assistant response")
+
+    response = extract_last_json_object(final_content)
+    counts = {
+        name: sum(1 for _, called_name in tool_calls if called_name == name)
+        for name in sorted(observed_tools)
+    }
+    trace = {
+        "schema_version": "1.0",
+        "stream_event_count": len(events),
+        "assistant_message_count": assistant_messages,
+        "tool_call_count": len(tool_calls),
+        "completed_tool_result_count": len(completed_tool_call_ids),
+        "tool_call_counts": counts,
+        "required_tools_observed": sorted(REQUIRED_AGENT_TOOLS),
+        "forbidden_tools_observed": [],
+        "agentic_trace_verified": True,
+    }
+    return response, trace
 
 
 def normalize_unsupported_judgments(
@@ -229,6 +329,7 @@ def main() -> int:
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--schema", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--trace-output", type=Path)
     parser.add_argument("--parent-run-id", default="0")
     args = parser.parse_args()
 
@@ -236,9 +337,16 @@ def main() -> int:
     evidence = load_json(args.evidence, "evidence")
     schema = load_json(args.schema, "audit schema")
     if args.command == "extract":
-        response = extract_last_json_object(args.input.read_text(encoding="utf-8"))
+        if args.trace_output is None:
+            raise AuditValidationError("extract requires --trace-output")
+        response, trace = extract_agent_stream(args.input.read_text(encoding="utf-8"))
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(response, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        args.trace_output.parent.mkdir(parents=True, exist_ok=True)
+        args.trace_output.write_text(
+            json.dumps(trace, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
         return 0
     if args.command == "normalize":
         response = load_json(args.input, "agent response")

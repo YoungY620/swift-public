@@ -199,6 +199,54 @@ def _parse_utc(value: str, label: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _planning_summary(document: dict[str, Any]) -> dict[str, Any]:
+    raw_orders = document.get("orders", [])
+    raw_skipped = document.get("skipped", [])
+    if not isinstance(raw_orders, list) or not isinstance(raw_skipped, list):
+        raise ExecutionError("execution plan orders and skipped entries must be arrays")
+    outcomes: list[dict[str, Any]] = []
+    for raw in raw_orders:
+        if not isinstance(raw, dict):
+            raise ExecutionError("execution plan contains a non-object order")
+        outcomes.append(
+            {
+                "intent_index": int(raw.get("intent_index", 0)),
+                "disposition": "planned",
+                "intent": raw.get("intent"),
+                "planned_order": raw,
+            }
+        )
+    for raw in raw_skipped:
+        if not isinstance(raw, dict):
+            raise ExecutionError("execution plan contains a non-object skipped intent")
+        outcomes.append(
+            {
+                "intent_index": int(raw.get("intent_index", 0)),
+                "disposition": "skipped",
+                "intent": raw.get("intent"),
+                "skip": {
+                    "code": raw.get("code"),
+                    "message": raw.get("message"),
+                },
+            }
+        )
+    outcomes.sort(key=lambda item: int(item["intent_index"]))
+    expected_indices = list(range(1, len(outcomes) + 1))
+    if [item["intent_index"] for item in outcomes] != expected_indices:
+        raise ExecutionError("execution plan does not account for every original intent exactly once")
+    if any(not isinstance(item.get("intent"), dict) for item in outcomes):
+        raise ExecutionError("execution plan intent trace is incomplete")
+    return {
+        "schema_version": "1.0",
+        "plan_created_at": document.get("created_at"),
+        "plan_expires_at": document.get("expires_at"),
+        "source_intent_count": len(outcomes),
+        "planned_order_count": len(raw_orders),
+        "skipped_intent_count": len(raw_skipped),
+        "intent_outcomes": outcomes,
+    }
+
+
 def command_execute(args: argparse.Namespace) -> int:
     document = load_json_object(args.plan, "execution plan")
     cancellations = load_json_object(args.cancellations, "pre-execution cancellation summary")
@@ -212,11 +260,14 @@ def command_execute(args: argparse.Namespace) -> int:
         raise ExecutionError("execution plan expired before order submission")
     limits = RiskLimits.from_dict(document.get("limits", {}))
     orders = tuple(PlannedOrder.from_dict(item) for item in document.get("orders", []))
+    planning = _planning_summary(document)
     if not orders:
         summary = {
             "schema_version": "1.0",
             "status": "NO_ACTIONS",
             "execution_id": args.execution_id,
+            "claim": "not_required",
+            "planning": planning,
             "pre_execution_cancellation": cancellations,
             "receipts": [],
         }
@@ -246,6 +297,8 @@ def command_execute(args: argparse.Namespace) -> int:
     if claim == "completed":
         existing = ledger.get(ledger.run_key) or {}
         summary = json.loads(str(existing.get("summary", "{}")))
+        summary.setdefault("execution_id", args.execution_id)
+        summary.setdefault("planning", planning)
         summary["idempotent_replay"] = True
         _write_json(args.output, summary)
         return 0
@@ -258,9 +311,10 @@ def command_execute(args: argparse.Namespace) -> int:
                 ledger=ledger,
                 settlement_timeout_seconds=args.settlement_timeout_seconds,
                 pre_execution_cancellation=cancellations,
+                execution_id=args.execution_id,
+                execution_claim=claim,
+                planning=planning,
             )
-        summary["execution_id"] = args.execution_id
-        summary["claim"] = claim
         _write_json(args.output, summary)
         return 0
     except Exception:

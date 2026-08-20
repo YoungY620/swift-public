@@ -29,10 +29,23 @@ def main() -> int:
     execution_step = between(
         execution,
         "      - name: Validate, cancel open orders, price, execute FOK market orders, and verify locally\n",
-        "\n      - name: Confirm sanitized execution handoff\n",
+        "\n      - name: Build and persist secret-free execution diagnostics\n",
+    )
+    diagnostics_step = between(
+        execution,
+        "      - name: Build and persist secret-free execution diagnostics\n",
+        "\n      - name: Remove private execution runtime\n",
+    )
+    audit_agent_step = between(
+        audit,
+        "      - name: Run read-only Kimi Code Judge agent\n",
+        "\n      - name: Validate agent judgment or produce fail-closed audit",
     )
 
     audit_secrets = sorted(set(re.findall(r"secrets\.([A-Z0-9_]+)", audit)))
+    audit_agent_secrets = sorted(
+        set(re.findall(r"secrets\.([A-Z0-9_]+)", audit_agent_step))
+    )
     labels = [
         label
         for label in (
@@ -60,9 +73,44 @@ def main() -> int:
             "needs.gate.outputs.execution-ready == 'true'" in execution_call
             and "needs.research.outputs.has-intents == 'true'" in execution_call
         ),
-        "no_actions_artifacts": (
-            "actions/upload-artifact" not in combined
-            and "actions/download-artifact" not in combined
+        "diagnostics_after_execution": (
+            "actions/upload-artifact@v4" in diagnostics_step
+            and "actions: write" in execution_call
+            and "actions: write" in execution
+            and execution.index("Validate, cancel open orders, price, execute FOK market orders, and verify locally")
+            < execution.index("Build and persist secret-free execution diagnostics")
+            < execution.index("Upload private-fork execution diagnostics for post-run Judge")
+            and "actions/upload-artifact" not in research
+        ),
+        "execution_diagnostics": (
+            "build_polymarket_execution_diagnostics.py" in diagnostics_step
+            and "execution-diagnostics.tar.gz" in diagnostics_step
+            and "PERSISTENT_DIAGNOSTICS_ROOT" in execution
+            and "retention-days: 90" in diagnostics_step
+            and "verify_polymarket_execution_diagnostics.py" in audit
+        ),
+        "diagnostic_secret_guards": (
+            "--secret-file \"$SERVER_SECRET_PATH\"" in diagnostics_step
+            and "server credential value detected" in
+            (root / "scripts/build_polymarket_execution_diagnostics.py").read_text(encoding="utf-8")
+            and "signed_order_digest" in
+            (root / "scripts/build_polymarket_execution_diagnostics.py").read_text(encoding="utf-8")
+            and '"signed_order":' not in
+            (root / "scripts/build_polymarket_execution_diagnostics.py").read_text(encoding="utf-8")
+        ),
+        "agentic_judge_trace": (
+            "--output-format stream-json" in audit_agent_step
+            and "--trace-output \"$AUDIT_AGENT_TRACE_PATH\"" in audit_agent_step
+            and "extract_agent_stream" in
+            (root / "scripts/forecast_edge_audit.py").read_text(encoding="utf-8")
+            and audit_agent_secrets == ["KIMI_CODE_API_KEY"]
+        ),
+        "final_iteration_notification": (
+            "  notify:\n" in audit
+            and "always()" in between(audit, "  notify:\n")
+            and "github.event_name == 'workflow_run'" in between(audit, "  notify:\n")
+            and "FEISHU_APP_ID" in between(audit, "  notify:\n")
+            and "AUDIT_OVERALL_STATUS" in between(audit, "  notify:\n")
         ),
         "release_after_execution": (
             "needs: [gate, research, execution]" in release
@@ -90,7 +138,7 @@ def main() -> int:
         "credential_isolation": (
             "SERVER_SECRET_PATH: /home/ubuntu/poly-edge-live/runtime/secrets.json" in execution
             and "secrets.POLYMARKET_" not in execution
-            and audit_secrets == ["KIMI_CODE_API_KEY"]
+            and audit_agent_secrets == ["KIMI_CODE_API_KEY"]
         ),
         "audit_circuit_breaker": (
             "Trip production circuit breaker on serious findings" in audit
@@ -106,7 +154,8 @@ def main() -> int:
             and "FORECAST_EDGE_AUTOMATION_PAUSED" in audit
         ),
         "execution_runner_labels": labels,
-        "audit_agent_credential_count": len(audit_secrets),
+        "audit_agent_credential_count": len(audit_agent_secrets),
+        "audit_workflow_credential_count": len(audit_secrets),
     }
     print(json.dumps(contract, indent=2, sort_keys=True))
     return 0

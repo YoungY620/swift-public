@@ -43,7 +43,7 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         return {
             "schema_version": "1.0",
             "rubric_id": "forecast-edge-production-audit",
-            "rubric_version": "1.1",
+            "rubric_version": self.rubric["rubric_version"],
             "overall_status": "PASS",
             "confidence": "HIGH",
             "parent_run_id": "123",
@@ -73,13 +73,18 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertIn("Forecast Edge research and optional execution", self.workflow)
         self.assertIn("Select completed iterations that need agent review", self.workflow)
         self.assertIn("needs.select.outputs.audit-applicable == 'true'", self.workflow)
-        self.assertIn("Run tool-free Kimi Code Agent audit", self.workflow)
+        self.assertIn("Run read-only Kimi Code Judge agent", self.workflow)
         self.assertIn('--agent-file "$AUDIT_AGENT_PROFILE_PATH"', self.workflow)
+        self.assertIn("--output-format stream-json", self.workflow)
+        self.assertIn('--trace-output "$AUDIT_AGENT_TRACE_PATH"', self.workflow)
         profile = AGENT_PROFILE_PATH.read_text(encoding="utf-8")
-        self.assertIn("tools: []", profile)
-        self.assertIn("subagents: []", profile)
-        self.assertNotIn("actions/upload-artifact", self.workflow)
-        self.assertNotIn("actions/download-artifact", self.workflow)
+        self.assertIn("- Read", profile)
+        self.assertIn("- Agent", profile)
+        self.assertIn("- explore", profile)
+        self.assertIn('gh run download "$PARENT_RUN_ID"', self.workflow)
+        self.assertIn("verify_polymarket_execution_diagnostics.py", self.workflow)
+        self.assertIn("Send final production iteration status to Feishu", self.workflow)
+        self.assertIn("github.event_name == 'workflow_run'", self.workflow)
 
     def test_automatic_audits_trip_a_fail_closed_production_breaker(self) -> None:
         self.assertIn("Trip production circuit breaker on serious findings", self.workflow)
@@ -96,7 +101,20 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         import re
 
         configured = set(re.findall(r"secrets\.([A-Z0-9_]+)", self.workflow))
-        self.assertEqual(configured, {"KIMI_CODE_API_KEY"})
+        self.assertEqual(
+            configured,
+            {"KIMI_CODE_API_KEY", "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_CHAT_ID"},
+        )
+        agent_start = self.workflow.index("      - name: Run read-only Kimi Code Judge agent\n")
+        agent_end = self.workflow.index(
+            "\n      - name: Validate agent judgment or produce fail-closed audit",
+            agent_start,
+        )
+        agent_step = self.workflow[agent_start:agent_end]
+        self.assertEqual(
+            set(re.findall(r"secrets\.([A-Z0-9_]+)", agent_step)),
+            {"KIMI_CODE_API_KEY"},
+        )
         for forbidden in (
             "POLYMARKET_EC2_SSH_PRIVATE_KEY",
             "POLYMARKET_SIGNER_PRIVATE_KEY",
@@ -118,6 +136,7 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertTrue(boolean_items)
         self.assertTrue(all(boolean_items))
         self.assertEqual(contract["audit_agent_credential_count"], 1)
+        self.assertEqual(contract["audit_workflow_credential_count"], 4)
 
     def test_valid_complete_response_is_accepted(self) -> None:
         audit_module.validate_response(self.response(), self.rubric, self.evidence, self.schema)
@@ -169,6 +188,60 @@ class ForecastEdgeAuditTests(unittest.TestCase):
     def test_extract_rejects_secret_like_chatter(self) -> None:
         with self.assertRaisesRegex(audit_module.AuditValidationError, "secret-like"):
             audit_module.extract_last_json_object("progress POLYMARKET_CLOB_API_SECRET")
+
+    def test_extract_requires_real_read_and_subagent_tool_trace(self) -> None:
+        response_text = json.dumps(self.response(), ensure_ascii=False)
+        stream = "\n".join(
+            [
+                json.dumps({"role": "meta", "type": "system.version", "version": "0.37.0"}),
+                json.dumps(
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "type": "function",
+                                "id": "Read_0",
+                                "function": {"name": "Read", "arguments": "{}"},
+                            }
+                        ],
+                    }
+                ),
+                json.dumps({"role": "tool", "tool_call_id": "Read_0", "content": "evidence"}),
+                json.dumps(
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "type": "function",
+                                "id": "Agent_0",
+                                "function": {"name": "Agent", "arguments": "{}"},
+                            }
+                        ],
+                    }
+                ),
+                json.dumps({"role": "tool", "tool_call_id": "Agent_0", "content": "independent"}),
+                json.dumps({"role": "assistant", "content": response_text}, ensure_ascii=False),
+            ]
+        )
+        response, trace = audit_module.extract_agent_stream(stream)
+        self.assertEqual(response, self.response())
+        self.assertTrue(trace["agentic_trace_verified"])
+        self.assertEqual(trace["tool_call_count"], 2)
+
+    def test_extract_rejects_single_plain_model_response(self) -> None:
+        stream = json.dumps({"role": "assistant", "content": json.dumps(self.response())})
+        with self.assertRaisesRegex(audit_module.AuditValidationError, "required tools"):
+            audit_module.extract_agent_stream(stream)
+
+    def test_extract_rejects_raw_signature_and_auth_material(self) -> None:
+        for protected in (
+            "0x" + "ab" * 65,
+            "Authorization: Bearer protected-token-value",
+            'result={"mnemonic":"one two three four five six seven eight nine ten eleven twelve"}',
+        ):
+            with self.subTest(protected=protected[:24]):
+                with self.assertRaisesRegex(audit_module.AuditValidationError, "secret-like"):
+                    audit_module.extract_last_json_object("progress " + protected)
 
     def test_normalizer_downgrades_an_unsupported_pass_without_upgrading(self) -> None:
         response = self.response()

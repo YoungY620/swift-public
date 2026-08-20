@@ -25,6 +25,7 @@ jobs:
       - eu-north-1
     timeout-minutes: 120
     permissions:
+      actions: write
       contents: read
     environment: polymarket-production
     env:
@@ -43,6 +44,7 @@ jobs:
       PLAN_TTL_SECONDS: "120"
       SETTLEMENT_TIMEOUT_SECONDS: "90"
       LEDGER_PATH: /home/ubuntu/poly-edge-live/runtime/execution-ledger.sqlite3
+      PERSISTENT_DIAGNOSTICS_ROOT: /home/ubuntu/poly-edge-live/diagnostics
 
     steps:
       - name: Check out trusted executor code
@@ -75,7 +77,7 @@ jobs:
             echo "::error::Research handoff digest is invalid"
             exit 1
           fi
-          if [[ ! -f "$SERVER_SECRET_PATH" || \
+          if [[ -L "$SERVER_SECRET_PATH" || ! -f "$SERVER_SECRET_PATH" || \
                 "$(stat -c '%U' "$SERVER_SECRET_PATH")" != "ubuntu" || \
                 "$(stat -c '%a' "$SERVER_SECRET_PATH")" != "600" ]]; then
             echo "::error::Server-local Polymarket credentials are unavailable or unsafe"
@@ -94,11 +96,15 @@ jobs:
           runtime_dir="$RUNNER_TEMP/polymarket-execution-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           install -d -m 700 "$runtime_dir"
           install -d -m 700 "$(dirname "$LEDGER_PATH")"
+          install -d -m 700 "$PERSISTENT_DIAGNOSTICS_ROOT"
+          : > "$runtime_dir/phase-events.ndjson"
+          chmod 600 "$runtime_dir/phase-events.ndjson"
           {
             echo "RUNTIME_DIR=$runtime_dir"
             echo "LOCAL_INTENTS_PATH=$runtime_dir/trade-intents.jsonl"
             echo "LOCAL_LIMITS_PATH=$runtime_dir/risk-limits.json"
             echo "PYTHON_VENV_DIR=$runtime_dir/venv"
+            echo "DIAGNOSTICS_ARCHIVE_PATH=$runtime_dir/execution-diagnostics.tar.gz"
           } >> "$GITHUB_ENV"
 
       - name: Load and verify private trade-intent handoff locally
@@ -152,39 +158,77 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m venv "$PYTHON_VENV_DIR"
-          "$PYTHON_VENV_DIR/bin/python" -m pip install --disable-pip-version-check \
-            --requirement automation/requirements-polymarket-execution.txt
+          started_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          set +e
+          (
+            set -euo pipefail
+            python3 -m venv "$PYTHON_VENV_DIR"
+            "$PYTHON_VENV_DIR/bin/python" -m pip install --disable-pip-version-check \
+              --requirement automation/requirements-polymarket-execution.txt
+          ) > "$RUNTIME_DIR/install-command.log" 2>&1
+          exit_code=$?
+          set -e
+          completed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          jq -cn \
+            --arg phase install \
+            --arg started_at "$started_at" \
+            --arg completed_at "$completed_at" \
+            --argjson exit_code "$exit_code" \
+            '{phase:$phase,started_at:$started_at,completed_at:$completed_at,exit_code:$exit_code}' \
+            >> "$RUNTIME_DIR/phase-events.ndjson"
+          exit "$exit_code"
 
       - name: Validate, cancel open orders, price, execute FOK market orders, and verify locally
         shell: bash
         run: |
           set -euo pipefail
-          "$PYTHON_VENV_DIR/bin/python" scripts/polymarket_execution.py validate-artifact \
+          phase_events="$RUNTIME_DIR/phase-events.ndjson"
+          test -f "$phase_events"
+          run_phase() {
+            local phase=$1
+            shift
+            local started_at completed_at exit_code
+            started_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+            set +e
+            "$@" > "$RUNTIME_DIR/$phase-command.log" 2>&1
+            exit_code=$?
+            set -e
+            completed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+            jq -cn \
+              --arg phase "$phase" \
+              --arg started_at "$started_at" \
+              --arg completed_at "$completed_at" \
+              --argjson exit_code "$exit_code" \
+              '{phase:$phase,started_at:$started_at,completed_at:$completed_at,exit_code:$exit_code}' \
+              >> "$phase_events"
+            return "$exit_code"
+          }
+          run_phase validate \
+            "$PYTHON_VENV_DIR/bin/python" scripts/polymarket_execution.py validate-artifact \
             --input "$LOCAL_INTENTS_PATH" \
             --output "$RUNTIME_DIR/validated-intents.jsonl" \
-            --summary "$RUNTIME_DIR/validation.json" \
-            > "$RUNTIME_DIR/validate-command.log" 2>&1
-          "$PYTHON_VENV_DIR/bin/python" scripts/run_with_polymarket_secrets.py \
+            --summary "$RUNTIME_DIR/validation.json"
+          run_phase cancel \
+            "$PYTHON_VENV_DIR/bin/python" scripts/run_with_polymarket_secrets.py \
             "$SERVER_SECRET_PATH" \
             "$PYTHON_VENV_DIR/bin/python" scripts/polymarket_execution.py cancel-open-orders \
-            --output "$RUNTIME_DIR/cancellations.json" \
-            > "$RUNTIME_DIR/cancel-command.log" 2>&1
-          "$PYTHON_VENV_DIR/bin/python" scripts/run_with_polymarket_secrets.py \
+            --output "$RUNTIME_DIR/cancellations.json"
+          run_phase preflight \
+            "$PYTHON_VENV_DIR/bin/python" scripts/run_with_polymarket_secrets.py \
             "$SERVER_SECRET_PATH" \
             "$PYTHON_VENV_DIR/bin/python" scripts/polymarket_execution.py preflight \
             --intents "$RUNTIME_DIR/validated-intents.jsonl" \
-            --output "$RUNTIME_DIR/preflight.json" \
-            > "$RUNTIME_DIR/preflight-command.log" 2>&1
-          "$PYTHON_VENV_DIR/bin/python" scripts/polymarket_execution.py plan \
+            --output "$RUNTIME_DIR/preflight.json"
+          run_phase plan \
+            "$PYTHON_VENV_DIR/bin/python" scripts/polymarket_execution.py plan \
             --intents "$RUNTIME_DIR/validated-intents.jsonl" \
             --preflight "$RUNTIME_DIR/preflight.json" \
             --limits "$LOCAL_LIMITS_PATH" \
             --output "$RUNTIME_DIR/plan.json" \
             --execution-id "$EXECUTION_ID" \
-            --artifact-sha256 "$TRADE_INTENTS_SHA256" \
-            > "$RUNTIME_DIR/plan-command.log" 2>&1
-          "$PYTHON_VENV_DIR/bin/python" scripts/run_with_polymarket_secrets.py \
+            --artifact-sha256 "$TRADE_INTENTS_SHA256"
+          run_phase execute \
+            "$PYTHON_VENV_DIR/bin/python" scripts/run_with_polymarket_secrets.py \
             "$SERVER_SECRET_PATH" \
             "$PYTHON_VENV_DIR/bin/python" scripts/polymarket_execution.py execute \
             --plan "$RUNTIME_DIR/plan.json" \
@@ -195,26 +239,85 @@ jobs:
             --ledger-path "$LEDGER_PATH" \
             --lease-owner "github-$EXECUTION_ID" \
             --daily-notional-limit "$MAX_DAILY_NOTIONAL" \
-            --settlement-timeout-seconds "$SETTLEMENT_TIMEOUT_SECONDS" \
-            > "$RUNTIME_DIR/execute-command.log" 2>&1
-          "$PYTHON_VENV_DIR/bin/python" scripts/run_with_polymarket_secrets.py \
+            --settlement-timeout-seconds "$SETTLEMENT_TIMEOUT_SECONDS"
+          run_phase verify \
+            "$PYTHON_VENV_DIR/bin/python" scripts/run_with_polymarket_secrets.py \
             "$SERVER_SECRET_PATH" \
             "$PYTHON_VENV_DIR/bin/python" scripts/polymarket_execution.py verify \
             --receipt "$RUNTIME_DIR/receipt.json" \
             --output "$RUNTIME_DIR/verification.json" \
-            --execution-id "$EXECUTION_ID" \
-            > "$RUNTIME_DIR/verify-command.log" 2>&1
+            --execution-id "$EXECUTION_ID"
           install -m 600 "$RUNTIME_DIR/receipt.json" \
             "$HANDOFF_DIR/execution-receipt.json"
           install -m 600 "$RUNTIME_DIR/verification.json" \
             "$HANDOFF_DIR/execution-verification.json"
 
-      - name: Confirm sanitized execution handoff
+      - name: Build and persist secret-free execution diagnostics
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${RUNTIME_DIR:-}" || \
+                ! "$RUNTIME_DIR" =~ ^${RUNNER_TEMP}/polymarket-execution-[0-9]+-[0-9]+$ || \
+                ! -d "$RUNTIME_DIR" ]]; then
+            echo "::error::Execution runtime is unavailable for diagnostic collection"
+            exit 1
+          fi
+          persistent_dir="$PERSISTENT_DIAGNOSTICS_ROOT/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          if [[ -e "$persistent_dir" ]]; then
+            echo "::error::Refusing to replace an existing persistent diagnostic archive"
+            exit 1
+          fi
+          install -d -m 700 "$persistent_dir"
+          python3 scripts/build_polymarket_execution_diagnostics.py \
+            --runtime-dir "$RUNTIME_DIR" \
+            --ledger-path "$LEDGER_PATH" \
+            --secret-file "$SERVER_SECRET_PATH" \
+            --execution-id "${EXECUTION_ID:-}" \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --commit-sha "$GITHUB_SHA" \
+            --trade-intents-sha256 "$TRADE_INTENTS_SHA256" \
+            --output-directory "$RUNTIME_DIR/diagnostics-package" \
+            --archive "$DIAGNOSTICS_ARCHIVE_PATH"
+          archive_sha256=$(sha256sum "$DIAGNOSTICS_ARCHIVE_PATH" | cut -d ' ' -f 1)
+          printf '%s  %s\n' "$archive_sha256" execution-diagnostics.tar.gz \
+            > "$RUNTIME_DIR/execution-diagnostics.sha256"
+          chmod 600 "$RUNTIME_DIR/execution-diagnostics.sha256"
+          for destination in "$HANDOFF_DIR" "$persistent_dir"; do
+            install -m 600 "$DIAGNOSTICS_ARCHIVE_PATH" \
+              "$destination/execution-diagnostics.tar.gz"
+            install -m 600 "$RUNTIME_DIR/execution-diagnostics.sha256" \
+              "$destination/execution-diagnostics.sha256"
+            install -m 600 "$RUNTIME_DIR/diagnostics-package/diagnostic-summary.json" \
+              "$destination/execution-diagnostic-summary.json"
+            install -m 600 "$RUNTIME_DIR/diagnostics-package/diagnostic-manifest.json" \
+              "$destination/execution-diagnostic-manifest.json"
+          done
+
+      - name: Upload private-fork execution diagnostics for post-run Judge
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: polymarket-execution-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.HANDOFF_DIR }}/execution-diagnostics.tar.gz
+            ${{ env.HANDOFF_DIR }}/execution-diagnostics.sha256
+            ${{ env.HANDOFF_DIR }}/execution-diagnostic-summary.json
+            ${{ env.HANDOFF_DIR }}/execution-diagnostic-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+      - name: Confirm execution handoff
         shell: bash
         run: |
           set -euo pipefail
           test -s "$HANDOFF_DIR/execution-receipt.json"
           test -s "$HANDOFF_DIR/execution-verification.json"
+          test -s "$HANDOFF_DIR/execution-diagnostics.tar.gz"
+          test -s "$HANDOFF_DIR/execution-diagnostics.sha256"
 
       - name: Remove private execution runtime
         if: ${{ always() }}

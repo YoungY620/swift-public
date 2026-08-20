@@ -479,6 +479,12 @@ class SkippedIntent:
     intent_index: int
     code: str
     message: str
+    intent: TradeIntent
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "intent_index": self.intent_index,
+            "code": self.code,
+            "message": self.message,
+            "intent": self.intent.to_dict(),
+        }

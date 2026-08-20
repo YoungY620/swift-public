@@ -154,7 +154,12 @@ def _plan_one(
     if intent.side == "sell":
         quantity_cap = min(quantity_cap, held_quantity)
         if held_quantity <= ZERO:
-            return SkippedIntent(index, "no_position", "no matching position is available to sell")
+            return SkippedIntent(
+                index,
+                "no_position",
+                "no matching position is available to sell",
+                intent,
+            )
     cash_cap: Decimal | None = None
     if intent.side == "buy":
         spendable = max(ZERO, available_cash - limits.minimum_cash_reserve)
@@ -163,6 +168,7 @@ def _plan_one(
                 index,
                 "insufficient_cash",
                 "available collateral does not preserve the configured cash reserve",
+                intent,
             )
         worst_case_unit_cost = limit_price + maximum_fee_per_share
         quantity_cap = min(
@@ -178,6 +184,7 @@ def _plan_one(
             index,
             "below_minimum",
             "safe quantity is below the live market minimum order size",
+            intent,
         )
 
     fills, remaining = _walk_levels(
@@ -194,6 +201,7 @@ def _plan_one(
             index,
             "insufficient_liquidity",
             "price-protected live liquidity is below the market minimum",
+            intent,
         )
     reduction = max(ZERO, intent.quantity - filled_quantity)
     reduction_bps = int((reduction / intent.quantity * BPS).to_integral_value(rounding=ROUND_UP))
@@ -202,6 +210,7 @@ def _plan_one(
             index,
             "quantity_reduction_too_large",
             f"safe quantity reduction {reduction_bps} bps exceeds the configured limit",
+            intent,
         )
 
     gross = sum((fill.gross_notional for fill in fills), ZERO)
@@ -226,6 +235,7 @@ def _plan_one(
             index,
             "fees_exceed_proceeds",
             "the protected sell proceeds are non-positive after the maximum live fee",
+            intent,
         )
     if intent.side == "buy" and cash_cap is not None and worst_case_cash_effect > cash_cap:
         raise PlanningError(f"intent {index} exceeds its protected all-in cash cap")

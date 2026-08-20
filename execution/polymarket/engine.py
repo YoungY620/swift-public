@@ -88,6 +88,7 @@ def _replan_one(
         reason = refreshed.skipped[0].code if refreshed.skipped else "unknown"
         raise ExecutionError(f"intent {original.intent_index} became non-executable: {reason}")
     current = refreshed.orders[0]
+    current = replace(current, intent_index=original.intent_index)
     if current.quantity > original.quantity:
         raise UncertainExecutionError("fresh plan would increase the approved quantity")
     if current.side == "buy" and current.limit_price > original.limit_price:
@@ -362,6 +363,9 @@ def execute_orders(
     expected_account: dict[str, Any] | None = None,
     expires_at: datetime | None = None,
     pre_execution_cancellation: dict[str, Any] | None = None,
+    execution_id: str,
+    execution_claim: str,
+    planning: dict[str, Any],
 ) -> dict[str, Any]:
     orders = tuple(orders)
     receipts: list[dict[str, Any]] = []
@@ -545,6 +549,9 @@ def execute_orders(
             "schema_version": "1.0",
             "completed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "status": "COMPLETED",
+            "execution_id": execution_id,
+            "claim": execution_claim,
+            "planning": planning,
             "pre_execution_cancellation": pre_execution_cancellation or {},
             "receipts": receipts,
         }
@@ -556,6 +563,9 @@ def execute_orders(
             "schema_version": "1.0",
             "completed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "status": "UNCERTAIN",
+            "execution_id": execution_id,
+            "claim": execution_claim,
+            "planning": planning,
             "pre_execution_cancellation": pre_execution_cancellation or {},
             "receipts": receipts,
         }
@@ -567,6 +577,9 @@ def execute_orders(
             "schema_version": "1.0",
             "completed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "status": "UNCERTAIN" if uncertain else "FAILED",
+            "execution_id": execution_id,
+            "claim": execution_claim,
+            "planning": planning,
             "pre_execution_cancellation": pre_execution_cancellation or {},
             "receipts": receipts,
         }

@@ -138,6 +138,7 @@ jobs:
       needs.gate.outputs.execution-ready == 'true' &&
       needs.research.outputs.has-intents == 'true'
     permissions:
+      actions: write
       contents: read
     uses: ./.github/workflows/execute-polymarket.yml
     with:
@@ -211,6 +212,10 @@ jobs:
             scp "${ssh_options[@]}" \
               "$EC2_USER@$EC2_HOST:$REMOTE_HANDOFF_DIR/execution-receipt.json" \
               "$EC2_USER@$EC2_HOST:$REMOTE_HANDOFF_DIR/execution-verification.json" \
+              "$EC2_USER@$EC2_HOST:$REMOTE_HANDOFF_DIR/execution-diagnostics.tar.gz" \
+              "$EC2_USER@$EC2_HOST:$REMOTE_HANDOFF_DIR/execution-diagnostics.sha256" \
+              "$EC2_USER@$EC2_HOST:$REMOTE_HANDOFF_DIR/execution-diagnostic-summary.json" \
+              "$EC2_USER@$EC2_HOST:$REMOTE_HANDOFF_DIR/execution-diagnostic-manifest.json" \
               "$runtime_dir/"
           fi
           rm -f "$ssh_key_path" "$known_hosts_path"
@@ -321,6 +326,9 @@ jobs:
           verification_asset=null
           receipt_digest=null
           verification_digest=null
+          diagnostics_archive_digest=null
+          diagnostics_summary_digest=null
+          diagnostics_manifest_digest=null
           if [[ "$EXECUTION_RESULT" == "success" ]]; then
             jq -e '.status == "COMPLETED" or .status == "NO_ACTIONS"' \
               "$RELEASE_RUNTIME_DIR/execution-receipt.json" >/dev/null
@@ -330,6 +338,34 @@ jobs:
             verification_asset=execution-verification.json
             receipt_digest=$(sha256sum "$RELEASE_RUNTIME_DIR/$receipt_asset" | cut -d ' ' -f 1)
             verification_digest=$(sha256sum "$RELEASE_RUNTIME_DIR/$verification_asset" | cut -d ' ' -f 1)
+            diagnostics_archive_digest=$(sha256sum \
+              "$RELEASE_RUNTIME_DIR/execution-diagnostics.tar.gz" | cut -d ' ' -f 1)
+            test "$(cut -d ' ' -f 1 "$RELEASE_RUNTIME_DIR/execution-diagnostics.sha256")" = \
+              "$diagnostics_archive_digest"
+            jq -e \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg run_id "$GITHUB_RUN_ID" \
+              --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+              --arg execution_id "$(jq -r '.execution_id' "$RELEASE_RUNTIME_DIR/execution-receipt.json")" \
+              '.schema_version == "1.0" and
+               .repository == $repository and
+               .workflow_run_id == $run_id and
+               .workflow_run_attempt == $run_attempt and
+               .execution_id == $execution_id and
+               .secret_scan_passed == true and
+               (.intent_trace | type == "array")' \
+              "$RELEASE_RUNTIME_DIR/execution-diagnostic-summary.json" >/dev/null
+            jq -e \
+              --arg run_id "$GITHUB_RUN_ID" \
+              '.schema_version == "1.0" and
+               .workflow_run_id == $run_id and
+               .secret_scan_passed == true and
+               (.files | type == "array" and length > 0)' \
+              "$RELEASE_RUNTIME_DIR/execution-diagnostic-manifest.json" >/dev/null
+            diagnostics_summary_digest=$(sha256sum \
+              "$RELEASE_RUNTIME_DIR/execution-diagnostic-summary.json" | cut -d ' ' -f 1)
+            diagnostics_manifest_digest=$(sha256sum \
+              "$RELEASE_RUNTIME_DIR/execution-diagnostic-manifest.json" | cut -d ' ' -f 1)
           fi
           jq -n \
             --arg schema_version "1.0" \
@@ -353,6 +389,9 @@ jobs:
             --arg receipt_sha256 "$receipt_digest" \
             --arg verification_asset "$verification_asset" \
             --arg verification_sha256 "$verification_digest" \
+            --arg diagnostics_archive_sha256 "$diagnostics_archive_digest" \
+            --arg diagnostics_summary_sha256 "$diagnostics_summary_digest" \
+            --arg diagnostics_manifest_sha256 "$diagnostics_manifest_digest" \
             '{
               schema_version:$schema_version,
               repository:$repository,
@@ -376,7 +415,20 @@ jobs:
                 receipt_asset:(if $receipt_asset == "null" then null else $receipt_asset end),
                 receipt_sha256:(if $receipt_sha256 == "null" then null else $receipt_sha256 end),
                 verification_asset:(if $verification_asset == "null" then null else $verification_asset end),
-                verification_sha256:(if $verification_sha256 == "null" then null else $verification_sha256 end)
+                verification_sha256:(if $verification_sha256 == "null" then null else $verification_sha256 end),
+                diagnostics:(
+                  if $diagnostics_archive_sha256 == "null" then null
+                  else {
+                    archive_asset:"execution-diagnostics.tar.gz",
+                    archive_sha256:$diagnostics_archive_sha256,
+                    checksum_asset:"execution-diagnostics.sha256",
+                    summary_asset:"execution-diagnostic-summary.json",
+                    summary_sha256:$diagnostics_summary_sha256,
+                    manifest_asset:"execution-diagnostic-manifest.json",
+                    manifest_sha256:$diagnostics_manifest_sha256
+                  }
+                  end
+                )
               }
             }' > "$RELEASE_RUNTIME_DIR/iteration-release-manifest.json"
           {
@@ -420,6 +472,10 @@ jobs:
             assets+=(
               "$RELEASE_RUNTIME_DIR/execution-receipt.json"
               "$RELEASE_RUNTIME_DIR/execution-verification.json"
+              "$RELEASE_RUNTIME_DIR/execution-diagnostics.tar.gz"
+              "$RELEASE_RUNTIME_DIR/execution-diagnostics.sha256"
+              "$RELEASE_RUNTIME_DIR/execution-diagnostic-summary.json"
+              "$RELEASE_RUNTIME_DIR/execution-diagnostic-manifest.json"
             )
           fi
           gh release create "$RELEASE_TAG" \

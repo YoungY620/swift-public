@@ -8,6 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from execution.polymarket.artifact import ArtifactError, load_and_validate_jsonl
+from execution.polymarket.cli import _planning_summary
 from execution.polymarket.engine import _cap_to_signed_market_quantity
 from execution.polymarket.ledger import LedgerError, SQLiteLedger
 from execution.polymarket.models import (
@@ -122,6 +123,7 @@ class PlannerTests(unittest.TestCase):
         )
         self.assertEqual(plan.orders, ())
         self.assertEqual(plan.skipped[0].code, "quantity_reduction_too_large")
+        self.assertEqual(plan.skipped[0].intent, intent())
 
     def test_sell_uses_minimum_of_intent_holding_and_bid_liquidity(self) -> None:
         plan = build_execution_plan(
@@ -215,6 +217,38 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(len(plan.orders), 1)
         self.assertEqual(plan.orders[0].side, "sell")
         self.assertEqual(plan.skipped[0].code, "insufficient_cash")
+
+    def test_planning_summary_accounts_for_every_original_intent(self) -> None:
+        other_condition = "0x" + "b" * 64
+        other_token = "987654321"
+        plan = build_execution_plan(
+            intents=[
+                intent(side="sell"),
+                intent(condition=other_condition, token=other_token),
+            ],
+            markets={
+                TOKEN: market(),
+                other_token: market(condition=other_condition, token=other_token),
+            },
+            positions={TOKEN: Decimal("10")},
+            available_cash=Decimal("5"),
+            limits=RiskLimits(minimum_cash_reserve=Decimal("5")),
+        )
+        summary = _planning_summary(
+            {
+                "created_at": "2026-08-20T00:00:00Z",
+                "expires_at": "2026-08-20T00:02:00Z",
+                **plan.to_dict(),
+            }
+        )
+        self.assertEqual(summary["source_intent_count"], 2)
+        self.assertEqual(summary["planned_order_count"], 1)
+        self.assertEqual(summary["skipped_intent_count"], 1)
+        self.assertEqual(
+            [item["intent_index"] for item in summary["intent_outcomes"]],
+            [1, 2],
+        )
+        self.assertEqual(summary["intent_outcomes"][1]["skip"]["code"], "insufficient_cash")
 
 
 class ArtifactTests(unittest.TestCase):

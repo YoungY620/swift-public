@@ -61,19 +61,22 @@ class WorkflowContractTests(unittest.TestCase):
         execution_call = self.parent[
             self.parent.index("  execution:\n") : self.parent.index("\n  release:\n")
         ]
+        self.assertIn("contents: read", research_call)
+        self.assertNotIn("actions: write", research_call)
         for child_call in (research_call, execution_call):
-            self.assertIn("permissions:\n      contents: read", child_call)
+            self.assertIn("contents: read", child_call)
             self.assertNotIn("contents: write", child_call)
-            self.assertNotIn("actions: write", child_call)
+        self.assertIn("actions: write", execution_call)
 
     def test_children_are_reusable_and_do_not_publish(self) -> None:
         for child in (self.research, self.execution):
             self.assertIn("workflow_call:", child)
             self.assertNotIn("workflow_run:", child)
-            self.assertNotIn("actions/upload-artifact", child)
             self.assertNotIn("actions/download-artifact", child)
             self.assertNotIn("gh release create", child)
             self.assertNotIn("gh issue create", child)
+        self.assertNotIn("actions/upload-artifact", self.research)
+        self.assertIn("actions/upload-artifact@v4", self.execution)
         self.assertNotIn("cron:", self.research)
 
     def test_research_uses_github_hosted_linux(self) -> None:
@@ -117,10 +120,12 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("needs.gate.outputs.should-run == 'true'", cleanup)
         self.assertIn('if [[ -d "$handoff_dir" ]]', cleanup)
 
-    def test_no_actions_artifact_is_used_anywhere_in_the_parent_graph(self) -> None:
+    def test_only_post_execution_diagnostics_use_private_fork_artifacts(self) -> None:
         combined = self.parent + self.research + self.execution
-        self.assertNotIn("actions/upload-artifact", combined)
-        self.assertNotIn("actions/download-artifact", combined)
+        self.assertNotIn("actions/upload-artifact", self.research)
+        self.assertNotIn("actions/download-artifact", self.research)
+        self.assertIn("actions/upload-artifact@v4", self.execution)
+        self.assertIn("Upload private-fork execution diagnostics for post-run Judge", self.execution)
         self.assertNotIn("forecast-edge-trade-intents", combined)
 
     def test_execution_gate_checks_toggle_without_loading_trading_credentials(self) -> None:
@@ -152,15 +157,33 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("aws ec2 run-instances", self.execution)
         self.assertNotIn("Dynamo", self.execution)
 
-    def test_execution_details_stay_out_of_actions_logs_until_release(self) -> None:
+    def test_execution_details_are_captured_in_phase_logs_and_not_streamed(self) -> None:
+        install = self.step(self.execution, "Install isolated execution dependencies")
+        self.assertIn('> "$RUNTIME_DIR/install-command.log" 2>&1', install)
+        self.assertIn('>> "$RUNTIME_DIR/phase-events.ndjson"', install)
         execute = self.step(
             self.execution,
             "Validate, cancel open orders, price, execute FOK market orders, and verify locally",
         )
         for command in ("validate", "cancel", "preflight", "plan", "execute", "verify"):
-            self.assertIn(f'> "$RUNTIME_DIR/{command}-command.log" 2>&1', execute)
+            self.assertIn(f'run_phase {command}', execute)
+        self.assertIn('"$@" > "$RUNTIME_DIR/$phase-command.log" 2>&1', execute)
         self.assertLess(execute.index("cancel-open-orders"), execute.index(" preflight "))
         self.assertIn('--cancellations "$RUNTIME_DIR/cancellations.json"', execute)
+        self.assertIn("phase-events.ndjson", execute)
+        diagnostics = self.step(
+            self.execution, "Build and persist secret-free execution diagnostics"
+        )
+        self.assertIn("build_polymarket_execution_diagnostics.py", diagnostics)
+        self.assertIn('--secret-file "$SERVER_SECRET_PATH"', diagnostics)
+        self.assertIn("PERSISTENT_DIAGNOSTICS_ROOT", self.execution)
+        self.assertIn('"install-command.log"', (
+            ROOT / "scripts" / "build_polymarket_execution_diagnostics.py"
+        ).read_text(encoding="utf-8"))
+        upload = self.step(
+            self.execution, "Upload private-fork execution diagnostics for post-run Judge"
+        )
+        self.assertIn("retention-days: 90", upload)
 
     def test_polymarket_credentials_exist_only_in_server_local_file(self) -> None:
         self.assertIn(
