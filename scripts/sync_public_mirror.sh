@@ -69,11 +69,29 @@ tree_sha=$(git -C "$snapshot" write-tree)
 # GitHub so the private repository's local author identity is never copied.
 git -C "$snapshot" push -q "$remote_url" \
   "$tree_sha:refs/tags/public-mirror-tree-staging"
+commit_payload="$temporary_root/commit.json"
+commit_timestamp=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+jq -n \
+  --arg message 'Publish identity-free source snapshot' \
+  --arg tree "$tree_sha" \
+  --arg date "$commit_timestamp" \
+  '{
+    message:$message,
+    tree:$tree,
+    author:{
+      name:"Poly Edge Public Mirror",
+      email:"public-mirror@users.noreply.github.com",
+      date:$date
+    },
+    committer:{
+      name:"Poly Edge Public Mirror",
+      email:"public-mirror@users.noreply.github.com",
+      date:$date
+    }
+  }' > "$commit_payload"
 commit_sha=$(
   gh api --method POST "repos/$repository/git/commits" \
-    -f message='Publish identity-free source snapshot' \
-    -f tree="$tree_sha" \
-    --jq .sha
+    --input "$commit_payload" --jq .sha
 )
 gh api --method PATCH "repos/$repository/git/refs/heads/main" \
   -f sha="$commit_sha" -F force=true >/dev/null
