@@ -9,7 +9,7 @@
 - 第一工作流只读取已启用预测市场的公开账户、市场、订单簿和持仓数据，不保存或使用交易凭据，不提交订单。
 - 各市场的执行子图必须重新校验 Actions handoff artifact 中的 JSONL、摘要、市场、持仓、价格、金额、数量和成交后状态，不能把研究结果直接当成可信订单。
 - Kimi Code API Key 和通知凭据通过 GitHub Actions Secrets 注入；fork 不继承任何 Repository Secrets。Research 不需要 EC2 SSH key；Polymarket signer private key 与 CLOB credentials 不进入 GitHub。
-- 研究子图只接收 Kimi Code API Key；执行子图不接收任何 Polymarket Secret，只在 EC2 本机调用权限 `0600` 的 `/home/ubuntu/poly-edge-live/runtime/secrets.json`。
+- 研究子图只接收 Kimi Code API Key 和受保护的账户输入 Secret；执行子图不接收任何 Polymarket 签名/CLOB Secret，只在 EC2 本机调用权限 `0600` 的 `/home/ubuntu/poly-edge-live/runtime/secrets.json`。
 - 研究报告、通知正文和 `trade-intents.jsonl` 在执行子图结束前只存在于 runner 临时目录和 private-fork Actions artifact，不进入 Release、Issue 或飞书消息，也不写入 EC2。研究诊断 artifact 包含 Kimi stream、stderr、session/sub-agent 事件和校验日志；执行诊断 artifact 包含执行链证据。两者上传前均拒绝私钥、密码、token、认证头和已知秘密值，且只供有仓库权限的操作者和 post-run Agent Judge 使用。
 - 不使用 VPN 绕过交易平台的地域、条款或法律限制。真实交易只能运行在操作者依法获准使用 Polymarket 的网络和司法辖区中。
 

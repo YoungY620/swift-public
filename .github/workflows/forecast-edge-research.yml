@@ -78,7 +78,7 @@ jobs:
             exit 1
           fi
           if [[ -z "$MARKET_ACCOUNTS_JSON" ]]; then
-            echo "::error::Required repository variable FORECAST_EDGE_MARKET_ACCOUNTS_JSON is not configured"
+            echo "::error::Required Actions secret FORECAST_EDGE_MARKET_ACCOUNTS_JSON is not configured"
             exit 1
           fi
           enabled_adapters=${ENABLED_PREDICTION_MARKETS//[[:space:]]/}
