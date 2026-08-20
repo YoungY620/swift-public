@@ -12,6 +12,7 @@ EXECUTION_PATH = ROOT / ".github" / "workflows" / "execute-polymarket.yml"
 AUDIT_PATH = ROOT / ".github" / "workflows" / "forecast-edge-audit.yml"
 SCHEDULED_PROMPT_PATH = ROOT / "automation" / "prompts" / "scheduled-scan.zh-CN.md"
 REPAIR_PROMPT_PATH = ROOT / "automation" / "prompts" / "repair-trade-intents.zh-CN.md"
+KIMI_WATCHDOG_PATH = ROOT / "scripts" / "run_kimi_code_with_idle_timeout.sh"
 
 
 class WorkflowContractTests(unittest.TestCase):
@@ -21,6 +22,7 @@ class WorkflowContractTests(unittest.TestCase):
         cls.research = RESEARCH_PATH.read_text(encoding="utf-8")
         cls.execution = EXECUTION_PATH.read_text(encoding="utf-8")
         cls.audit = AUDIT_PATH.read_text(encoding="utf-8")
+        cls.kimi_watchdog = KIMI_WATCHDOG_PATH.read_text(encoding="utf-8")
 
     @staticmethod
     def step(workflow: str, name: str) -> str:
@@ -93,7 +95,10 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("self-hosted", self.research)
         validate = self.step(self.research, "Validate workflow configuration")
         self.assertIn("BASH_VERSINFO[0] < 4", validate)
-        self.assertIn("curl gh jq npm python3 scp sha256sum ssh", validate)
+        self.assertIn(
+            "curl gh jq npm python3 scp setsid sha256sum ssh ssh-keygen ssh-keyscan stat stdbuf tar tee",
+            validate,
+        )
 
     def test_private_trade_intents_are_staged_on_mode_0700_ec2_storage(self) -> None:
         configure = self.step(self.research, "Configure authenticated EC2 handoff channel")
@@ -130,14 +135,25 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertNotIn("--yolo", step)
             self.assertIn("--output-format stream-json", step)
             self.assertIn(
-                f'| stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-{attempt}.stream.jsonl"',
+                f'--stdout-log "$RUNTIME_DIR/kimi-attempt-{attempt}.stream.jsonl"',
                 step,
             )
             self.assertIn(
-                f'2> >(stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-{attempt}.stderr" >&2)',
+                f'--stderr-log "$RUNTIME_DIR/kimi-attempt-{attempt}.stderr"',
                 step,
             )
-            self.assertIn("status=${PIPESTATUS[0]}", step)
+            self.assertIn("scripts/run_kimi_code_with_idle_timeout.sh", step)
+            self.assertIn('--idle-seconds "$KIMI_IDLE_TIMEOUT_SECONDS"', step)
+            self.assertIn("status=$?", step)
+
+        self.assertIn('KIMI_IDLE_TIMEOUT_SECONDS: "900"', self.research)
+        self.assertIn('2> >(stdbuf -oL tee "$stderr_log" >&2)', self.kimi_watchdog)
+        self.assertIn('| stdbuf -oL tee "$stdout_log"', self.kimi_watchdog)
+        self.assertIn("current_bytes != last_bytes", self.kimi_watchdog)
+        self.assertIn("current_epoch - last_activity_epoch < idle_seconds", self.kimi_watchdog)
+        self.assertIn('kill -TERM -- "-$session_pid"', self.kimi_watchdog)
+        self.assertIn('| tee -a "$stderr_log" >&2', self.kimi_watchdog)
+        self.assertIn("exit 124", self.kimi_watchdog)
 
         audit_agent = self.step(self.audit, "Run read-only Kimi Code Judge agent")
         self.assertIn("kimi --agent-file", audit_agent)

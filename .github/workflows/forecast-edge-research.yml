@@ -56,6 +56,7 @@ jobs:
       KIMI_MODEL_PROVIDER_TYPE: kimi
       KIMI_MODEL_BASE_URL: https://api.kimi.com/coding/v1
       KIMI_DISABLE_TELEMETRY: "1"
+      KIMI_IDLE_TIMEOUT_SECONDS: "900"
       TRADE_INTENT_SCHEMA_PATH: ${{ github.workspace }}/schemas/trade-intent.schema.json
       MARKET_ADAPTER_REGISTRY: ${{ github.workspace }}/skills/forecast-edge/config/adapters.json
       MARKET_ADAPTER_GUIDE: ${{ github.workspace }}/skills/forecast-edge/references/market-adapters.md
@@ -88,7 +89,7 @@ jobs:
             echo "::error::The research runner must expose Bash 4 or newer"
             exit 1
           fi
-          for required_tool in curl gh jq npm python3 scp sha256sum ssh ssh-keygen ssh-keyscan stdbuf tar tee timeout; do
+          for required_tool in curl gh jq npm python3 scp setsid sha256sum ssh ssh-keygen ssh-keyscan stat stdbuf tar tee; do
             if ! command -v "$required_tool" >/dev/null; then
               echo "::error::The research runner is missing required tool: $required_tool"
               exit 1
@@ -518,16 +519,18 @@ jobs:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
         shell: bash
         run: |
-          set -o pipefail
           set +e
           # Kimi Code prompt mode (-p) uses auto permission by default; no
           # separate interactive approval-mode flag is valid here.
-          stdbuf -oL -eL kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
-            --output-format stream-json \
-            -p "$(<"$ORIGINAL_PROMPT_PATH")" \
-            2> >(stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-1.stderr" >&2) \
-            | stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-1.stream.jsonl"
-          status=${PIPESTATUS[0]}
+          scripts/run_kimi_code_with_idle_timeout.sh \
+            --idle-seconds "$KIMI_IDLE_TIMEOUT_SECONDS" \
+            --poll-seconds 10 \
+            --stdout-log "$RUNTIME_DIR/kimi-attempt-1.stream.jsonl" \
+            --stderr-log "$RUNTIME_DIR/kimi-attempt-1.stderr" \
+            -- kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+              --output-format stream-json \
+              -p "$(<"$ORIGINAL_PROMPT_PATH")"
+          status=$?
           set -e
           if (( status != 0 )); then
             echo "::error::Kimi initial attempt failed; private diagnostics were retained for repair"
@@ -574,15 +577,17 @@ jobs:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
         shell: bash
         run: |
-          set -o pipefail
           set +e
           # Kimi Code prompt mode is already unattended and auto-approved.
-          stdbuf -oL -eL kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
-            --output-format stream-json \
-            -p "$(<"$REPAIR_PROMPT_PATH")" \
-            2> >(stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-2.stderr" >&2) \
-            | stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-2.stream.jsonl"
-          status=${PIPESTATUS[0]}
+          scripts/run_kimi_code_with_idle_timeout.sh \
+            --idle-seconds "$KIMI_IDLE_TIMEOUT_SECONDS" \
+            --poll-seconds 10 \
+            --stdout-log "$RUNTIME_DIR/kimi-attempt-2.stream.jsonl" \
+            --stderr-log "$RUNTIME_DIR/kimi-attempt-2.stderr" \
+            -- kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+              --output-format stream-json \
+              -p "$(<"$REPAIR_PROMPT_PATH")"
+          status=$?
           set -e
           if (( status != 0 )); then
             echo "::error::Kimi repair attempt 1 failed; private diagnostics were retained"
@@ -630,15 +635,17 @@ jobs:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
         shell: bash
         run: |
-          set -o pipefail
           set +e
           # Kimi Code prompt mode is already unattended and auto-approved.
-          stdbuf -oL -eL kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
-            --output-format stream-json \
-            -p "$(<"$REPAIR_PROMPT_PATH")" \
-            2> >(stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-3.stderr" >&2) \
-            | stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-3.stream.jsonl"
-          status=${PIPESTATUS[0]}
+          scripts/run_kimi_code_with_idle_timeout.sh \
+            --idle-seconds "$KIMI_IDLE_TIMEOUT_SECONDS" \
+            --poll-seconds 10 \
+            --stdout-log "$RUNTIME_DIR/kimi-attempt-3.stream.jsonl" \
+            --stderr-log "$RUNTIME_DIR/kimi-attempt-3.stderr" \
+            -- kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+              --output-format stream-json \
+              -p "$(<"$REPAIR_PROMPT_PATH")"
+          status=$?
           set -e
           if (( status != 0 )); then
             echo "::error::Kimi repair attempt 2 failed; private diagnostics were retained"
@@ -686,15 +693,17 @@ jobs:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
         shell: bash
         run: |
-          set -o pipefail
           set +e
           # Kimi Code prompt mode is already unattended and auto-approved.
-          stdbuf -oL -eL kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
-            --output-format stream-json \
-            -p "$(<"$REPAIR_PROMPT_PATH")" \
-            2> >(stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-4.stderr" >&2) \
-            | stdbuf -oL tee "$RUNTIME_DIR/kimi-attempt-4.stream.jsonl"
-          status=${PIPESTATUS[0]}
+          scripts/run_kimi_code_with_idle_timeout.sh \
+            --idle-seconds "$KIMI_IDLE_TIMEOUT_SECONDS" \
+            --poll-seconds 10 \
+            --stdout-log "$RUNTIME_DIR/kimi-attempt-4.stream.jsonl" \
+            --stderr-log "$RUNTIME_DIR/kimi-attempt-4.stderr" \
+            -- kimi --skills-dir "$GITHUB_WORKSPACE/skills" \
+              --output-format stream-json \
+              -p "$(<"$REPAIR_PROMPT_PATH")"
+          status=$?
           set -e
           if (( status != 0 )); then
             echo "::error::Kimi repair attempt 3 failed; private diagnostics were retained"

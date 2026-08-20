@@ -23,6 +23,9 @@ def main() -> int:
     research = (root / ".github/workflows/forecast-edge-research.yml").read_text(encoding="utf-8")
     execution = (root / ".github/workflows/execute-polymarket.yml").read_text(encoding="utf-8")
     audit = (root / ".github/workflows/forecast-edge-audit.yml").read_text(encoding="utf-8")
+    kimi_watchdog = (root / "scripts/run_kimi_code_with_idle_timeout.sh").read_text(
+        encoding="utf-8"
+    )
     combined = parent + research + execution
     release = between(parent, "  release:\n", "\n  cleanup:\n")
     execution_call = between(parent, "  execution:\n", "\n  release:\n")
@@ -113,8 +116,15 @@ def main() -> int:
             research.count("--output-format stream-json") >= 4
             and research.count("kimi --skills-dir") >= 4
             and "--yolo" not in research
-            and research.count("status=${PIPESTATUS[0]}") >= 4
-            and research.count("| stdbuf -oL tee \"$RUNTIME_DIR/kimi-attempt-") >= 4
+            and research.count("scripts/run_kimi_code_with_idle_timeout.sh") >= 4
+            and research.count('--idle-seconds "$KIMI_IDLE_TIMEOUT_SECONDS"') >= 4
+            and 'KIMI_IDLE_TIMEOUT_SECONDS: "900"' in research
+            and '2> >(stdbuf -oL tee "$stderr_log" >&2)' in kimi_watchdog
+            and '| stdbuf -oL tee "$stdout_log"' in kimi_watchdog
+            and "current_bytes != last_bytes" in kimi_watchdog
+            and "current_epoch - last_activity_epoch < idle_seconds" in kimi_watchdog
+            and 'kill -TERM -- "-$session_pid"' in kimi_watchdog
+            and "exit 124" in kimi_watchdog
         ),
         "final_iteration_notification": (
             "  notify:\n" in audit
