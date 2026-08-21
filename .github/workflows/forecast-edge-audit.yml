@@ -95,6 +95,7 @@ jobs:
       serious_findings: ${{ steps.classify.outputs.serious_findings }}
       trip_required: ${{ steps.classify.outputs.trip_required }}
       breaker_succeeded: ${{ steps.breaker.outputs.breaker_succeeded }}
+      feishu_brief_valid: ${{ steps.feishu-brief.outputs.brief_valid }}
     permissions:
       actions: write
       contents: read
@@ -111,6 +112,9 @@ jobs:
       AUDIT_SCHEMA_PATH: ${{ github.workspace }}/schemas/forecast-edge-audit.schema.json
       AUDIT_PROMPT_PATH: ${{ github.workspace }}/automation/prompts/forecast-edge-audit.zh-CN.md
       AUDIT_AGENT_PROFILE_PATH: ${{ github.workspace }}/automation/agents/forecast-edge-auditor.md
+      FEISHU_BRIEF_SCHEMA_PATH: ${{ github.workspace }}/schemas/forecast-edge-feishu-brief.schema.json
+      FEISHU_BRIEF_PROMPT_PATH: ${{ github.workspace }}/automation/prompts/forecast-edge-feishu-brief.zh-CN.md
+      FEISHU_BRIEF_AGENT_PROFILE_PATH: ${{ github.workspace }}/automation/agents/forecast-edge-feishu-reporter.md
 
     steps:
       - name: Check out trusted audit code
@@ -149,6 +153,11 @@ jobs:
             echo "AUDIT_AGENT_RAW_RESPONSE_PATH=$runtime_dir/agent-response.raw.jsonl"
             echo "AUDIT_AGENT_TRACE_PATH=$runtime_dir/agent-trace.json"
             echo "AUDIT_RESULT_PATH=$runtime_dir/audit-result.json"
+            echo "FEISHU_BRIEF_AGENT_DIR=$runtime_dir/feishu-brief-agent"
+            echo "FEISHU_BRIEF_RAW_PATH=$runtime_dir/feishu-brief.raw.jsonl"
+            echo "FEISHU_BRIEF_PATH=$runtime_dir/feishu-brief.json"
+            echo "FEISHU_BRIEF_TRACE_PATH=$runtime_dir/feishu-brief-trace.json"
+            echo "FEISHU_BRIEF_ARTIFACT_DIR=$runtime_dir/feishu-brief-artifact"
             echo "KIMI_CODE_HOME=$RUNNER_TEMP/kimi-code-audit-home"
           } >> "$GITHUB_ENV"
 
@@ -268,6 +277,33 @@ jobs:
                 gh release download "$release_tag" --pattern "$asset" --dir "$release_dir"
               fi
             done
+            if [[ -s "$release_dir/research-release-manifest.json" ]]; then
+              reports_dir="$release_dir/reports"
+              install -d -m 700 "$reports_dir"
+              jq -e '
+                .schema_version == "2.0" and
+                (.reports | type == "array" and length > 0) and
+                all(.reports[];
+                  (.adapter | type == "string" and test("^[a-z][a-z0-9-]*$")) and
+                  .json_asset == ("report-" + .adapter + ".json") and
+                  .markdown_asset == ("report-" + .adapter + ".md") and
+                  (.sha256 | type == "string" and test("^[a-f0-9]{64}$"))
+                )
+              ' "$release_dir/research-release-manifest.json" >/dev/null
+              while IFS=$'\t' read -r json_asset markdown_asset report_sha256; do
+                for report_asset in "$json_asset" "$markdown_asset"; do
+                  jq -e --arg asset "$report_asset" \
+                    '.assets | any(.name == $asset)' "$release_api" >/dev/null
+                  gh release download "$release_tag" --pattern "$report_asset" \
+                    --dir "$reports_dir"
+                done
+                test "$(sha256sum "$reports_dir/$json_asset" | cut -d ' ' -f 1)" = \
+                  "$report_sha256"
+              done < <(
+                jq -r '.reports[] | [.json_asset,.markdown_asset,.sha256] | @tsv' \
+                  "$release_dir/research-release-manifest.json"
+              )
+            fi
           else
             jq -n '{found:false,assets:[]}' > "$release_dir/metadata.json"
           fi
@@ -620,6 +656,90 @@ jobs:
             echo "trip_required=$trip_required"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Run read-only Kimi Code Feishu briefing agent
+        id: feishu-brief-agent
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          reports_dir="$AUDIT_EVIDENCE_DIR/release/reports"
+          test -d "$reports_dir"
+          test -n "$(find "$reports_dir" -maxdepth 1 -name 'report-*.json' -type f -print -quit)"
+          install -d -m 700 "$FEISHU_BRIEF_AGENT_DIR/reports"
+          cp "$reports_dir"/report-*.json "$FEISHU_BRIEF_AGENT_DIR/reports/"
+          cp "$reports_dir"/report-*.md "$FEISHU_BRIEF_AGENT_DIR/reports/"
+          install -m 600 "$FEISHU_BRIEF_PROMPT_PATH" "$FEISHU_BRIEF_AGENT_DIR/prompt.md"
+          install -m 600 "$FEISHU_BRIEF_SCHEMA_PATH" "$FEISHU_BRIEF_AGENT_DIR/brief.schema.json"
+          cd "$FEISHU_BRIEF_AGENT_DIR"
+          set +e
+          stdbuf -oL -eL kimi --agent-file "$FEISHU_BRIEF_AGENT_PROFILE_PATH" \
+            --output-format stream-json \
+            -p "请遵循 prompt.md，使用只读工具和 explore subagent 检查全部报告，输出符合 brief.schema.json 的最终扫描简报 JSON。" \
+            2> >(stdbuf -oL tee "$AUDIT_RUNTIME_DIR/feishu-brief.stderr" >&2) \
+            | stdbuf -oL tee "$FEISHU_BRIEF_RAW_PATH"
+          kimi_status=${PIPESTATUS[0]}
+          set -e
+          if (( kimi_status != 0 )); then
+            echo "::error::Feishu briefing Agent failed"
+            exit "$kimi_status"
+          fi
+          if grep -Fq -- "$KIMI_MODEL_API_KEY" "$FEISHU_BRIEF_RAW_PATH"; then
+            echo "::error::Feishu briefing Agent response contained protected credential material"
+            exit 1
+          fi
+          "$AUDIT_RUNTIME_DIR/python-venv/bin/python" \
+            "$GITHUB_WORKSPACE/scripts/forecast_edge_feishu_brief.py" extract \
+            --input "$FEISHU_BRIEF_RAW_PATH" \
+            --schema "$FEISHU_BRIEF_SCHEMA_PATH" \
+            --reports-dir "$FEISHU_BRIEF_AGENT_DIR/reports" \
+            --output "$FEISHU_BRIEF_PATH" \
+            --trace-output "$FEISHU_BRIEF_TRACE_PATH"
+
+      - name: Validate agentic Feishu briefing or record a visible fallback
+        id: feishu-brief
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$FEISHU_BRIEF_ARTIFACT_DIR"
+          brief_valid=false
+          if [[ "${{ steps.feishu-brief-agent.outcome }}" == "success" && \
+                -s "$FEISHU_BRIEF_PATH" && -s "$FEISHU_BRIEF_TRACE_PATH" ]]; then
+            brief_valid=true
+          else
+            printf '%s\n' 'Agent output unavailable or failed deterministic validation' \
+              > "$AUDIT_RUNTIME_DIR/feishu-brief-fallback-reason.txt"
+            "$AUDIT_RUNTIME_DIR/python-venv/bin/python" \
+              "$GITHUB_WORKSPACE/scripts/forecast_edge_feishu_brief.py" fallback \
+              --reason "$AUDIT_RUNTIME_DIR/feishu-brief-fallback-reason.txt" \
+              --schema "$FEISHU_BRIEF_SCHEMA_PATH" \
+              --reports-dir "$AUDIT_EVIDENCE_DIR/release/reports" \
+              --research-date "$(jq -r '.created_at[0:10]' "$AUDIT_EVIDENCE_DIR/run.json")" \
+              --output "$FEISHU_BRIEF_PATH"
+          fi
+          install -m 600 "$FEISHU_BRIEF_PATH" \
+            "$FEISHU_BRIEF_ARTIFACT_DIR/feishu-brief.json"
+          if [[ -s "$FEISHU_BRIEF_TRACE_PATH" ]]; then
+            install -m 600 "$FEISHU_BRIEF_TRACE_PATH" \
+              "$FEISHU_BRIEF_ARTIFACT_DIR/feishu-brief-trace.json"
+          fi
+          if jq -e 'type == "object"' \
+            "$AUDIT_EVIDENCE_DIR/release/execution-receipt.json" >/dev/null 2>&1; then
+            install -m 600 "$AUDIT_EVIDENCE_DIR/release/execution-receipt.json" \
+              "$FEISHU_BRIEF_ARTIFACT_DIR/execution-receipt.json"
+          fi
+          echo "brief_valid=$brief_valid" >> "$GITHUB_OUTPUT"
+
+      - name: Upload validated Agentic Feishu briefing
+        uses: actions/upload-artifact@v4
+        with:
+          name: forecast-edge-feishu-brief-${{ env.PARENT_RUN_ID }}-${{ github.run_attempt }}
+          path: ${{ env.FEISHU_BRIEF_ARTIFACT_DIR }}
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Publish sanitized audit summary
         shell: bash
         run: |
@@ -731,6 +851,7 @@ jobs:
       SERIOUS_FINDINGS: ${{ needs.audit.outputs.serious_findings }}
       TRIP_REQUIRED: ${{ needs.audit.outputs.trip_required }}
       BREAKER_SUCCEEDED: ${{ needs.audit.outputs.breaker_succeeded }}
+      FEISHU_BRIEF_VALID: ${{ needs.audit.outputs.feishu_brief_valid }}
     steps:
       - name: Send final production iteration status to Feishu
         env:
@@ -750,10 +871,40 @@ jobs:
 
           run_path="$RUNNER_TEMP/parent-run.json"
           jobs_path="$RUNNER_TEMP/parent-jobs.json"
+          brief_dir="$RUNNER_TEMP/forecast-edge-feishu-brief"
+          install -d -m 700 "$brief_dir"
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID" > "$run_path"
           gh api --paginate \
             "repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID/jobs?per_page=100" \
             | jq -s '[.[].jobs[]]' > "$jobs_path"
+          if ! gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "forecast-edge-feishu-brief-$PARENT_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+              --dir "$brief_dir"; then
+            : # The validated fallback below keeps notification delivery mandatory.
+          fi
+          if ! jq -e '
+              .schema_version == "1.0" and
+              (.title | type == "string" and length > 0) and
+              (.markdown | type == "string" and length > 0)
+            ' "$brief_dir/feishu-brief.json" >/dev/null 2>&1; then
+            research_date=$(jq -r '.created_at[0:10]' "$run_path")
+            jq -n \
+              --arg research_date "$research_date" \
+              '{
+                schema_version:"1.0",
+                research_date:$research_date,
+                title:("forecast-edge 扫描简报 " + $research_date),
+                venues:[],
+                current_position_count:0,
+                researched_market_count:0,
+                actionable_recommendation_count:0,
+                markdown:(
+                  "## forecast-edge 全量扫描｜" + $research_date + "（Agent 简报不可用）\n\n" +
+                  "### 一、私人操作建议\n\n本轮 Agent 简报 artifact 不可用，请从父流程 Release 查看完整研究报告。\n\n" +
+                  "### 二、简报\n\n本轮无可验证的 Agent 研究摘要；执行与审计失败详情见下方状态。"
+                )
+              }' > "$brief_dir/feishu-brief.json"
+          fi
           stage_result() {
             jq -r --arg pattern "$1" '
               [ .[] | select(.name | test($pattern)) | (.conclusion // "unknown") ] as $values
@@ -771,6 +922,18 @@ jobs:
           research_result=$(stage_result '^research(?: /|$)')
           execution_result=$(stage_result '^execution(?: /|$)')
           release_result=$(stage_result '^release(?: /|$)')
+          receipt_status="unavailable"
+          receipt_count="0"
+          canceled_order_count="unavailable"
+          if [[ -s "$brief_dir/execution-receipt.json" ]]; then
+            receipt_status=$(jq -r '.status // "unknown"' \
+              "$brief_dir/execution-receipt.json")
+            receipt_count=$(jq -r '(.receipts // []) | length' \
+              "$brief_dir/execution-receipt.json")
+            canceled_order_count=$(jq -r \
+              '.pre_execution_cancellation.canceled_order_count // "unknown"' \
+              "$brief_dir/execution-receipt.json")
+          fi
           overall=${AUDIT_OVERALL_STATUS:-INSUFFICIENT_EVIDENCE}
           confidence=${AUDIT_CONFIDENCE:-LOW}
           audit_job=${AUDIT_JOB_RESULT:-failure}
@@ -789,22 +952,25 @@ jobs:
             fi
           fi
 
-          template=blue
-          if [[ "$parent_conclusion" != "success" || "$audit_job" != "success" || \
-                "$overall" == "FAIL" || "$overall" == "INSUFFICIENT_EVIDENCE" ]]; then
+          template=green
+          if [[ "${TRIP_REQUIRED:-false}" == "true" || \
+                "${BREAKER_SUCCEEDED:-false}" == "true" ]]; then
             template=red
-          elif [[ "$overall" == "WARN" ]]; then
-            template=orange
           fi
           message_path="$RUNNER_TEMP/forecast-edge-final-status.md"
           {
+            jq -r '.markdown' "$brief_dir/feishu-brief.json"
+            printf '\n---\n\n### 三、执行与审计状态\n\n'
             printf '**父流程**：[%s](%s) · `%s`\n' "$PARENT_RUN_ID" "$parent_url" "$parent_conclusion"
             printf '**阶段**：gate `%s` · research `%s` · execution `%s` · release `%s`\n' \
               "$gate_result" "$research_result" "$execution_result" "$release_result"
+            printf '**执行回执**：状态 `%s` · 订单回执 `%s` · 事前取消旧挂单 `%s`\n' \
+              "$receipt_status" "$receipt_count" "$canceled_order_count"
             printf '**Agent Judge**：job `%s` · 结论 `%s` · 置信度 `%s`\n' \
               "$audit_job" "$overall" "$confidence"
             printf '**严重检查项**：%s\n' "$finding_ids"
             printf '**生产熔断**：%s\n' "$breaker_status"
+            printf '**Agent 扫描简报**：`%s`\n' "${FEISHU_BRIEF_VALID:-false}"
             printf '**审计运行**：[%s](https://github.com/%s/actions/runs/%s)\n' \
               "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
           } > "$message_path"
@@ -829,7 +995,7 @@ jobs:
             jq -cn \
               --arg receive_id "$FEISHU_CHAT_ID" \
               --arg uuid "forecast-edge-final-$PARENT_RUN_ID-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
-              --arg title "Forecast Edge 最终状态 — run $PARENT_RUN_ID" \
+              --arg title "$(jq -r '.title' "$brief_dir/feishu-brief.json")" \
               --arg template "$template" \
               --rawfile message "$message_path" \
               '{

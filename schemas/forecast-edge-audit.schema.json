@@ -19,7 +19,7 @@
   "properties": {
     "schema_version": {"const": "1.0"},
     "rubric_id": {"const": "forecast-edge-production-audit"},
-    "rubric_version": {"const": "1.5"},
+    "rubric_version": {"const": "1.6"},
     "overall_status": {
       "enum": ["PASS", "WARN", "FAIL", "INSUFFICIENT_EVIDENCE"]
     },

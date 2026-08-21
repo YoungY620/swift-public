@@ -15,6 +15,13 @@ RUBRIC_PATH = ROOT / "automation" / "audit" / "forecast-edge-audit-rubric.json"
 SCHEMA_PATH = ROOT / "schemas" / "forecast-edge-audit.schema.json"
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "forecast-edge-audit.yml"
 AGENT_PROFILE_PATH = ROOT / "automation" / "agents" / "forecast-edge-auditor.md"
+FEISHU_AGENT_PROFILE_PATH = (
+    ROOT / "automation" / "agents" / "forecast-edge-feishu-reporter.md"
+)
+FEISHU_PROMPT_PATH = (
+    ROOT / "automation" / "prompts" / "forecast-edge-feishu-brief.zh-CN.md"
+)
+FEISHU_SCHEMA_PATH = ROOT / "schemas" / "forecast-edge-feishu-brief.schema.json"
 MODULE_PATH = ROOT / "scripts" / "forecast_edge_audit.py"
 
 spec = importlib.util.spec_from_file_location("forecast_edge_audit", MODULE_PATH)
@@ -92,6 +99,37 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertIn("verify_polymarket_execution_diagnostics.py", self.workflow)
         self.assertIn("Send final production iteration status to Feishu", self.workflow)
         self.assertIn("github.event_name == 'workflow_run'", self.workflow)
+
+    def test_final_feishu_card_is_agentic_and_uses_breaker_color_semantics(self) -> None:
+        self.assertIn("Run read-only Kimi Code Feishu briefing agent", self.workflow)
+        self.assertIn('--agent-file "$FEISHU_BRIEF_AGENT_PROFILE_PATH"', self.workflow)
+        self.assertIn("forecast-edge-feishu-brief-", self.workflow)
+        self.assertIn('gh run download "$GITHUB_RUN_ID"', self.workflow)
+        self.assertIn("本轮 Agent 简报 artifact 不可用", self.workflow)
+        self.assertIn("template=green", self.workflow)
+        self.assertIn("template=red", self.workflow)
+        self.assertNotIn("template=orange", self.workflow)
+        self.assertIn('${TRIP_REQUIRED:-false}', self.workflow)
+        color_start = self.workflow.index("          template=green\n")
+        color_end = self.workflow.index(
+            "          message_path=\"$RUNNER_TEMP/forecast-edge-final-status.md\"\n",
+            color_start,
+        )
+        color_logic = self.workflow[color_start:color_end]
+        self.assertIn('${BREAKER_SUCCEEDED:-false}', color_logic)
+        self.assertNotIn("overall", color_logic)
+        self.assertNotIn("parent_conclusion", color_logic)
+        self.assertIn("**执行回执**", self.workflow)
+        profile = FEISHU_AGENT_PROFILE_PATH.read_text(encoding="utf-8")
+        prompt = FEISHU_PROMPT_PATH.read_text(encoding="utf-8")
+        schema = json.loads(FEISHU_SCHEMA_PATH.read_text(encoding="utf-8"))
+        Draft202012Validator.check_schema(schema)
+        self.assertIn("- Read", profile)
+        self.assertIn("- Agent", profile)
+        self.assertIn("- explore", profile)
+        self.assertIn("一、私人操作建议", prompt)
+        self.assertIn("二、简报", prompt)
+        self.assertIn("无可执行交易意图", prompt)
 
     def test_automatic_audits_trip_a_tiered_production_breaker(self) -> None:
         self.assertIn("Trip production circuit breaker on serious findings", self.workflow)

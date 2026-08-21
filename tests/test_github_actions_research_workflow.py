@@ -198,9 +198,9 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("execution-receipt.json", release)
         release_index = self.parent.index("      - name: Publish one final iteration Release\n")
         issue_index = self.parent.index("      - name: Create post-release Issue notification\n")
-        feishu_index = self.parent.index("      - name: Send post-release notification to Feishu\n")
         self.assertLess(release_index, issue_index)
-        self.assertLess(issue_index, feishu_index)
+        self.assertNotIn("Send post-release notification to Feishu", self.parent)
+        self.assertIn("Send final production iteration status to Feishu", self.audit)
 
     def test_zero_intent_iteration_does_not_upload_an_empty_release_asset(self) -> None:
         manifest = self.step(self.parent, "Build final iteration manifest")

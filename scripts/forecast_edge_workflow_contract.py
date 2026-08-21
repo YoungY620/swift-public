@@ -183,6 +183,12 @@ def main() -> int:
             and "github.event_name == 'workflow_run'" in between(audit, "  notify:\n")
             and "FEISHU_APP_ID" in between(audit, "  notify:\n")
             and "AUDIT_OVERALL_STATUS" in between(audit, "  notify:\n")
+            and "Run read-only Kimi Code Feishu briefing agent" in audit
+            and "forecast-edge-feishu-reporter.md" in audit
+            and "forecast-edge-feishu-brief-" in audit
+            and "template=green" in between(audit, "  notify:\n")
+            and "template=red" in between(audit, "  notify:\n")
+            and "Send post-release notification to Feishu" not in parent
         ),
         "release_after_execution": (
             "needs: [gate, research, execution]" in release
@@ -233,7 +239,8 @@ def main() -> int:
         "notification_order": (
             release.index("Publish one final iteration Release")
             < release.index("Create post-release Issue notification")
-            < release.index("Send post-release notification to Feishu")
+            and "Send post-release notification to Feishu" not in parent
+            and "Send final production iteration status to Feishu" in audit
         ),
         "credential_isolation": (
             "SERVER_SECRET_PATH: /home/ubuntu/poly-edge-live/runtime/secrets.json" in execution

@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "rubric_version": "1.5",
+  "rubric_version": "1.6",
   "rubric_id": "forecast-edge-production-audit",
   "description": "Forecast Edge 父工作流完成后的研究、真实执行、发布和安全审计。缺少必要证据时不得判定通过。",
   "statuses": [
@@ -212,11 +212,11 @@
     {
       "id": "RELEASE-002",
       "severity": "high",
-      "title": "发布、Issue、飞书顺序",
+      "title": "发布后审计并发送 Agent 简报",
       "applies_when": "release job ran",
-      "expected": "父 workflow 中 Release、Issue、飞书通知严格按此顺序执行。",
-      "evidence_required": ["source_contract.notification_order", "jobs"],
-      "pass_condition": "源码顺序和 release job step 结论一致；可选 Issue 被合法跳过不算异常。"
+      "expected": "父 workflow 先完成 Release 和可选 Issue，不提前发送飞书；post-run workflow 在审计后由只读 Kimi Code Agent 阅读报告和模板生成扫描简报，最后发送飞书。未熔断卡片为绿色，触发或需要熔断时为红色。",
+      "evidence_required": ["source_contract.notification_order", "source_contract.final_iteration_notification", "jobs"],
+      "pass_condition": "两个源码合约成立，release job 成功；可选 Issue 被合法跳过不算异常。飞书投递发生在本 Judge 之后，只能由 post-run workflow 的最终通知 job 负责。"
     },
     {
       "id": "SEC-001",
