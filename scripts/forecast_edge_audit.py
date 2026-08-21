@@ -606,6 +606,7 @@ def build_notification_details(
     *,
     serious_findings: list[str],
     agent_judgment_valid: bool,
+    feishu_brief_valid: bool | None = None,
 ) -> dict[str, Any]:
     """Build a compact, sanitized ledger for Feishu collapsible panels."""
 
@@ -687,6 +688,22 @@ def build_notification_details(
             }
         )
 
+    if feishu_brief_valid is False:
+        warnings.append(
+            {
+                "id": "FEISHU-BRIEF-INFRASTRUCTURE",
+                "title": "飞书研究简报 Agent 产物不可验证",
+                "status": "WARN",
+                "severity": "high",
+                "reason": "飞书简报 Agent 未产生同时通过 schema、报告绑定和工具轨迹校验的产物；本轮发送的是明确标注的 fallback 简报。",
+                "impact": "通知仍会发送，但本轮 Agent 简报业务契约未完成，不得把 fallback 当作正常研究简报；该问题本身不自动熔断交易。",
+                "evidence": ["feishu_brief.validated_agent_brief"],
+                "anomalies": [],
+                "triggers_breaker": False,
+                "breaker_reason": "简报 Agent 或上游研究质量问题不是资金安全、订单保护、残留挂单或秘密泄露证据。",
+            }
+        )
+
     existing_error_ids = {item["id"] for item in errors}
     jobs = [item for item in _list(evidence.get("jobs")) if isinstance(item, dict)]
     for index, job in enumerate(jobs, start=1):
@@ -735,6 +752,11 @@ def build_notification_details(
             if _single_line(item, 500)
         ],
     }
+    if feishu_brief_valid is not None:
+        document["feishu_brief_valid"] = feishu_brief_valid
+        document["business_complete"] = agent_judgment_valid and feishu_brief_valid
+        if not document["business_complete"] and document["overall_status"] == "PASS":
+            document["overall_status"] = "WARN"
     reject_secret_like_text(document)
     return document
 
@@ -753,6 +775,8 @@ def main() -> int:
     parser.add_argument("--trace-output", type=Path)
     parser.add_argument("--parent-run-id", default="0")
     parser.add_argument("--agent-judgment-valid", action="store_true")
+    parser.add_argument("--brief-contract-known", action="store_true")
+    parser.add_argument("--feishu-brief-valid", action="store_true")
     parser.add_argument("--serious-findings", default="[]")
     args = parser.parse_args()
 
@@ -804,6 +828,9 @@ def main() -> int:
             evidence,
             serious_findings=serious_findings,
             agent_judgment_valid=args.agent_judgment_valid,
+            feishu_brief_valid=(
+                args.feishu_brief_valid if args.brief_contract_known else None
+            ),
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(

@@ -118,6 +118,20 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertIn("verify_polymarket_execution_diagnostics.py", self.workflow)
         self.assertIn("Send final production iteration status to Feishu", self.workflow)
         self.assertIn("github.event_name == 'workflow_run'", self.workflow)
+        self.assertIn("Enforce complete Agent Judge and briefing deliverables", self.workflow)
+        self.assertIn("business_complete: ${{ steps.feishu-brief.outputs.business_complete }}", self.workflow)
+
+    def test_agent_diagnostics_are_secret_scanned_and_persisted(self) -> None:
+        self.assertIn("Package secret-scanned Agent audit diagnostics", self.workflow)
+        self.assertIn("Upload private Agent audit diagnostics", self.workflow)
+        self.assertIn("judge-agent-stream.raw.jsonl", self.workflow)
+        self.assertIn("judge-agent.stderr", self.workflow)
+        self.assertIn("feishu-brief-agent-stream.raw.jsonl", self.workflow)
+        self.assertIn("feishu-brief-agent.stderr", self.workflow)
+        self.assertIn("kimi-code-sessions", self.workflow)
+        self.assertIn("audit-diagnostics-manifest.json", self.workflow)
+        self.assertIn("sanitize_research_diagnostics.py", self.workflow)
+        self.assertIn("--secret-env KIMI_MODEL_API_KEY", self.workflow)
 
     def test_final_feishu_card_is_agentic_and_uses_breaker_color_semantics(self) -> None:
         self.assertIn("Run read-only Kimi Code Feishu briefing agent", self.workflow)
@@ -575,6 +589,38 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertEqual(details["error_count"], 0)
         self.assertEqual(details["warnings"][0]["id"], "AUDIT-INFRASTRUCTURE")
         self.assertFalse(details["warnings"][0]["triggers_breaker"])
+
+    def test_invalid_feishu_agent_is_visible_and_marks_business_incomplete(self) -> None:
+        details = audit_module.build_notification_details(
+            self.response(),
+            self.rubric,
+            self.evidence,
+            serious_findings=[],
+            agent_judgment_valid=True,
+            feishu_brief_valid=False,
+        )
+        self.assertEqual(details["overall_status"], "WARN")
+        self.assertTrue(details["agent_judgment_valid"])
+        self.assertFalse(details["feishu_brief_valid"])
+        self.assertFalse(details["business_complete"])
+        self.assertEqual(details["warning_count"], 1)
+        self.assertEqual(details["warnings"][0]["id"], "FEISHU-BRIEF-INFRASTRUCTURE")
+        self.assertFalse(details["warnings"][0]["triggers_breaker"])
+
+    def test_valid_judge_and_feishu_agent_complete_business_contract(self) -> None:
+        details = audit_module.build_notification_details(
+            self.response(),
+            self.rubric,
+            self.evidence,
+            serious_findings=[],
+            agent_judgment_valid=True,
+            feishu_brief_valid=True,
+        )
+        self.assertEqual(details["overall_status"], "PASS")
+        self.assertTrue(details["agent_judgment_valid"])
+        self.assertTrue(details["feishu_brief_valid"])
+        self.assertTrue(details["business_complete"])
+        self.assertEqual(details["warning_count"], 0)
 
     def test_only_allowlisted_safety_agent_failures_trip(self) -> None:
         response = self.response()

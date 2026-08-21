@@ -156,6 +156,29 @@ def main() -> int:
             (root / "scripts/forecast_edge_audit.py").read_text(encoding="utf-8")
             and audit_agent_secrets == ["KIMI_CODE_API_KEY"]
         ),
+        "agentic_audit_business_contract": (
+            "Enforce complete Agent Judge and briefing deliverables" in audit
+            and "agent_judgment_valid:" in audit
+            and "feishu_brief_valid:" in audit
+            and "business_complete:" in audit
+            and "FEISHU-BRIEF-INFRASTRUCTURE" in (
+                root / "scripts/forecast_edge_audit.py"
+            ).read_text(encoding="utf-8")
+            and "does not by itself trigger the production trading circuit breaker" in audit
+        ),
+        "audit_agent_diagnostics": (
+            "Package secret-scanned Agent audit diagnostics" in audit
+            and "Upload private Agent audit diagnostics" in audit
+            and "forecast-edge-audit-diagnostics-${{ env.PARENT_RUN_ID }}-${{ github.run_attempt }}" in audit
+            and "judge-agent-stream.raw.jsonl" in audit
+            and "judge-agent.stderr" in audit
+            and "feishu-brief-agent-stream.raw.jsonl" in audit
+            and "feishu-brief-agent.stderr" in audit
+            and "kimi-code-sessions" in audit
+            and "audit-diagnostics-manifest.json" in audit
+            and "sanitize_research_diagnostics.py" in audit
+            and "--secret-env KIMI_MODEL_API_KEY" in audit
+        ),
         "missing_audit_configuration_is_noop": (
             "Forecast Edge audit is not configured; skipping this run" in audit
             and 'echo "audit-applicable=false"' in audit

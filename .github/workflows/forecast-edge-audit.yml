@@ -95,7 +95,9 @@ jobs:
       serious_findings: ${{ steps.classify.outputs.serious_findings }}
       trip_required: ${{ steps.classify.outputs.trip_required }}
       breaker_succeeded: ${{ steps.breaker.outputs.breaker_succeeded }}
+      agent_judgment_valid: ${{ steps.audit-result.outputs.agent-judgment-valid }}
       feishu_brief_valid: ${{ steps.feishu-brief.outputs.brief_valid }}
+      business_complete: ${{ steps.feishu-brief.outputs.business_complete }}
     permissions:
       actions: write
       contents: read
@@ -154,7 +156,10 @@ jobs:
             echo "AUDIT_AGENT_RAW_RESPONSE_PATH=$runtime_dir/agent-response.raw.jsonl"
             echo "AUDIT_AGENT_TRACE_PATH=$runtime_dir/agent-trace.json"
             echo "AUDIT_RESULT_PATH=$runtime_dir/audit-result.json"
+            echo "AUDIT_CLASSIFICATION_PATH=$runtime_dir/audit-classification.json"
             echo "AUDIT_NOTIFICATION_PATH=$runtime_dir/audit-notification.json"
+            echo "AUDIT_CONTRACT_PATH=$runtime_dir/audit-contract.json"
+            echo "AUDIT_DIAGNOSTICS_ARTIFACT_DIR=$runtime_dir/audit-diagnostics-artifact"
             echo "AUDIT_REPORTS_DIR=$runtime_dir/evidence/report-source"
             echo "AUDIT_REPORT_SOURCE_METADATA_PATH=$runtime_dir/evidence/report-source-metadata.json"
             echo "FEISHU_BRIEF_AGENT_DIR=$runtime_dir/feishu-brief-agent"
@@ -773,7 +778,7 @@ jobs:
             classifier_evidence="$RUNNER_TEMP/forecast-edge-audit-missing-evidence.json"
             printf '{}\n' > "$classifier_evidence"
           fi
-          classifier_output="$RUNNER_TEMP/forecast-edge-audit-classification.json"
+          classifier_output="$AUDIT_CLASSIFICATION_PATH"
           classifier_args=()
           if [[ "$AGENT_JUDGMENT_VALID" == "true" ]]; then
             classifier_args+=(--agent-judgment-valid)
@@ -886,6 +891,9 @@ jobs:
 
       - name: Validate agentic Feishu briefing or record a visible fallback
         id: feishu-brief
+        env:
+          AGENT_JUDGMENT_VALID: ${{ steps.audit-result.outputs.agent-judgment-valid || 'false' }}
+          SERIOUS_FINDINGS: ${{ steps.classify.outputs.serious_findings || '[]' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -910,10 +918,64 @@ jobs:
               --research-date "$(jq -r '.created_at[0:10]' "$AUDIT_EVIDENCE_DIR/run.json")" \
               --output "$FEISHU_BRIEF_PATH"
           fi
+
+          notification_args=(--brief-contract-known)
+          if [[ "$AGENT_JUDGMENT_VALID" == "true" ]]; then
+            notification_args+=(--agent-judgment-valid)
+          fi
+          if [[ "$brief_valid" == "true" ]]; then
+            notification_args+=(--feishu-brief-valid)
+          fi
+          "$AUDIT_RUNTIME_DIR/python-venv/bin/python" \
+            "$GITHUB_WORKSPACE/scripts/forecast_edge_audit.py" notification \
+            --input "$AUDIT_RESULT_PATH" \
+            --rubric "$AUDIT_RUBRIC_PATH" \
+            --evidence "$AUDIT_EVIDENCE_PATH" \
+            --schema "$AUDIT_SCHEMA_PATH" \
+            --serious-findings "$SERIOUS_FINDINGS" \
+            --output "$AUDIT_NOTIFICATION_PATH" \
+            "${notification_args[@]}"
+          jq -e \
+            --argjson agent_valid "$AGENT_JUDGMENT_VALID" \
+            --argjson brief_valid "$brief_valid" \
+            '.agent_judgment_valid == $agent_valid and
+             .feishu_brief_valid == $brief_valid and
+             .business_complete == ($agent_valid and $brief_valid)' \
+            "$AUDIT_NOTIFICATION_PATH" >/dev/null
+
+          business_complete=false
+          if [[ "$AGENT_JUDGMENT_VALID" == "true" && "$brief_valid" == "true" ]]; then
+            business_complete=true
+          fi
+          jq -n \
+            --arg parent_run_id "$PARENT_RUN_ID" \
+            --arg audit_run_id "$GITHUB_RUN_ID" \
+            --arg audit_run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg audit_agent_outcome "${{ steps.audit-agent.outcome }}" \
+            --arg brief_agent_outcome "${{ steps.feishu-brief-agent.outcome }}" \
+            --argjson agent_judgment_valid "$AGENT_JUDGMENT_VALID" \
+            --argjson feishu_brief_valid "$brief_valid" \
+            --argjson business_complete "$business_complete" \
+            '{
+              schema_version:"1.0",
+              parent_run_id:$parent_run_id,
+              audit_run_id:$audit_run_id,
+              audit_run_attempt:$audit_run_attempt,
+              audit_agent_outcome:$audit_agent_outcome,
+              brief_agent_outcome:$brief_agent_outcome,
+              agent_judgment_valid:$agent_judgment_valid,
+              feishu_brief_valid:$feishu_brief_valid,
+              fallback_used:(($agent_judgment_valid and $feishu_brief_valid) | not),
+              business_complete:$business_complete,
+              circuit_breaker_eligible:false,
+              circuit_breaker_note:"Agent 或简报基础设施失败会使审计业务契约失败，但不会单独触发交易熔断。"
+            }' > "$AUDIT_CONTRACT_PATH"
           install -m 600 "$FEISHU_BRIEF_PATH" \
             "$FEISHU_BRIEF_ARTIFACT_DIR/feishu-brief.json"
           install -m 600 "$AUDIT_NOTIFICATION_PATH" \
             "$FEISHU_BRIEF_ARTIFACT_DIR/audit-notification.json"
+          install -m 600 "$AUDIT_CONTRACT_PATH" \
+            "$FEISHU_BRIEF_ARTIFACT_DIR/audit-contract.json"
           if [[ -s "$FEISHU_BRIEF_TRACE_PATH" ]]; then
             install -m 600 "$FEISHU_BRIEF_TRACE_PATH" \
               "$FEISHU_BRIEF_ARTIFACT_DIR/feishu-brief-trace.json"
@@ -924,12 +986,90 @@ jobs:
               "$FEISHU_BRIEF_ARTIFACT_DIR/execution-receipt.json"
           fi
           echo "brief_valid=$brief_valid" >> "$GITHUB_OUTPUT"
+          echo "business_complete=$business_complete" >> "$GITHUB_OUTPUT"
 
-      - name: Upload validated Agentic Feishu briefing
+      - name: Upload Agentic Feishu briefing result or explicit fallback
         uses: actions/upload-artifact@v4
         with:
           name: forecast-edge-feishu-brief-${{ env.PARENT_RUN_ID }}-${{ github.run_attempt }}
           path: ${{ env.FEISHU_BRIEF_ARTIFACT_DIR }}
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Package secret-scanned Agent audit diagnostics
+        id: audit-diagnostics
+        if: ${{ always() && env.AUDIT_RUNTIME_DIR != '' }}
+        env:
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          diagnostics_dir="$AUDIT_DIAGNOSTICS_ARTIFACT_DIR"
+          install -d -m 700 "$diagnostics_dir"
+          copy_if_present() {
+            local source=$1
+            local target=$2
+            if [[ -f "$source" ]]; then
+              install -m 600 "$source" "$diagnostics_dir/$target"
+            fi
+          }
+          copy_if_present "$AUDIT_EVIDENCE_PATH" evidence.json
+          copy_if_present "$AUDIT_REPORT_SOURCE_METADATA_PATH" report-source-metadata.json
+          copy_if_present "$AUDIT_AGENT_RAW_RESPONSE_PATH" judge-agent-stream.raw.jsonl
+          copy_if_present "$AUDIT_AGENT_RESPONSE_PATH" judge-agent-response.json
+          copy_if_present "$AUDIT_AGENT_TRACE_PATH" judge-agent-trace.json
+          copy_if_present "$AUDIT_RUNTIME_DIR/agent.stderr" judge-agent.stderr
+          copy_if_present "$AUDIT_RESULT_PATH" audit-result.json
+          copy_if_present "$AUDIT_CLASSIFICATION_PATH" audit-classification.json
+          copy_if_present "$AUDIT_NOTIFICATION_PATH" audit-notification.json
+          copy_if_present "$AUDIT_CONTRACT_PATH" audit-contract.json
+          copy_if_present "$FEISHU_BRIEF_RAW_PATH" feishu-brief-agent-stream.raw.jsonl
+          copy_if_present "$FEISHU_BRIEF_PATH" feishu-brief.json
+          copy_if_present "$FEISHU_BRIEF_TRACE_PATH" feishu-brief-agent-trace.json
+          copy_if_present "$AUDIT_RUNTIME_DIR/feishu-brief.stderr" feishu-brief-agent.stderr
+          copy_if_present "$AUDIT_RUNTIME_DIR/feishu-brief-quality.errors" feishu-brief-quality.errors
+          copy_if_present "$AUDIT_RUNTIME_DIR/feishu-brief-fallback-reason.txt" feishu-brief-fallback-reason.txt
+          copy_if_present "$FEISHU_BRIEF_AGENT_DIR/source-inventory.json" source-inventory.json
+          if [[ -d "$KIMI_CODE_HOME/sessions" ]]; then
+            cp -R "$KIMI_CODE_HOME/sessions" "$diagnostics_dir/kimi-code-sessions"
+          fi
+          python3 "$GITHUB_WORKSPACE/scripts/sanitize_research_diagnostics.py" \
+            --root "$diagnostics_dir" \
+            --report "$diagnostics_dir/redaction-report.json" \
+            --secret-env KIMI_MODEL_API_KEY
+          files_index="$diagnostics_dir/files.ndjson"
+          : > "$files_index"
+          while IFS= read -r -d '' path; do
+            relative=${path#"$diagnostics_dir"/}
+            jq -nc \
+              --arg path "$relative" \
+              --arg sha256 "$(sha256sum "$path" | cut -d ' ' -f 1)" \
+              --argjson bytes "$(stat -c '%s' "$path")" \
+              '{path:$path,sha256:$sha256,bytes:$bytes}' >> "$files_index"
+          done < <(find "$diagnostics_dir" -type f \
+            ! -name audit-diagnostics-manifest.json \
+            ! -name files.ndjson -print0 | LC_ALL=C sort -z)
+          jq -s \
+            --arg parent_run_id "$PARENT_RUN_ID" \
+            --arg audit_run_id "$GITHUB_RUN_ID" \
+            --arg audit_run_attempt "$GITHUB_RUN_ATTEMPT" \
+            '{
+              schema_version:"1.0",
+              parent_run_id:$parent_run_id,
+              audit_run_id:$audit_run_id,
+              audit_run_attempt:$audit_run_attempt,
+              secret_scan_passed:true,
+              files:.
+            }' "$files_index" > "$diagnostics_dir/audit-diagnostics-manifest.json"
+          find "$diagnostics_dir" -maxdepth 1 -name files.ndjson -type f -delete
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload private Agent audit diagnostics
+        if: ${{ always() && steps.audit-diagnostics.outputs.ready == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: forecast-edge-audit-diagnostics-${{ env.PARENT_RUN_ID }}-${{ github.run_attempt }}
+          path: ${{ env.AUDIT_DIAGNOSTICS_ARTIFACT_DIR }}
           if-no-files-found: error
           retention-days: 90
 
@@ -943,6 +1083,12 @@ jobs:
               "$PARENT_RUN_ID" "$(jq -r '.run.html_url' "$AUDIT_EVIDENCE_PATH")"
             printf -- '- Overall status: `%s`\n' "$(jq -r '.overall_status' "$AUDIT_RESULT_PATH")"
             printf -- '- Confidence: `%s`\n\n' "$(jq -r '.confidence' "$AUDIT_RESULT_PATH")"
+            printf -- '- Judge Agent judgment valid: `%s`\n' \
+              "$(jq -r '.agent_judgment_valid' "$AUDIT_CONTRACT_PATH")"
+            printf -- '- Feishu Agent brief valid: `%s`\n' \
+              "$(jq -r '.feishu_brief_valid' "$AUDIT_CONTRACT_PATH")"
+            printf -- '- Agentic business contract complete: `%s`\n\n' \
+              "$(jq -r '.business_complete' "$AUDIT_CONTRACT_PATH")"
             printf -- '- Automatic circuit breaker armed: `%s`\n\n' "$CIRCUIT_BREAKER_ENABLED"
             printf '## Checks\n\n'
             printf '| Check | Severity | Status | Reason |\n'
@@ -1014,6 +1160,23 @@ jobs:
             exit 1
           fi
 
+      - name: Enforce complete Agent Judge and briefing deliverables
+        if: ${{ always() }}
+        env:
+          AGENT_JUDGMENT_VALID: ${{ steps.audit-result.outputs.agent-judgment-valid || 'false' }}
+          FEISHU_BRIEF_VALID: ${{ steps.feishu-brief.outputs.brief_valid || 'false' }}
+          BUSINESS_COMPLETE: ${{ steps.feishu-brief.outputs.business_complete || 'false' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$AGENT_JUDGMENT_VALID" != "true" || \
+                "$FEISHU_BRIEF_VALID" != "true" || \
+                "$BUSINESS_COMPLETE" != "true" ]]; then
+            echo "::error::Agentic audit business contract is incomplete: judge_valid=$AGENT_JUDGMENT_VALID brief_valid=$FEISHU_BRIEF_VALID"
+            echo "::error::This failure is visible but does not by itself trigger the production trading circuit breaker"
+            exit 1
+          fi
+
       - name: Remove private audit runtime
         if: ${{ always() }}
         shell: bash
@@ -1044,7 +1207,9 @@ jobs:
       SERIOUS_FINDINGS: ${{ needs.audit.outputs.serious_findings }}
       TRIP_REQUIRED: ${{ needs.audit.outputs.trip_required }}
       BREAKER_SUCCEEDED: ${{ needs.audit.outputs.breaker_succeeded }}
+      AGENT_JUDGMENT_VALID: ${{ needs.audit.outputs.agent_judgment_valid }}
       FEISHU_BRIEF_VALID: ${{ needs.audit.outputs.feishu_brief_valid }}
+      BUSINESS_COMPLETE: ${{ needs.audit.outputs.business_complete }}
     steps:
       - name: Send final production iteration status to Feishu
         env:
@@ -1140,6 +1305,8 @@ jobs:
                   overall_status:"WARN",
                   confidence:"LOW",
                   agent_judgment_valid:false,
+                  feishu_brief_valid:false,
+                  business_complete:false,
                   warning_count:($warnings|length),
                   error_count:($errors|length),
                   serious_finding_count:0,
@@ -1208,14 +1375,15 @@ jobs:
               "$gate_result" "$research_result" "$execution_result" "$release_result"
             printf '**执行回执**：状态 `%s` · 订单回执 `%s` · 事前取消旧挂单 `%s`\n' \
               "$receipt_status" "$receipt_count" "$canceled_order_count"
-            printf '**Agent Judge**：job `%s` · 结论 `%s` · 置信度 `%s`\n' \
-              "$audit_job" "$overall" "$confidence"
+            printf '**Agent Judge**：job `%s` · 有效判断 `%s` · 结论 `%s` · 置信度 `%s`\n' \
+              "$audit_job" "${AGENT_JUDGMENT_VALID:-false}" "$overall" "$confidence"
             printf '**严重检查项**：%s\n' "$finding_ids"
             printf '**生产熔断**：%s\n' "$breaker_status"
             printf '**问题概况**：Warning `%s` · Error `%s`（详情见下方折叠面板）\n' \
               "$(jq -r '.warning_count' "$brief_dir/audit-notification.json")" \
               "$(jq -r '.error_count' "$brief_dir/audit-notification.json")"
             printf '**Agent 扫描简报**：`%s`\n' "${FEISHU_BRIEF_VALID:-false}"
+            printf '**Agentic 业务验收**：`%s`\n' "${BUSINESS_COMPLETE:-false}"
             printf '**审计运行**：[%s](https://github.com/%s/actions/runs/%s)\n' \
               "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
           } > "$message_path"

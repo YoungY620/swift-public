@@ -158,7 +158,9 @@ GitHub Release 继承仓库可见性。private repository 中的 Release 受仓�
 
 ## Post-run Agent Judge 与熔断
 
-`.github/workflows/forecast-edge-audit.yml` 由父 workflow 的 `workflow_run` 事件触发。Kimi Code 使用专用只读 Agent profile：主 Agent 必须主动 `Read` 证据并调用只读 `explore` subagent，再由主 Agent 复核；`Bash`、写文件、凭据、登录态和交易工具均禁止。CLI 使用 `--output-format stream-json`，确定性 harness 要求实际出现完整的 `Read` 和 `Agent` tool call 链，单次普通模型回答会被降级为 `INSUFFICIENT_EVIDENCE`。严重 FAIL 或高/关键项证据不足会关闭 live-trading、暂停调度并禁用父 workflow；熔断操作本身也写入最终飞书通知。
+`.github/workflows/forecast-edge-audit.yml` 由父 workflow 的 `workflow_run` 事件触发。Kimi Code 使用专用只读 Agent profile：主 Agent 必须主动 `Read` 证据并调用只读 `explore` subagent，再由主 Agent 复核；`Bash`、写文件、凭据、登录态和交易工具均禁止。CLI 使用 `--output-format stream-json`，确定性 harness 要求实际出现完整的 `Read` 和 `Agent` tool call 链，单次普通模型回答不能算 Agent 判断。Judge 判断或飞书 Agent 简报未通过 schema、报告绑定和工具轨迹校验时，本轮审计 job 明确失败并发送带 Warning 的 fallback 通知，不能显示成业务成功；该失败本身不触发交易熔断。只有资金安全、订单保护、残留挂单或秘密泄露白名单中的确定性异常才关闭 live-trading、暂停调度并禁用父 workflow。
+
+审计 workflow 另行保存私有 `forecast-edge-audit-diagnostics-*` artifact：包括 Judge/简报 Agent 的原始 stream、stderr、确定性 trace、Kimi Code session、最终结构化结果、报告来源绑定和业务验收布尔值。上传前会按模型 secret 精确值及凭据模式统一脱敏并生成 SHA-256 manifest；任何未通过秘密扫描的诊断包都不得上传。
 熔断步骤使用专用 Actions Secret `FORECAST_EDGE_BREAKER_TOKEN`。该 secret 不是 Polymarket 凭据，不会传入 Judge Agent，不会被诊断打包器读取，也不会写入日志或 Release；未配置时父 workflow 和 audit 都只完成 no-op gate，不进入生产 iteration。
 
 ## JSONL 交易意图契约
@@ -231,7 +233,7 @@ Schema 使用 `additionalProperties: false`，并校验价格范围、正数金�
 
 父图在 private repository 中默认于最终 Release 成功后创建一个新 Issue。将 Repository Variable `CREATE_TRADE_INTENT_ISSUE` 设为 `false` 可以关闭 Issue，仅保留本轮最终 Release；public repository 不创建包含交易数量的 Issue。
 
-无论是否通过配置关闭 GitHub Issue，最终 Release 成功后都会把为 Issue 生成的同一个临时 `issue.md` 发送到 `FEISHU_CHAT_ID`。此外，post-run audit workflow 对每个真正进入 gate 的自动生产迭代再发送一条最终状态：包含父 run 各阶段结论、Agent Judge 结论/置信度、严重检查项和熔断结果；执行失败或审计失败也必须通知，纯 gate-off 小时唤醒不通知。Workflow 使用 App ID 与 App Secret 获取短期 tenant token，不保存该 token；发送请求带有基于 GitHub run 和 attempt 的幂等键。飞书应用只需机器人发送消息权限，不引入 receive ID 类型、机器人名称或 webhook 等额外配置。
+父 workflow 不在研究或执行过程中发送飞书消息。post-run audit workflow 对每个真正进入 gate 的自动生产迭代只发送一张最终卡片：由只读 Kimi Code Agent 阅读已验证报告生成研究简报，并附父 run 各阶段结论、Judge 有效性、简报有效性、业务验收、严重检查项和熔断结果；执行失败或审计失败也必须通知，纯 gate-off 小时唤醒不通知。无熔断时卡片为绿色，实际触发或需要触发熔断时为红色；Warning 和 Error 详情分别放入折叠面板。Workflow 使用 App ID 与 App Secret 获取短期 tenant token，不保存该 token；发送请求带有基于 GitHub run 和 attempt 的幂等键。
 
 如果仓库是 public，Issue 会公开交易方向、价格、金额、份额和账户线索，可能造成隐私、策略泄露或抢跑风险。默认建议只在 private repository 创建包含数量的 Issue；public repository 应使用主动降敏的公共简报格式。
 
