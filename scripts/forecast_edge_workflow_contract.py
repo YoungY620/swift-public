@@ -194,6 +194,15 @@ def main() -> int:
             and '.status == "PARTIAL"' not in parent
             and '.status == "REJECTED"' not in parent
         ),
+        "zero_intent_release_safe": (
+            'trade_intents_published=false' in release
+            and 'published:$trade_intents_published' in release
+            and 'asset:(if $trade_intents_asset == "null" then null else $trade_intents_asset end)'
+            in release
+            and 'if [[ "$HAS_INTENTS" == "true" ]]' in release
+            and 'assets+=("$RELEASE_RUNTIME_DIR/trade-intents.jsonl")' in release
+            and 'test ! -s "$RELEASE_RUNTIME_DIR/trade-intents.jsonl"' in release
+        ),
         "cancel_before_preflight": (
             execution_step.index("cancel-open-orders") < execution_step.index(" preflight ")
         ),

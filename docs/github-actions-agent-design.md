@@ -107,7 +107,7 @@ Release tag 的 target 是本轮真正执行的 `GITHUB_SHA`。主分支更新 W
 - `report-<adapter>.json`、`report-<adapter>.md`：方便直接下载查看的各 venue 本轮报告；
 - `research-release-manifest.json`：Release tag、源 commit、本轮使用的历史 Release tags、文件摘要、Kimi 成功尝试序号和校验结果；
 - `validation-summary.json`：本轮交易意图校验摘要。
-- `trade-intents.jsonl`：执行前仅存在于 private-fork handoff artifact；在执行子图已经结束或被父图明确跳过后才进入最终 Release；
+- `trade-intents.jsonl`：执行前仅存在于 private-fork handoff artifact；有条目时，在执行子图结束后才进入最终 Release。合法的零字节无意图文件不作为 Release asset 上传，最终 manifest 记录其 SHA-256、`has_items=false`、`published=false` 和 `asset=null`；
 - `iteration-release-manifest.json`：记录执行是否请求、配置是否齐全、子图结果与最终资产摘要；
 - 执行成功时的 `execution-receipt.json` 和 `execution-verification.json`。
 

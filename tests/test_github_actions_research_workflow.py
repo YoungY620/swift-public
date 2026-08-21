@@ -190,13 +190,34 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("needs: [gate, research, execution]", self.parent)
         release = self.step(self.parent, "Publish one final iteration Release")
         self.assertIn('gh release create "$RELEASE_TAG"', release)
-        self.assertIn('"$RELEASE_RUNTIME_DIR/trade-intents.jsonl"', release)
+        self.assertIn('assets+=("$RELEASE_RUNTIME_DIR/trade-intents.jsonl")', release)
         self.assertIn("execution-receipt.json", release)
         release_index = self.parent.index("      - name: Publish one final iteration Release\n")
         issue_index = self.parent.index("      - name: Create post-release Issue notification\n")
         feishu_index = self.parent.index("      - name: Send post-release notification to Feishu\n")
         self.assertLess(release_index, issue_index)
         self.assertLess(issue_index, feishu_index)
+
+    def test_zero_intent_iteration_does_not_upload_an_empty_release_asset(self) -> None:
+        manifest = self.step(self.parent, "Build final iteration manifest")
+        release = self.step(self.parent, "Publish one final iteration Release")
+        self.assertIn('trade_intents_published=false', manifest)
+        self.assertIn('if [[ "$HAS_INTENTS" == "true" ]]', manifest)
+        self.assertIn('test ! -s "$RELEASE_RUNTIME_DIR/trade-intents.jsonl"', manifest)
+        self.assertIn('published:$trade_intents_published', manifest)
+        self.assertIn(
+            'asset:(if $trade_intents_asset == "null" then null else $trade_intents_asset end)',
+            manifest,
+        )
+        initial_assets = release[
+            release.index("          assets=(") : release.index(
+                "\n          )", release.index("          assets=(")
+            )
+        ]
+        self.assertNotIn('trade-intents.jsonl', initial_assets)
+        self.assertIn('if [[ "$HAS_INTENTS" == "true" ]]', release)
+        self.assertIn('assets+=("$RELEASE_RUNTIME_DIR/trade-intents.jsonl")', release)
+        self.assertIn('test ! -s "$RELEASE_RUNTIME_DIR/trade-intents.jsonl"', release)
 
     def test_release_uses_file_comparison_for_signed_report_inventory(self) -> None:
         verify = self.step(

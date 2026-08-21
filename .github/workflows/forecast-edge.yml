@@ -322,6 +322,18 @@ jobs:
           diagnostics_archive_digest=null
           diagnostics_summary_digest=null
           diagnostics_manifest_digest=null
+          trade_intents_asset=null
+          trade_intents_published=false
+          if [[ "$HAS_INTENTS" == "true" ]]; then
+            test -s "$RELEASE_RUNTIME_DIR/trade-intents.jsonl"
+            trade_intents_asset=trade-intents.jsonl
+            trade_intents_published=true
+          elif [[ "$HAS_INTENTS" == "false" ]]; then
+            test ! -s "$RELEASE_RUNTIME_DIR/trade-intents.jsonl"
+          else
+            echo "::error::Research has-intents output must be true or false"
+            exit 1
+          fi
           if [[ "$EXECUTION_RESULT" == "success" ]]; then
             jq -e '
               (.status == "COMPLETED" or
@@ -377,6 +389,8 @@ jobs:
             --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
             --arg generated_at "$GENERATED_AT" \
             --arg trade_intents_sha256 "$TRADE_INTENTS_SHA256" \
+            --arg trade_intents_asset "$trade_intents_asset" \
+            --argjson trade_intents_published "$trade_intents_published" \
             --argjson has_intents "$HAS_INTENTS" \
             --argjson execution_requested "$EXECUTION_REQUESTED" \
             --argjson execution_ready "$EXECUTION_READY" \
@@ -401,7 +415,12 @@ jobs:
               workflow_run_id:$run_id,
               workflow_run_attempt:$run_attempt,
               generated_at:$generated_at,
-              trade_intents:{published:true, asset:"trade-intents.jsonl", sha256:$trade_intents_sha256, has_items:$has_intents},
+              trade_intents:{
+                published:$trade_intents_published,
+                asset:(if $trade_intents_asset == "null" then null else $trade_intents_asset end),
+                sha256:$trade_intents_sha256,
+                has_items:$has_intents
+              },
               schedule:{
                 event_name:$gate_event_name,
                 interval_hours:($schedule_interval_hours|tonumber),
@@ -437,7 +456,8 @@ jobs:
             printf -- '- Requested: `%s`\n' "$EXECUTION_REQUESTED"
             printf -- '- Configuration ready: `%s`\n' "$EXECUTION_READY"
             printf -- '- Subworkflow result: `%s`\n' "$EXECUTION_RESULT"
-            printf -- '- Raw trade intents published after subworkflow completion: `true`\n'
+            printf -- '- Raw trade intents published after subworkflow completion: `%s`\n' \
+              "$trade_intents_published"
           } >> "$RELEASE_NOTES_PATH"
           {
             printf '\n---\n\n'
@@ -461,8 +481,14 @@ jobs:
             "$RELEASE_ASSETS_DIR/research-release-manifest.json"
             "$RELEASE_ASSETS_DIR/validation-summary.json"
             "$RELEASE_RUNTIME_DIR/iteration-release-manifest.json"
-            "$RELEASE_RUNTIME_DIR/trade-intents.jsonl"
           )
+          if [[ "$HAS_INTENTS" == "true" ]]; then
+            test -s "$RELEASE_RUNTIME_DIR/trade-intents.jsonl"
+            assets+=("$RELEASE_RUNTIME_DIR/trade-intents.jsonl")
+          else
+            test "$HAS_INTENTS" = "false"
+            test ! -s "$RELEASE_RUNTIME_DIR/trade-intents.jsonl"
+          fi
           while IFS= read -r report_asset; do
             assets+=("$RELEASE_ASSETS_DIR/$report_asset")
           done < <(
