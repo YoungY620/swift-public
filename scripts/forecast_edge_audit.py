@@ -16,6 +16,13 @@ from jsonschema import Draft202012Validator
 ALLOWED_STATUSES = {"PASS", "WARN", "FAIL", "INSUFFICIENT_EVIDENCE", "NOT_APPLICABLE"}
 ALLOWED_AGENT_TOOLS = {"Read", "Grep", "Glob", "WebSearch", "FetchURL", "Agent"}
 REQUIRED_AGENT_TOOLS = {"Read", "Agent"}
+AGENT_BREAKER_CHECK_IDS = {
+    "EXEC-002",
+    "EXEC-003",
+    "EXEC-005",
+    "EXEC-006",
+    "EXEC-008",
+}
 SECRET_PATTERNS = (
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
     re.compile(r"\b(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b"),
@@ -395,6 +402,7 @@ def classify_serious_findings(
                 and check.get("severity") == "critical"
                 and check.get("status") == "FAIL"
                 and isinstance(check.get("id"), str)
+                and check.get("id") in AGENT_BREAKER_CHECK_IDS
             ):
                 findings.add(str(check["id"]))
 
@@ -402,26 +410,10 @@ def classify_serious_findings(
     if safety.get("secret_value_scan_passed") is False:
         findings.add("SEC-EVIDENCE")
 
-    jobs = [item for item in _list(evidence.get("jobs")) if isinstance(item, dict)]
-    execution_transaction_step_started = False
-    for job in jobs:
-        if not str(job.get("name", "")).startswith("execution"):
-            continue
-        for step in _list(job.get("steps")):
-            if not isinstance(step, dict):
-                continue
-            if str(step.get("name", "")).startswith(
-                "Validate, cancel open orders, price, execute FOK market orders"
-            ) and step.get("conclusion") not in {None, "skipped"}:
-                execution_transaction_step_started = True
-
     diagnostics = _dict(evidence.get("diagnostics"))
-    metadata = _dict(diagnostics.get("metadata"))
-    if execution_transaction_step_started and any(
-        metadata.get(key) is not True
-        for key in ("found", "artifact_verified", "secret_pattern_scan_passed")
-    ):
-        findings.add("EXEC-DIAGNOSTICS")
+    # Missing or incomplete diagnostics are visible audit errors, but absence of
+    # evidence is not itself an explicit funds, order-protection, open-order, or
+    # secret-leak event. Deterministic anomalies below still trip independently.
 
     receipt = _dict(diagnostics.get("receipt"))
     if not receipt:

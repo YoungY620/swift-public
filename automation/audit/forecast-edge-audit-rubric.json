@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "rubric_version": "1.7",
+  "rubric_version": "1.8",
   "rubric_id": "forecast-edge-production-audit",
   "description": "Forecast Edge 父工作流完成后的研究、真实执行、发布和安全审计。缺少必要证据时不得判定通过。",
   "statuses": [
@@ -13,12 +13,12 @@
   "checks": [
     {
       "id": "CONTROL-001",
-      "severity": "critical",
+      "severity": "high",
       "title": "严重异常触发生产熔断",
       "applies_when": "automatic workflow_run audit",
-      "expected": "只有 critical 的明确 FAIL，或确定性安全检查发现 UNCERTAIN、部分成交、价格/金额/份额保护越界、非法 NO_FILL、残留挂单、回执/诊断/秘密校验失败时，才关闭 live-trading 变量、设置持久 automation pause 并禁用父 workflow；Judge 超时、证据不足和 high/medium 质量问题只告警。手工历史回放默认不熔断。",
+      "expected": "只有明确的资金安全、订单保护、残留挂单或秘密泄露证据，或这些类别对应的 critical Judge FAIL，才关闭 live-trading 变量、设置持久 automation pause 并禁用父 workflow；研究/交接质量、人工取消、诊断缺失、Judge 超时、证据不足和 high/medium 问题只告警。手工历史回放默认不熔断。",
       "evidence_required": ["source_contract.audit_circuit_breaker", "source_contract.persistent_pause_gate", "configuration"],
-      "pass_condition": "源码分级熔断合约成立；自动审计的明确资金安全异常执行三重熔断，基础设施/证据不足只告警，手工回放只有显式启用后才允许熔断。"
+      "pass_condition": "源码使用资金/订单/残留挂单/秘密泄露白名单；自动审计仅对这些明确安全异常执行三重熔断，研究质量、交接、人工取消、基础设施或证据不足只告警，手工回放只有显式启用后才允许熔断。"
     },
     {
       "id": "SCHED-001",
@@ -67,7 +67,7 @@
     },
     {
       "id": "HANDOFF-001",
-      "severity": "critical",
+      "severity": "high",
       "title": "交易意图摘要绑定",
       "applies_when": "iteration research ran",
       "expected": "研究 manifest 和最终 manifest 的 trade-intents SHA-256 完全一致，执行回执绑定由该摘要和 run identity 派生的 execution id。",
@@ -76,7 +76,7 @@
     },
     {
       "id": "HANDOFF-002",
-      "severity": "critical",
+      "severity": "high",
       "title": "研究与执行通过 Actions artifact 摘要交接",
       "applies_when": "gate released the iteration",
       "expected": "研究仅在 GitHub-hosted runner 上运行，不接触 EC2；摘要绑定的研究 handoff artifact 由 execution 下载，执行诊断 artifact 只能在订单阶段结束后创建；execution-ready=true 时父 workflow 仅在 execution success 后发布，只有显式不请求执行时才允许 skipped。",
@@ -94,7 +94,7 @@
     },
     {
       "id": "OBS-001",
-      "severity": "critical",
+      "severity": "high",
       "title": "执行诊断证据完整且无秘密",
       "applies_when": "execution job ran",
       "expected": "每次执行成功或失败都保存带摘要、manifest、逐阶段事件、原始 plan/preflight/receipt/verification 和账本摘要的诊断 artifact；摘要和 manifest 绑定父 run，摘要校验通过且不包含凭据或签名原文。",
@@ -193,7 +193,7 @@
     },
     {
       "id": "EXEC-011",
-      "severity": "critical",
+      "severity": "high",
       "title": "每条交易意图都有可解释的最终去向",
       "applies_when": "execution plan exists",
       "expected": "source_intent_count = planned_order_count + skipped_intent_count；原始 intent index 从 1 连续且各出现一次；skipped 有 code/message，planned 要么有同 index 回执/账本记录，要么有明确失败阶段。",

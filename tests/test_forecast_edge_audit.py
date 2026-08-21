@@ -236,7 +236,10 @@ class ForecastEdgeAuditTests(unittest.TestCase):
 
     def test_critical_failure_cannot_report_overall_pass(self) -> None:
         response = self.response()
-        response["checks"][0]["status"] = "FAIL"
+        critical = next(
+            check for check in response["checks"] if check["id"] == "EXEC-002"
+        )
+        critical["status"] = "FAIL"
         with self.assertRaisesRegex(audit_module.AuditValidationError, "critical check failure"):
             audit_module.validate_response(response, self.rubric, self.evidence, self.schema)
 
@@ -429,21 +432,29 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertEqual(details["warnings"][0]["id"], "AUDIT-INFRASTRUCTURE")
         self.assertFalse(details["warnings"][0]["triggers_breaker"])
 
-    def test_only_valid_explicit_critical_agent_failures_trip(self) -> None:
+    def test_only_allowlisted_safety_agent_failures_trip(self) -> None:
         response = self.response()
         response["overall_status"] = "FAIL"
         response["checks"][0]["status"] = "FAIL"
         self.assertEqual(
             audit_module.classify_serious_findings(
-                response, self.evidence, agent_judgment_valid=False
+                response, self.evidence, agent_judgment_valid=True
             ),
             [],
         )
+        response["checks"][0]["id"] = "EXEC-006"
+        response["checks"][0]["severity"] = "critical"
         self.assertIn(
-            response["checks"][0]["id"],
+            "EXEC-006",
             audit_module.classify_serious_findings(
                 response, self.evidence, agent_judgment_valid=True
             ),
+        )
+        self.assertEqual(
+            audit_module.classify_serious_findings(
+                response, self.evidence, agent_judgment_valid=False
+            ),
+            [],
         )
 
     def test_definitive_fok_no_fill_is_not_serious(self) -> None:
@@ -520,7 +531,7 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         ):
             self.assertIn(expected, findings)
 
-    def test_missing_diagnostics_only_trip_after_transaction_step_started(self) -> None:
+    def test_missing_diagnostics_is_visible_but_never_a_breaker_by_itself(self) -> None:
         evidence = dict(self.evidence)
         evidence["diagnostics"] = {"metadata": {"found": False}}
         evidence["jobs"] = [
@@ -531,19 +542,13 @@ class ForecastEdgeAuditTests(unittest.TestCase):
                 ],
             }
         ]
-        self.assertNotIn(
-            "EXEC-DIAGNOSTICS",
-            audit_module.classify_serious_findings(
-                self.response(), evidence, agent_judgment_valid=True
-            ),
-        )
         evidence["jobs"][0]["steps"].append(
             {
                 "name": "Validate, cancel open orders, price, execute FOK market orders, and verify locally",
                 "conclusion": "failure",
             }
         )
-        self.assertIn(
+        self.assertNotIn(
             "EXEC-DIAGNOSTICS",
             audit_module.classify_serious_findings(
                 self.response(), evidence, agent_judgment_valid=True
