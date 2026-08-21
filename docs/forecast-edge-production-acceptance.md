@@ -33,7 +33,10 @@
 4. 事前撤单后 `remaining_open_order_count=0`；
 5. `install`、`validate`、`cancel`、`preflight`、`plan`、`execute`、`verify` 七阶段均存在且 exit code 为 0；
 6. 最终 verification 的 `open_order_count=0` 且每个订单 `open=false`；
-7. 执行诊断通过秘密扫描且没有 failed phase。
+7. receipt、verification、诊断使用同一非空 execution id，诊断 run id、attempt、commit 与父 run 一致；
+8. `source_intent_count = planned_order_count + skipped_intent_count`，每个原始 intent index 恰好对应一张 `FULL/NO_FILL` 终态回执或一个带 code/message 的 skip，不能缺失、重复或只留下计划；
+9. 每张回执都是 `FOK`/`protected_market`，实际份额不超过计划，BUY 的成交价/支出不越上限，SELL 的成交价/收入不破下限；
+10. 执行诊断通过秘密扫描且没有 failed phase。
 
 结果写入 audit evidence 的 `production_acceptance`。`accepted=false` 会使 audit 明确失败，Judge 不得用文字判断覆盖它。
 

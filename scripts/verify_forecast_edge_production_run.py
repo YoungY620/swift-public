@@ -7,6 +7,7 @@ import argparse
 import json
 import re
 import sys
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,16 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
 
 def as_object(value: Any) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
+
+
+def as_nonnegative_decimal(value: Any) -> Decimal | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return parsed if parsed.is_finite() and parsed >= 0 else None
 
 
 def normalize_jobs(value: Any) -> list[dict[str, Any]]:
@@ -174,7 +185,10 @@ def build_document(
 
     if not execution_requested:
         for identifier in (
+            "EXECUTION-IDENTITY",
             "EXECUTION-RECEIPT",
+            "EXECUTION-DISPOSITIONS",
+            "EXECUTION-PROTECTION",
             "EXECUTION-PHASES",
             "EXECUTION-OPEN-ORDERS",
         ):
@@ -188,6 +202,25 @@ def build_document(
         receipt_items = [item for item in receipt_values if isinstance(item, dict)]
         receipt_statuses = [str(item.get("status") or "") for item in receipt_items]
         cancellation = as_object(receipt.get("pre_execution_cancellation")) if receipt else None
+        execution_ids = {
+            str(value.get("execution_id") or "")
+            for value in (receipt, verification, diagnostic_summary)
+            if isinstance(value, dict)
+        }
+        execution_identity_ok = bool(
+            len(execution_ids) == 1
+            and "" not in execution_ids
+            and diagnostic_summary
+            and str(diagnostic_summary.get("workflow_run_id") or "") == run_id
+            and str(diagnostic_summary.get("workflow_run_attempt") or "") == run_attempt
+            and str(diagnostic_summary.get("commit_sha") or "") == head_sha
+        )
+        check(
+            "EXECUTION-IDENTITY",
+            execution_identity_ok,
+            ["run", "release.execution_receipt", "release.execution_verification", "diagnostics.summary"],
+            "receipt, verification and diagnostics must share one execution id and parent lineage",
+        )
         receipt_ok = bool(
             receipt
             and len(receipt_items) == len(receipt_values)
@@ -206,6 +239,163 @@ def build_document(
             receipt_ok,
             ["release.execution_receipt"],
             f"receipt status={receipt.get('status') if receipt else None!r}, terminal statuses={receipt_statuses}",
+        )
+
+        source_count = (
+            diagnostic_summary.get("source_intent_count")
+            if diagnostic_summary
+            else None
+        )
+        planned_count = (
+            diagnostic_summary.get("planned_order_count")
+            if diagnostic_summary
+            else None
+        )
+        skipped_count = (
+            diagnostic_summary.get("skipped_intent_count")
+            if diagnostic_summary
+            else None
+        )
+        receipt_count = (
+            diagnostic_summary.get("receipt_count")
+            if diagnostic_summary
+            else None
+        )
+        intent_trace = (
+            diagnostic_summary.get("intent_trace")
+            if diagnostic_summary and isinstance(diagnostic_summary.get("intent_trace"), list)
+            else []
+        )
+        trace_items = [item for item in intent_trace if isinstance(item, dict)]
+        trace_indices = [item.get("intent_index") for item in trace_items]
+        planned_indices = [
+            item.get("intent_index")
+            for item in trace_items
+            if item.get("planning_disposition") == "planned"
+        ]
+        skipped_trace = [
+            item
+            for item in trace_items
+            if item.get("planning_disposition") == "skipped"
+        ]
+        receipt_indices = [item.get("intent_index") for item in receipt_items]
+        count_values = (source_count, planned_count, skipped_count, receipt_count)
+        counts_valid = all(
+            isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            for value in count_values
+        )
+        indices_valid = all(
+            isinstance(value, int) and not isinstance(value, bool) and value > 0
+            for value in (*trace_indices, *planned_indices, *receipt_indices)
+        )
+        receipt_status_value = receipt.get("status") if receipt else None
+        dispositions_ok = bool(
+            diagnostic_summary
+            and counts_valid
+            and indices_valid
+            and source_count == planned_count + skipped_count
+            and receipt_count == planned_count == len(receipt_items)
+            and len(trace_items) == len(intent_trace) == source_count
+            and trace_indices == list(range(1, source_count + 1))
+            and len(planned_indices) == planned_count
+            and len(skipped_trace) == skipped_count
+            and sorted(receipt_indices) == sorted(planned_indices)
+            and len(set(receipt_indices)) == len(receipt_indices)
+            and all(
+                isinstance(item.get("receipt"), dict)
+                and item.get("execution_disposition")
+                == str(item["receipt"].get("status", "")).lower()
+                and item.get("execution_disposition") in {"full", "no_fill"}
+                for item in trace_items
+                if item.get("planning_disposition") == "planned"
+            )
+            and all(
+                isinstance(item.get("skip_code"), str)
+                and bool(item.get("skip_code"))
+                and isinstance(item.get("skip_message"), str)
+                and bool(item.get("skip_message"))
+                and item.get("execution_disposition") == "not_submitted"
+                for item in skipped_trace
+            )
+            and (
+                (planned_count == 0 and receipt_status_value == "NO_ACTIONS")
+                or (
+                    planned_count > 0
+                    and receipt_status_value in {"COMPLETED", "COMPLETED_WITH_WARNINGS"}
+                )
+            )
+        )
+        check(
+            "EXECUTION-DISPOSITIONS",
+            dispositions_ok,
+            ["release.execution_receipt", "diagnostics.summary"],
+            (
+                "every source intent must be exactly one planned terminal receipt or one "
+                f"explained skip; source={source_count!r}, planned={planned_count!r}, "
+                f"skipped={skipped_count!r}, receipts={receipt_count!r}"
+            ),
+        )
+
+        protection_ok = len(receipt_items) == len(receipt_values)
+        for item in receipt_items:
+            side = item.get("side")
+            status = item.get("status")
+            planned_quantity = as_nonnegative_decimal(item.get("planned_quantity"))
+            filled_quantity = as_nonnegative_decimal(item.get("filled_quantity"))
+            limit_price = as_nonnegative_decimal(item.get("planned_limit_price"))
+            actual_vwap = as_nonnegative_decimal(item.get("actual_vwap"))
+            planned_cash = as_nonnegative_decimal(item.get("planned_cash_limit"))
+            actual_cash = as_nonnegative_decimal(item.get("collateral_effect"))
+            item_ok = bool(
+                item.get("order_type") == "FOK"
+                and item.get("execution_style") == "protected_market"
+                and side in {"buy", "sell"}
+                and status in {"FULL", "NO_FILL"}
+                and None
+                not in {
+                    planned_quantity,
+                    filled_quantity,
+                    limit_price,
+                    actual_vwap,
+                    planned_cash,
+                    actual_cash,
+                }
+                and filled_quantity <= planned_quantity
+                and (
+                    status != "NO_FILL"
+                    or (
+                        filled_quantity == 0
+                        and actual_vwap == 0
+                        and actual_cash == 0
+                        and item.get("code") == "FOK_NOT_FILLED"
+                    )
+                )
+                and (
+                    status != "FULL"
+                    or (
+                        filled_quantity > 0
+                        and actual_vwap > 0
+                        and (
+                            (
+                                side == "buy"
+                                and actual_vwap <= limit_price
+                                and actual_cash <= planned_cash
+                            )
+                            or (
+                                side == "sell"
+                                and actual_vwap >= limit_price
+                                and actual_cash >= planned_cash
+                            )
+                        )
+                    )
+                )
+            )
+            protection_ok = protection_ok and item_ok
+        check(
+            "EXECUTION-PROTECTION",
+            protection_ok,
+            ["release.execution_receipt"],
+            "every terminal order must be protected FOK and satisfy quantity, price and cash bounds",
         )
 
         phase_events = (
@@ -256,6 +446,7 @@ def build_document(
         open_orders_ok = bool(
             verification
             and len(orders) == len(order_values)
+            and len(orders) == len(receipt_items)
             and verification.get("open_order_count") == 0
             and all(item.get("open") is False for item in orders)
         )

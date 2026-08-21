@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "rubric_version": "1.11",
+  "rubric_version": "1.12",
   "rubric_id": "forecast-edge-production-audit",
   "description": "Forecast Edge 父工作流完成后的研究、真实执行、发布和安全审计。缺少必要证据时不得判定通过。",
   "statuses": [
@@ -43,7 +43,7 @@
       "severity": "high",
       "title": "必要生产阶段完整且无跳过",
       "applies_when": "parent event is schedule or production execution was requested",
-      "expected": "确定性 production acceptance verifier 必须证明 parent、gate、research、execution、release 全部 success，Release lineage 匹配，执行 receipt、七个 phase 和最终零挂单均通过；schedule 的任一必要 job skipped 都是失败。",
+      "expected": "确定性 production acceptance verifier 必须证明 parent、gate、research、execution、release 全部 success，Release lineage 匹配，execution id 与父 run lineage 一致，每条 intent 有唯一终态去向，FOK 价格/金额/份额保护、七个 phase 和最终零挂单均通过；schedule 的任一必要 job skipped 都是失败。",
       "evidence_required": ["production_acceptance", "jobs", "release.manifest", "release.execution_receipt", "release.execution_verification", "diagnostics.summary"],
       "pass_condition": "production_acceptance.accepted=true 且 failed_checks=[]；stage_conclusions 的 gate、research、execution、release 均为 success。只有显式 research-only 手工运行允许 execution NOT_APPLICABLE。"
     },

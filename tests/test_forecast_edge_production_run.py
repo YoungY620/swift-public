@@ -47,20 +47,69 @@ class ForecastEdgeProductionRunTests(unittest.TestCase):
             },
         }
         receipt = {
+            "execution_id": "execution-123",
             "status": "COMPLETED_WITH_WARNINGS",
             "pre_execution_cancellation": {"remaining_open_order_count": 0},
             "receipts": [
-                {"status": "FULL"},
-                {"status": "NO_FILL", "code": "FOK_NOT_FILLED"},
+                {
+                    "intent_index": 1,
+                    "status": "FULL",
+                    "side": "sell",
+                    "order_type": "FOK",
+                    "execution_style": "protected_market",
+                    "planned_quantity": "10",
+                    "filled_quantity": "10",
+                    "planned_limit_price": "0.48",
+                    "actual_vwap": "0.5",
+                    "planned_cash_limit": "4.8",
+                    "collateral_effect": "5",
+                },
+                {
+                    "intent_index": 2,
+                    "status": "NO_FILL",
+                    "code": "FOK_NOT_FILLED",
+                    "side": "buy",
+                    "order_type": "FOK",
+                    "execution_style": "protected_market",
+                    "planned_quantity": "2",
+                    "filled_quantity": "0",
+                    "planned_limit_price": "0.5",
+                    "actual_vwap": "0",
+                    "planned_cash_limit": "1",
+                    "collateral_effect": "0",
+                },
             ],
         }
         verification = {
+            "execution_id": "execution-123",
             "open_order_count": 0,
             "orders": [{"open": False}, {"open": False}],
         }
         diagnostic = {
+            "workflow_run_id": "123",
+            "workflow_run_attempt": "1",
+            "commit_sha": "a" * 40,
+            "execution_id": "execution-123",
             "secret_scan_passed": True,
             "failed_phase": None,
+            "source_intent_count": 2,
+            "planned_order_count": 2,
+            "skipped_intent_count": 0,
+            "receipt_count": 2,
+            "intent_trace": [
+                {
+                    "intent_index": 1,
+                    "planning_disposition": "planned",
+                    "execution_disposition": "full",
+                    "receipt": {"status": "FULL"},
+                },
+                {
+                    "intent_index": 2,
+                    "planning_disposition": "planned",
+                    "execution_disposition": "no_fill",
+                    "receipt": {"status": "NO_FILL"},
+                },
+            ],
             "phase_events": [
                 {"phase": phase, "exit_code": 0}
                 for phase in (
@@ -112,6 +161,26 @@ class ForecastEdgeProductionRunTests(unittest.TestCase):
         document = verifier.build_document(*values)
         self.assertIn("EXECUTION-RECEIPT", document["failed_checks"])
         self.assertIn("EXECUTION-PHASES", document["failed_checks"])
+
+    def test_rejects_missing_or_duplicate_terminal_disposition(self) -> None:
+        values = list(self.inputs())
+        values[3]["receipts"].pop()
+        document = verifier.build_document(*values)
+        self.assertIn("EXECUTION-DISPOSITIONS", document["failed_checks"])
+        self.assertIn("EXECUTION-OPEN-ORDERS", document["failed_checks"])
+
+        values = list(self.inputs())
+        values[3]["receipts"][1]["intent_index"] = 1
+        document = verifier.build_document(*values)
+        self.assertIn("EXECUTION-DISPOSITIONS", document["failed_checks"])
+
+    def test_rejects_execution_identity_or_price_protection_mismatch(self) -> None:
+        values = list(self.inputs())
+        values[4]["execution_id"] = "another-execution"
+        values[3]["receipts"][0]["actual_vwap"] = "0.47"
+        document = verifier.build_document(*values)
+        self.assertIn("EXECUTION-IDENTITY", document["failed_checks"])
+        self.assertIn("EXECUTION-PROTECTION", document["failed_checks"])
 
     def test_manual_research_only_allows_only_execution_skip(self) -> None:
         run, jobs, manifest, receipt, verification, diagnostic = self.inputs()
