@@ -190,6 +190,53 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("kimi_status=${PIPESTATUS[0]}", audit_agent)
         self.assertNotIn('> "$AUDIT_AGENT_RAW_RESPONSE_PATH"', audit_agent)
 
+    def test_recoverable_research_attempts_do_not_leave_error_steps(self) -> None:
+        for name in (
+            "Run Kimi Code — initial attempt",
+            "Run Kimi Code — repair 1 of 3",
+            "Run Kimi Code — repair 2 of 3",
+            "Run Kimi Code — repair 3 of 3",
+        ):
+            step = self.step(self.research, name)
+            self.assertNotIn("continue-on-error", step)
+            self.assertIn('echo "succeeded=false" >> "$GITHUB_OUTPUT"', step)
+            self.assertIn('echo "succeeded=true" >> "$GITHUB_OUTPUT"', step)
+            self.assertNotIn("::error::", step)
+
+        for name in (
+            "Validate initial trade intents",
+            "Validate repaired trade intents — 1 of 3",
+            "Validate repaired trade intents — 2 of 3",
+            "Validate repaired trade intents — 3 of 3",
+        ):
+            step = self.step(self.research, name)
+            self.assertNotIn("continue-on-error", step)
+            self.assertIn('echo "valid=false" >> "$GITHUB_OUTPUT"', step)
+            self.assertIn('echo "valid=true" >> "$GITHUB_OUTPUT"', step)
+            self.assertNotIn("::error::", step)
+
+        enforce = self.step(self.research, "Enforce retry limit")
+        self.assertIn("steps.validate-initial.outputs.valid", enforce)
+        self.assertIn("::error::Trade intents failed validation", enforce)
+
+        for attempt, name in enumerate(
+            (
+                "Validate initial trade intents",
+                "Validate repaired trade intents — 1 of 3",
+                "Validate repaired trade intents — 2 of 3",
+                "Validate repaired trade intents — 3 of 3",
+            ),
+            start=1,
+        ):
+            step = self.step(self.research, name)
+            self.assertIn(f"validation-attempt-{attempt}.stdout", step)
+            self.assertIn(f"validation-attempt-{attempt}.errors.txt", step)
+            self.assertIn('install -m 600 "$attempt_errors" "$VALIDATION_ERRORS_PATH"', step)
+
+        diagnostics = self.step(self.research, "Prepare secret-free research diagnostics")
+        self.assertIn("validation-attempt-*.stdout", diagnostics)
+        self.assertIn("validation-attempt-*.errors.txt", diagnostics)
+
     def test_parent_publishes_only_after_optional_execution_resolves(self) -> None:
         self.assertIn("needs: [gate, research, execution]", self.parent)
         release = self.step(self.parent, "Publish one final iteration Release")

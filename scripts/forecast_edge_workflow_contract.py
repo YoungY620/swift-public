@@ -186,6 +186,9 @@ def main() -> int:
             and "Run read-only Kimi Code Feishu briefing agent" in audit
             and "forecast-edge-feishu-reporter.md" in audit
             and "forecast-edge-feishu-brief-" in audit
+            and "audit-notification.json" in audit
+            and 'tag:"collapsible_panel"' in audit
+            and "expanded:false" in audit
             and "template=green" in between(audit, "  notify:\n")
             and "template=red" in between(audit, "  notify:\n")
             and "Send post-release notification to Feishu" not in parent

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -120,6 +121,17 @@ def validate_brief(document: Any, schema: dict[str, Any], inventory: dict[str, A
     if document.get("title") != expected_title:
         raise BriefValidationError("brief title does not match the report completion date")
     markdown = str(document.get("markdown", ""))
+    summary_end = markdown.find("### 一、私人操作建议")
+    summary = markdown[:summary_end] if summary_end >= 0 else markdown
+    for label in ("**组合概况**", "**研究覆盖**", "**本轮结论**"):
+        if label not in summary:
+            raise BriefValidationError(f"brief is missing formatted summary {label}")
+        summary_line = next(line for line in summary.splitlines() if label in line)
+        emphasized_content = summary_line.replace(label, "", 1)
+        if re.search(r"\*\*[^*\r\n]+\*\*", emphasized_content) is None:
+            raise BriefValidationError(f"brief summary {label} has no emphasized key point")
+    if any(line.lstrip().startswith(("- ", "* ")) for line in summary.splitlines()[1:]):
+        raise BriefValidationError("formatted portfolio summary must not be a list")
     for heading in ("一、私人操作建议", "二、简报"):
         if heading not in markdown:
             raise BriefValidationError(f"brief is missing section {heading}")
@@ -160,6 +172,10 @@ def command_fallback(args: argparse.Namespace) -> None:
         "title": f"forecast-edge 扫描简报 {inventory['research_date']}",
         "markdown": (
             f"## forecast-edge 全量扫描｜{inventory['research_date']}（{venue_text}）\n\n"
+            "**组合概况**：Agent 简报生成失败，**无法安全复述资金数据**。\n\n"
+            f"**研究覆盖**：本轮报告覆盖 **{inventory['current_position_count']} 个当前持仓**、"
+            f"**{max(inventory['researched_market_count'] - inventory['current_position_count'], 0)} 个新增候选**。\n\n"
+            "**本轮结论**：**未取得可验证的 Agent 研究结论**，请查看完整报告和下方异常详情。\n\n"
             "### 一、私人操作建议\n\n"
             "Agent 简报生成失败，本卡未复述未经 Agent 核验的研究结论；请打开父流程 Release 查看完整报告。\n\n"
             "### 二、简报\n\n"

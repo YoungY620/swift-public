@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "rubric_version": "1.6",
+  "rubric_version": "1.7",
   "rubric_id": "forecast-edge-production-audit",
   "description": "Forecast Edge 父工作流完成后的研究、真实执行、发布和安全审计。缺少必要证据时不得判定通过。",
   "statuses": [
@@ -61,9 +61,9 @@
       "severity": "high",
       "title": "研究子图成功",
       "applies_when": "gate released the iteration",
-      "expected": "research job 成功且研究 manifest/validation 进入最终 Release。",
-      "evidence_required": ["jobs", "release.research_manifest", "release.validation_summary"],
-      "pass_condition": "research job success，研究 manifest 和 validation summary 存在且能通过基本一致性检查。"
+      "expected": "research job 成功且研究 manifest/validation 进入最终 Release；初次生成若未通过、后续 repair 恢复，必须作为可恢复 Warning 详细说明，不能伪装成一次通过。",
+      "evidence_required": ["jobs", "research_diagnostics", "release.research_manifest", "release.validation_summary"],
+      "pass_condition": "research job success，研究 manifest 和 validation summary 存在且能通过基本一致性检查。初次生成直接通过才可 PASS；任一 repair 后恢复应判 WARN，并在 reason 中写明失败阶段、校验原因、恢复尝试和最终影响；全部 repair 失败才 FAIL。"
     },
     {
       "id": "HANDOFF-001",

@@ -153,6 +153,7 @@ jobs:
             echo "AUDIT_AGENT_RAW_RESPONSE_PATH=$runtime_dir/agent-response.raw.jsonl"
             echo "AUDIT_AGENT_TRACE_PATH=$runtime_dir/agent-trace.json"
             echo "AUDIT_RESULT_PATH=$runtime_dir/audit-result.json"
+            echo "AUDIT_NOTIFICATION_PATH=$runtime_dir/audit-notification.json"
             echo "FEISHU_BRIEF_AGENT_DIR=$runtime_dir/feishu-brief-agent"
             echo "FEISHU_BRIEF_RAW_PATH=$runtime_dir/feishu-brief.raw.jsonl"
             echo "FEISHU_BRIEF_PATH=$runtime_dir/feishu-brief.json"
@@ -656,6 +657,35 @@ jobs:
             echo "trip_required=$trip_required"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Build sanitized warning and error notification details
+        if: ${{ always() }}
+        env:
+          AGENT_JUDGMENT_VALID: ${{ steps.audit-result.outputs.agent-judgment-valid || 'false' }}
+          SERIOUS_FINDINGS: ${{ steps.classify.outputs.serious_findings || '[]' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          notification_args=()
+          if [[ "$AGENT_JUDGMENT_VALID" == "true" ]]; then
+            notification_args+=(--agent-judgment-valid)
+          fi
+          "$AUDIT_RUNTIME_DIR/python-venv/bin/python" \
+            "$GITHUB_WORKSPACE/scripts/forecast_edge_audit.py" notification \
+            --input "$AUDIT_RESULT_PATH" \
+            --rubric "$AUDIT_RUBRIC_PATH" \
+            --evidence "$AUDIT_EVIDENCE_PATH" \
+            --schema "$AUDIT_SCHEMA_PATH" \
+            --serious-findings "$SERIOUS_FINDINGS" \
+            --output "$AUDIT_NOTIFICATION_PATH" \
+            "${notification_args[@]}"
+          jq -e '
+            .schema_version == "1.0" and
+            (.warnings | type == "array") and
+            (.errors | type == "array") and
+            .warning_count == (.warnings | length) and
+            .error_count == (.errors | length)
+          ' "$AUDIT_NOTIFICATION_PATH" >/dev/null
+
       - name: Run read-only Kimi Code Feishu briefing agent
         id: feishu-brief-agent
         continue-on-error: true
@@ -725,6 +755,8 @@ jobs:
           fi
           install -m 600 "$FEISHU_BRIEF_PATH" \
             "$FEISHU_BRIEF_ARTIFACT_DIR/feishu-brief.json"
+          install -m 600 "$AUDIT_NOTIFICATION_PATH" \
+            "$FEISHU_BRIEF_ARTIFACT_DIR/audit-notification.json"
           if [[ -s "$FEISHU_BRIEF_TRACE_PATH" ]]; then
             install -m 600 "$FEISHU_BRIEF_TRACE_PATH" \
               "$FEISHU_BRIEF_ARTIFACT_DIR/feishu-brief-trace.json"
@@ -904,10 +936,60 @@ jobs:
                 actionable_recommendation_count:0,
                 markdown:(
                   "## forecast-edge 全量扫描｜" + $research_date + "（Agent 简报不可用）\n\n" +
+                  "**组合概况**：Agent 简报不可用，**无法安全复述资金数据**。\n\n" +
+                  "**研究覆盖**：本轮**没有取得可验证的研究覆盖清单**。\n\n" +
+                  "**本轮结论**：**未取得可验证的 Agent 研究结论**，请查看父流程 Release 和异常详情。\n\n" +
                   "### 一、私人操作建议\n\n本轮 Agent 简报 artifact 不可用，请从父流程 Release 查看完整研究报告。\n\n" +
                   "### 二、简报\n\n本轮无可验证的 Agent 研究摘要；执行与审计失败详情见下方状态。"
                 )
               }' > "$brief_dir/feishu-brief.json"
+          fi
+          if ! jq -e '
+              .schema_version == "1.0" and
+              (.warnings | type == "array") and
+              (.errors | type == "array") and
+              .warning_count == (.warnings | length) and
+              .error_count == (.errors | length)
+            ' "$brief_dir/audit-notification.json" >/dev/null 2>&1; then
+            jq -n \
+              --arg audit_job "${AUDIT_JOB_RESULT:-failure}" \
+              --arg run_id "$PARENT_RUN_ID" \
+              '([{
+                  id:"AUDIT-INFRASTRUCTURE",
+                  title:"审计详情 artifact 不可用",
+                  status:"WARN",
+                  severity:"high",
+                  reason:"审计 workflow 未产出可验证的结构化通知详情。",
+                  impact:"本轮不能声称审计完全通过；通知仍继续发送，且不会仅因此自动熔断。",
+                  evidence:["audit workflow run " + $run_id],
+                  anomalies:[],
+                  triggers_breaker:false,
+                  breaker_reason:"基础设施或证据问题只告警；确定性资金安全异常仍独立判定。"
+                }]) as $warnings
+               | (if $audit_job == "success" then [] else [{
+                    id:"AUDIT-JOB",
+                    title:"审计 workflow 未成功完成",
+                    status:"FAIL",
+                    severity:"high",
+                    reason:("审计 job 结论为 " + $audit_job + "。"),
+                    impact:"审计流水线存在显式错误，需打开审计运行查看失败步骤。",
+                    evidence:["audit workflow run " + $run_id],
+                    anomalies:[],
+                    triggers_breaker:false,
+                    breaker_reason:"普通审计基础设施失败会显示 Error，但不冒充明确的资金安全熔断条件。"
+                  }] end) as $errors
+               | {
+                  schema_version:"1.0",
+                  overall_status:"WARN",
+                  confidence:"LOW",
+                  agent_judgment_valid:false,
+                  warning_count:($warnings|length),
+                  error_count:($errors|length),
+                  serious_finding_count:0,
+                  warnings:$warnings,
+                  errors:$errors,
+                  missing_evidence:["audit-notification.json"]
+                }' > "$brief_dir/audit-notification.json"
           fi
           stage_result() {
             jq -r --arg pattern "$1" '
@@ -963,8 +1045,7 @@ jobs:
           fi
           message_path="$RUNNER_TEMP/forecast-edge-final-status.md"
           {
-            jq -r '.markdown' "$brief_dir/feishu-brief.json"
-            printf '\n---\n\n### 三、执行与审计状态\n\n'
+            printf '### 三、执行与审计状态\n\n'
             printf '**父流程**：[%s](%s) · `%s`\n' "$PARENT_RUN_ID" "$parent_url" "$parent_conclusion"
             printf '**阶段**：gate `%s` · research `%s` · execution `%s` · release `%s`\n' \
               "$gate_result" "$research_result" "$execution_result" "$release_result"
@@ -974,6 +1055,9 @@ jobs:
               "$audit_job" "$overall" "$confidence"
             printf '**严重检查项**：%s\n' "$finding_ids"
             printf '**生产熔断**：%s\n' "$breaker_status"
+            printf '**问题概况**：Warning `%s` · Error `%s`（详情见下方折叠面板）\n' \
+              "$(jq -r '.warning_count' "$brief_dir/audit-notification.json")" \
+              "$(jq -r '.error_count' "$brief_dir/audit-notification.json")"
             printf '**Agent 扫描简报**：`%s`\n' "${FEISHU_BRIEF_VALID:-false}"
             printf '**审计运行**：[%s](https://github.com/%s/actions/runs/%s)\n' \
               "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
@@ -1001,15 +1085,112 @@ jobs:
               --arg uuid "forecast-edge-final-$PARENT_RUN_ID-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
               --arg title "$(jq -r '.title' "$brief_dir/feishu-brief.json")" \
               --arg template "$template" \
-              --rawfile message "$message_path" \
-              '{
+              --arg subtitle "父流程 $PARENT_RUN_ID · 审计 $GITHUB_RUN_ID" \
+              --arg status_tag "$(if [[ "$template" == "red" ]]; then printf '已熔断'; else printf '未熔断'; fi)" \
+              --rawfile brief "$brief_dir/feishu-brief.json" \
+              --rawfile status "$message_path" \
+              --slurpfile notification "$brief_dir/audit-notification.json" \
+               'def safe:
+                  tostring
+                  | gsub("[\\r\\n]+"; " ")
+                  | gsub("`"; "´")
+                  | gsub("[<>]"; "");
+               def detail_markdown($items):
+                  $items
+                  | map(
+                      "**" + (.id|safe) + "｜" + (.title|safe) + "**\\n" +
+                      "**状态 / 级别**：`" + (.status|safe) + "` / `" + (.severity|safe) + "`\\n" +
+                      "**原因**：" + (.reason|safe) + "\\n" +
+                      "**影响**：" + (.impact|safe) + "\\n" +
+                      "**证据**：" + (
+                        if (.evidence|length) == 0 then "无"
+                        else (.evidence | map("`" + (. | safe) + "`") | join("、"))
+                        end
+                      ) + "\\n" +
+                      (if (.anomalies|length) == 0 then ""
+                       else "**异常摘要**：" + (.anomalies | map(.|safe) | join("；")) + "\\n"
+                       end) +
+                      "**熔断判断**：" +
+                      (if .triggers_breaker then "是" else "否" end) + "；" + (.breaker_reason|safe)
+                    )
+                  | join("\\n\\n");
+               ($brief | fromjson) as $brief_document
+               | $notification[0] as $details
+               | ([
+                    {tag:"markdown",content:$brief_document.markdown},
+                    {
+                      tag:"column_set",
+                      flex_mode:"none",
+                      columns:[{
+                        tag:"column",
+                        width:"weighted",
+                        weight:1,
+                        background_style:(if $template == "red" then "red-50" else "green-50" end),
+                        padding:"12px",
+                        vertical_spacing:"4px",
+                        elements:[{tag:"markdown",content:$status}]
+                      }]
+                    },
+                    (if $details.error_count > 0 then {
+                      tag:"collapsible_panel",
+                      expanded:false,
+                      header:{
+                        title:{tag:"plain_text",content:("Error 详情（" + ($details.error_count|tostring) + "）")},
+                        width:"fill"
+                      },
+                      background_color:"grey-50",
+                      border:{color:"grey-200",corner_radius:"8px"},
+                      padding:"12px",
+                      elements:[{tag:"markdown",content:detail_markdown($details.errors)}]
+                    } else empty end),
+                    (if $details.warning_count > 0 then {
+                      tag:"collapsible_panel",
+                      expanded:false,
+                      header:{
+                        title:{tag:"plain_text",content:("Warning 详情（" + ($details.warning_count|tostring) + "）")},
+                        width:"fill"
+                      },
+                      background_color:"grey-50",
+                      border:{color:"grey-200",corner_radius:"8px"},
+                      padding:"12px",
+                      elements:[{
+                        tag:"markdown",
+                        content:(
+                          detail_markdown($details.warnings) +
+                          (if ($details.missing_evidence|length) == 0 then ""
+                           else "\\n\\n**缺失证据**：" +
+                             ($details.missing_evidence | map("`" + (. | safe) + "`") | join("、"))
+                           end)
+                        )
+                      }]
+                    } else empty end)
+                  ]) as $elements
+               | {
                 receive_id:$receive_id,
                 msg_type:"interactive",
                 content:({
                   schema:"2.0",
-                  config:{wide_screen_mode:true},
-                  header:{title:{tag:"plain_text",content:$title},template:$template},
-                  body:{elements:[{tag:"markdown",content:$message}]}
+                  config:{
+                    width_mode:"default",
+                    summary:{content:$title}
+                  },
+                  header:{
+                    title:{tag:"plain_text",content:$title},
+                    subtitle:{tag:"plain_text",content:$subtitle},
+                    template:$template,
+                    icon:{tag:"standard_icon",token:"ai-common_colorful"},
+                    text_tag_list:[{
+                      tag:"text_tag",
+                      text:{tag:"plain_text",content:$status_tag},
+                      color:$template
+                    }]
+                  },
+                  body:{
+                    direction:"vertical",
+                    padding:"12px 12px 20px 12px",
+                    vertical_spacing:"12px",
+                    elements:$elements
+                  }
                 } | tojson),
                 uuid:$uuid
               }'

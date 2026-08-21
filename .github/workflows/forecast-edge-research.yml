@@ -458,7 +458,6 @@ jobs:
 
       - name: Run Kimi Code — initial attempt
         id: kimi-initial
-        continue-on-error: true
         timeout-minutes: 120
         env:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
@@ -479,21 +478,26 @@ jobs:
           status=$?
           set -e
           if (( status != 0 )); then
-            echo "::error::Kimi initial attempt failed; private diagnostics were retained for repair"
-            exit "$status"
+            echo "succeeded=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Kimi initial attempt was incomplete; private diagnostics were retained and repair will be attempted"
+            exit 0
           fi
+          echo "succeeded=true" >> "$GITHUB_OUTPUT"
 
       - name: Validate initial trade intents
         id: validate-initial
-        continue-on-error: true
         env:
-          KIMI_OUTCOME: ${{ steps.kimi-initial.outcome }}
+          KIMI_SUCCEEDED: ${{ steps.kimi-initial.outputs.succeeded }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$KIMI_OUTCOME" != "success" ]]; then
-            echo "Kimi initial attempt exited unsuccessfully." > "$VALIDATION_ERRORS_PATH"
-            exit 1
+          attempt_stdout="$RUNTIME_DIR/validation-attempt-1.stdout"
+          attempt_errors="$RUNTIME_DIR/validation-attempt-1.errors.txt"
+          if [[ "$KIMI_SUCCEEDED" != "true" ]]; then
+            echo "Kimi initial attempt exited unsuccessfully." > "$attempt_errors"
+            install -m 600 "$attempt_errors" "$VALIDATION_ERRORS_PATH"
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           if ! python3 scripts/validate_research_iteration.py \
             --reports-root "$REPORTS_DIR" \
@@ -508,16 +512,21 @@ jobs:
             --current-reports-manifest "$CURRENT_REPORTS_MANIFEST" \
             --report-validation "$REPORT_VALIDATION_PATH" \
             --validation-summary "$VALIDATION_SUMMARY_PATH" \
-            > "$RUNTIME_DIR/iteration-validation.stdout" 2> "$VALIDATION_ERRORS_PATH"; then
-            echo "::error::Private research iteration validation failed"
-            exit 1
+            > "$attempt_stdout" 2> "$attempt_errors"; then
+            install -m 600 "$attempt_stdout" "$RUNTIME_DIR/iteration-validation.stdout"
+            install -m 600 "$attempt_errors" "$VALIDATION_ERRORS_PATH"
+            echo "::warning::Initial research iteration needs repair; private validation details were retained"
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          install -m 600 "$attempt_stdout" "$RUNTIME_DIR/iteration-validation.stdout"
+          install -m 600 "$attempt_errors" "$VALIDATION_ERRORS_PATH"
+          echo "valid=true" >> "$GITHUB_OUTPUT"
           echo "Private report and trade intents passed validation"
 
       - name: Run Kimi Code — repair 1 of 3
         id: kimi-repair-1
-        if: ${{ steps.validate-initial.outcome == 'failure' }}
-        continue-on-error: true
+        if: ${{ steps.validate-initial.outputs.valid != 'true' }}
         timeout-minutes: 120
         env:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
@@ -537,22 +546,27 @@ jobs:
           status=$?
           set -e
           if (( status != 0 )); then
-            echo "::error::Kimi repair attempt 1 failed; private diagnostics were retained"
-            exit "$status"
+            echo "succeeded=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Kimi repair attempt 1 was incomplete; private diagnostics were retained and another repair will be attempted"
+            exit 0
           fi
+          echo "succeeded=true" >> "$GITHUB_OUTPUT"
 
       - name: Validate repaired trade intents — 1 of 3
         id: validate-repair-1
-        if: ${{ steps.validate-initial.outcome == 'failure' }}
-        continue-on-error: true
+        if: ${{ steps.validate-initial.outputs.valid != 'true' }}
         env:
-          KIMI_OUTCOME: ${{ steps.kimi-repair-1.outcome }}
+          KIMI_SUCCEEDED: ${{ steps.kimi-repair-1.outputs.succeeded }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$KIMI_OUTCOME" != "success" ]]; then
-            echo "Kimi repair 1 exited unsuccessfully." > "$VALIDATION_ERRORS_PATH"
-            exit 1
+          attempt_stdout="$RUNTIME_DIR/validation-attempt-2.stdout"
+          attempt_errors="$RUNTIME_DIR/validation-attempt-2.errors.txt"
+          if [[ "$KIMI_SUCCEEDED" != "true" ]]; then
+            echo "Kimi repair 1 exited unsuccessfully." > "$attempt_errors"
+            install -m 600 "$attempt_errors" "$VALIDATION_ERRORS_PATH"
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           if ! python3 scripts/validate_research_iteration.py \
             --reports-root "$REPORTS_DIR" \
@@ -567,16 +581,23 @@ jobs:
             --current-reports-manifest "$CURRENT_REPORTS_MANIFEST" \
             --report-validation "$REPORT_VALIDATION_PATH" \
             --validation-summary "$VALIDATION_SUMMARY_PATH" \
-            > "$RUNTIME_DIR/iteration-validation.stdout" 2> "$VALIDATION_ERRORS_PATH"; then
-            echo "::error::Private research iteration validation failed"
-            exit 1
+            > "$attempt_stdout" 2> "$attempt_errors"; then
+            install -m 600 "$attempt_stdout" "$RUNTIME_DIR/iteration-validation.stdout"
+            install -m 600 "$attempt_errors" "$VALIDATION_ERRORS_PATH"
+            echo "::warning::Research iteration still needs repair after attempt 1; private validation details were retained"
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          install -m 600 "$attempt_stdout" "$RUNTIME_DIR/iteration-validation.stdout"
+          install -m 600 "$attempt_errors" "$VALIDATION_ERRORS_PATH"
+          echo "valid=true" >> "$GITHUB_OUTPUT"
           echo "Private report and trade intents passed validation"
 
       - name: Run Kimi Code — repair 2 of 3
         id: kimi-repair-2
-        if: ${{ steps.validate-repair-1.outcome == 'failure' }}
-        continue-on-error: true
+        if: >-
+          steps.validate-initial.outputs.valid != 'true' &&
+          steps.validate-repair-1.outputs.valid != 'true'
         timeout-minutes: 120
         env:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
@@ -596,22 +617,29 @@ jobs:
           status=$?
           set -e
           if (( status != 0 )); then
-            echo "::error::Kimi repair attempt 2 failed; private diagnostics were retained"
-            exit "$status"
+            echo "succeeded=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Kimi repair attempt 2 was incomplete; private diagnostics were retained and another repair will be attempted"
+            exit 0
           fi
+          echo "succeeded=true" >> "$GITHUB_OUTPUT"
 
       - name: Validate repaired trade intents — 2 of 3
         id: validate-repair-2
-        if: ${{ steps.validate-repair-1.outcome == 'failure' }}
-        continue-on-error: true
+        if: >-
+          steps.validate-initial.outputs.valid != 'true' &&
+          steps.validate-repair-1.outputs.valid != 'true'
         env:
-          KIMI_OUTCOME: ${{ steps.kimi-repair-2.outcome }}
+          KIMI_SUCCEEDED: ${{ steps.kimi-repair-2.outputs.succeeded }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$KIMI_OUTCOME" != "success" ]]; then
-            echo "Kimi repair 2 exited unsuccessfully." > "$VALIDATION_ERRORS_PATH"
-            exit 1
+          attempt_stdout="$RUNTIME_DIR/validation-attempt-3.stdout"
+          attempt_errors="$RUNTIME_DIR/validation-attempt-3.errors.txt"
+          if [[ "$KIMI_SUCCEEDED" != "true" ]]; then
+            echo "Kimi repair 2 exited unsuccessfully." > "$attempt_errors"
+            install -m 600 "$attempt_errors" "$VALIDATION_ERRORS_PATH"
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           if ! python3 scripts/validate_research_iteration.py \
             --reports-root "$REPORTS_DIR" \
@@ -626,16 +654,24 @@ jobs:
             --current-reports-manifest "$CURRENT_REPORTS_MANIFEST" \
             --report-validation "$REPORT_VALIDATION_PATH" \
             --validation-summary "$VALIDATION_SUMMARY_PATH" \
-            > "$RUNTIME_DIR/iteration-validation.stdout" 2> "$VALIDATION_ERRORS_PATH"; then
-            echo "::error::Private research iteration validation failed"
-            exit 1
+            > "$attempt_stdout" 2> "$attempt_errors"; then
+            install -m 600 "$attempt_stdout" "$RUNTIME_DIR/iteration-validation.stdout"
+            install -m 600 "$attempt_errors" "$VALIDATION_ERRORS_PATH"
+            echo "::warning::Research iteration still needs repair after attempt 2; private validation details were retained"
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          install -m 600 "$attempt_stdout" "$RUNTIME_DIR/iteration-validation.stdout"
+          install -m 600 "$attempt_errors" "$VALIDATION_ERRORS_PATH"
+          echo "valid=true" >> "$GITHUB_OUTPUT"
           echo "Private report and trade intents passed validation"
 
       - name: Run Kimi Code — repair 3 of 3
         id: kimi-repair-3
-        if: ${{ steps.validate-repair-2.outcome == 'failure' }}
-        continue-on-error: true
+        if: >-
+          steps.validate-initial.outputs.valid != 'true' &&
+          steps.validate-repair-1.outputs.valid != 'true' &&
+          steps.validate-repair-2.outputs.valid != 'true'
         timeout-minutes: 120
         env:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
@@ -655,22 +691,30 @@ jobs:
           status=$?
           set -e
           if (( status != 0 )); then
-            echo "::error::Kimi repair attempt 3 failed; private diagnostics were retained"
-            exit "$status"
+            echo "succeeded=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Kimi repair attempt 3 was incomplete; private diagnostics were retained"
+            exit 0
           fi
+          echo "succeeded=true" >> "$GITHUB_OUTPUT"
 
       - name: Validate repaired trade intents — 3 of 3
         id: validate-repair-3
-        if: ${{ steps.validate-repair-2.outcome == 'failure' }}
-        continue-on-error: true
+        if: >-
+          steps.validate-initial.outputs.valid != 'true' &&
+          steps.validate-repair-1.outputs.valid != 'true' &&
+          steps.validate-repair-2.outputs.valid != 'true'
         env:
-          KIMI_OUTCOME: ${{ steps.kimi-repair-3.outcome }}
+          KIMI_SUCCEEDED: ${{ steps.kimi-repair-3.outputs.succeeded }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$KIMI_OUTCOME" != "success" ]]; then
-            echo "Kimi repair 3 exited unsuccessfully." > "$VALIDATION_ERRORS_PATH"
-            exit 1
+          attempt_stdout="$RUNTIME_DIR/validation-attempt-4.stdout"
+          attempt_errors="$RUNTIME_DIR/validation-attempt-4.errors.txt"
+          if [[ "$KIMI_SUCCEEDED" != "true" ]]; then
+            echo "Kimi repair 3 exited unsuccessfully." > "$attempt_errors"
+            install -m 600 "$attempt_errors" "$VALIDATION_ERRORS_PATH"
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           if ! python3 scripts/validate_research_iteration.py \
             --reports-root "$REPORTS_DIR" \
@@ -685,26 +729,32 @@ jobs:
             --current-reports-manifest "$CURRENT_REPORTS_MANIFEST" \
             --report-validation "$REPORT_VALIDATION_PATH" \
             --validation-summary "$VALIDATION_SUMMARY_PATH" \
-            > "$RUNTIME_DIR/iteration-validation.stdout" 2> "$VALIDATION_ERRORS_PATH"; then
-            echo "::error::Private research iteration validation failed"
-            exit 1
+            > "$attempt_stdout" 2> "$attempt_errors"; then
+            install -m 600 "$attempt_stdout" "$RUNTIME_DIR/iteration-validation.stdout"
+            install -m 600 "$attempt_errors" "$VALIDATION_ERRORS_PATH"
+            echo "::warning::Research iteration is still invalid after repair attempt 3; private validation details were retained"
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          install -m 600 "$attempt_stdout" "$RUNTIME_DIR/iteration-validation.stdout"
+          install -m 600 "$attempt_errors" "$VALIDATION_ERRORS_PATH"
+          echo "valid=true" >> "$GITHUB_OUTPUT"
           echo "Private report and trade intents passed validation"
 
       - name: Enforce retry limit
         if: ${{ always() }}
         env:
-          INITIAL_VALIDATION: ${{ steps.validate-initial.outcome }}
-          REPAIR_1_VALIDATION: ${{ steps.validate-repair-1.outcome }}
-          REPAIR_2_VALIDATION: ${{ steps.validate-repair-2.outcome }}
-          REPAIR_3_VALIDATION: ${{ steps.validate-repair-3.outcome }}
+          INITIAL_VALIDATION: ${{ steps.validate-initial.outputs.valid }}
+          REPAIR_1_VALIDATION: ${{ steps.validate-repair-1.outputs.valid }}
+          REPAIR_2_VALIDATION: ${{ steps.validate-repair-2.outputs.valid }}
+          REPAIR_3_VALIDATION: ${{ steps.validate-repair-3.outputs.valid }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$INITIAL_VALIDATION" == "success" || \
-                "$REPAIR_1_VALIDATION" == "success" || \
-                "$REPAIR_2_VALIDATION" == "success" || \
-                "$REPAIR_3_VALIDATION" == "success" ]]; then
+          if [[ "$INITIAL_VALIDATION" == "true" || \
+                "$REPAIR_1_VALIDATION" == "true" || \
+                "$REPAIR_2_VALIDATION" == "true" || \
+                "$REPAIR_3_VALIDATION" == "true" ]]; then
             exit 0
           fi
           echo "::error::Trade intents failed validation after the initial attempt and three repairs"
@@ -912,11 +962,11 @@ jobs:
         run: |
           set -euo pipefail
           successful_attempt=4
-          if [[ "${{ steps.validate-initial.outcome }}" == "success" ]]; then
+          if [[ "${{ steps.validate-initial.outputs.valid }}" == "true" ]]; then
             successful_attempt=1
-          elif [[ "${{ steps.validate-repair-1.outcome }}" == "success" ]]; then
+          elif [[ "${{ steps.validate-repair-1.outputs.valid }}" == "true" ]]; then
             successful_attempt=2
-          elif [[ "${{ steps.validate-repair-2.outcome }}" == "success" ]]; then
+          elif [[ "${{ steps.validate-repair-2.outputs.valid }}" == "true" ]]; then
             successful_attempt=3
           fi
           generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -1138,6 +1188,7 @@ jobs:
           if [[ -n "${RUNTIME_DIR:-}" && -d "$RUNTIME_DIR" ]]; then
             for candidate in \
               kimi-attempt-*.stream.jsonl kimi-attempt-*.stderr \
+              validation-attempt-*.stdout validation-attempt-*.errors.txt \
               iteration-validation.stdout validation-errors.txt validation-summary.json \
               report-validation.json current-reports-manifest.json \
               history-release-tags.json url_verification.json; do

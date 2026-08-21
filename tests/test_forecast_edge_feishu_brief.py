@@ -50,6 +50,9 @@ class ForecastEdgeFeishuBriefTests(unittest.TestCase):
             "actionable_recommendation_count": actionable,
             "markdown": (
                 "## forecast-edge 全量扫描｜2026-08-21（Polymarket）\n\n"
+                "**组合概况**：可用抵押资金 **20 pUSD**，保守总资金 **30 pUSD**。\n\n"
+                "**研究覆盖**：重新评估 **1 个当前持仓**并深度研究 **1 个新增候选**。\n\n"
+                "**本轮结论**：**维持现状**，等待更清晰的机会。\n\n"
                 "### 一、私人操作建议\n\n持有 YES｜示例市场，维持当前仓位。\n\n"
                 f"### 二、简报\n\n{no_action}\n\n"
                 "[盘口链接](https://polymarket.com/event/example)"
@@ -107,6 +110,36 @@ class ForecastEdgeFeishuBriefTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(
                 brief_module.BriefValidationError, "no intent is executable"
+            ):
+                brief_module.validate_brief(response, schema, inventory)
+
+    def test_portfolio_summary_is_formatted_prose_not_a_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            reports = Path(tmp)
+            self.write_report(reports)
+            schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+            inventory = brief_module.report_inventory(reports)
+            response = self.response()
+            response["markdown"] = str(response["markdown"]).replace(
+                "**组合概况**：", "- **组合概况**："
+            )
+            with self.assertRaisesRegex(
+                brief_module.BriefValidationError, "must not be a list"
+            ):
+                brief_module.validate_brief(response, schema, inventory)
+
+    def test_each_summary_line_emphasizes_its_key_point(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            reports = Path(tmp)
+            self.write_report(reports)
+            schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+            inventory = brief_module.report_inventory(reports)
+            response = self.response()
+            response["markdown"] = str(response["markdown"]).replace(
+                "**维持现状**", "维持现状"
+            )
+            with self.assertRaisesRegex(
+                brief_module.BriefValidationError, "no emphasized key point"
             ):
                 brief_module.validate_brief(response, schema, inventory)
 

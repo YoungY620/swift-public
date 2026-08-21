@@ -18,16 +18,36 @@ ALLOWED_AGENT_TOOLS = {"Read", "Grep", "Glob", "WebSearch", "FetchURL", "Agent"}
 REQUIRED_AGENT_TOOLS = {"Read", "Agent"}
 SECRET_PATTERNS = (
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
-    re.compile(r"\b(?:POLYMARKET|AWS|KIMI|FEISHU|GITHUB)_[A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSPHRASE)\b"),
     re.compile(r"\b(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b"),
     re.compile(r"\b0x[0-9a-fA-F]{130}\b"),
     re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}\b"),
     re.compile(r"(?i)authorization\s*:\s*(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"),
     re.compile(r"(?im)^(?:cookie|set-cookie)\s*:\s*[^\r\n]{8,}$"),
-    re.compile(
-        r'(?i)"(?:private[_-]?key|password|api[_-]?key|api[_-]?secret|client[_-]?secret|passphrase|access[_-]?token|refresh[_-]?token|session[_-]?token|auth[_-]?token|cookie|mnemonic|seed[_-]?phrase)"\s*:\s*"[^"\r\n]+"'
-    ),
 )
+SECRET_ENV_ASSIGNMENT = re.compile(
+    r"(?im)^\s*(?:export\s+)?"
+    r"(?:POLYMARKET|AWS|KIMI|FEISHU|GITHUB)_[A-Z0-9_]*"
+    r"(?:KEY|SECRET|TOKEN|PASSPHRASE)\s*=\s*(?P<value>[^\r\n#]+)"
+)
+SECRET_JSON_ASSIGNMENT = re.compile(
+    r'(?i)"(?:private[_-]?key|password|api[_-]?key|api[_-]?secret|client[_-]?secret|'
+    r'passphrase|access[_-]?token|refresh[_-]?token|session[_-]?token|auth[_-]?token|'
+    r'cookie|mnemonic|seed[_-]?phrase)"\s*:\s*"(?P<value>[^"\r\n]*)"'
+)
+SAFE_SECRET_PLACEHOLDERS = {
+    "",
+    "***",
+    "<redacted>",
+    "[redacted]",
+    "redacted",
+    "masked",
+    "missing",
+    "not configured",
+    "not-configured",
+    "unset",
+    "unavailable",
+    "unknown",
+}
 
 
 class AuditValidationError(ValueError):
@@ -61,17 +81,39 @@ def walk_strings(value: Any) -> list[str]:
     return []
 
 
+def _is_protected_assignment_value(value: str) -> bool:
+    normalized = value.strip().strip("\"'").strip().lower()
+    if (
+        normalized in SAFE_SECRET_PLACEHOLDERS
+        or normalized.startswith(("$", "<", "["))
+        or "redact" in normalized
+        or "mask" in normalized
+    ):
+        return False
+    return len(normalized) >= 8
+
+
+def contains_secret_like_text(text: str) -> bool:
+    """Detect credential values while allowing safe variable-name diagnostics."""
+    if any(pattern.search(text) for pattern in SECRET_PATTERNS):
+        return True
+    return any(
+        _is_protected_assignment_value(match.group("value"))
+        for pattern in (SECRET_ENV_ASSIGNMENT, SECRET_JSON_ASSIGNMENT)
+        for match in pattern.finditer(text)
+    )
+
+
 def reject_secret_like_text(document: Any) -> None:
     for text in walk_strings(document):
-        if any(pattern.search(text) for pattern in SECRET_PATTERNS):
+        if contains_secret_like_text(text):
             raise AuditValidationError("audit output contains secret-like text")
 
 
 def extract_last_json_object(text: str) -> dict[str, Any]:
     """Extract the last complete JSON object from a Kimi Code output stream."""
-    for pattern in SECRET_PATTERNS:
-        if pattern.search(text):
-            raise AuditValidationError("audit output contains secret-like text")
+    if contains_secret_like_text(text):
+        raise AuditValidationError("audit output contains secret-like text")
     decoder = json.JSONDecoder()
     candidate: dict[str, Any] | None = None
     candidate_end = -1
@@ -92,9 +134,8 @@ def extract_last_json_object(text: str) -> dict[str, Any]:
 
 def extract_agent_stream(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
     """Extract a final judgment and prove it came from a read-only agent run."""
-    for pattern in SECRET_PATTERNS:
-        if pattern.search(text):
-            raise AuditValidationError("audit output contains secret-like text")
+    if contains_secret_like_text(text):
+        raise AuditValidationError("audit output contains secret-like text")
 
     events: list[dict[str, Any]] = []
     for line_number, line in enumerate(text.splitlines(), start=1):
@@ -491,10 +532,156 @@ def classify_serious_findings(
     return sorted(findings)
 
 
+def _single_line(value: Any, limit: int) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text[:limit]
+
+
+def build_notification_details(
+    response: dict[str, Any],
+    rubric: dict[str, Any],
+    evidence: dict[str, Any],
+    *,
+    serious_findings: list[str],
+    agent_judgment_valid: bool,
+) -> dict[str, Any]:
+    """Build a compact, sanitized ledger for Feishu collapsible panels."""
+
+    serious = {str(item) for item in serious_findings}
+    rubric_by_id = {
+        str(item.get("id")): item
+        for item in _list(rubric.get("checks"))
+        if isinstance(item, dict)
+    }
+    anomalies_by_id: dict[str, list[str]] = {}
+    for anomaly in _list(response.get("anomalies")):
+        if not isinstance(anomaly, dict):
+            continue
+        check_id = str(anomaly.get("check_id", "AUDIT"))
+        summary = _single_line(anomaly.get("summary"), 600)
+        if summary:
+            anomalies_by_id.setdefault(check_id, []).append(summary)
+
+    warnings: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    def append_detail(check: dict[str, Any]) -> None:
+        check_id = str(check.get("id", "AUDIT"))
+        status = str(check.get("status", "WARN"))
+        severity = str(check.get("severity", "medium"))
+        triggered = check_id in serious
+        if status == "WARN":
+            impact = "本轮流水线继续；该偏差必须保留并在后续轮次观察或修复。"
+        elif status == "INSUFFICIENT_EVIDENCE":
+            impact = "证据不足，不能判定通过；本轮不因证据不足自动熔断。"
+        elif triggered:
+            impact = "已形成明确的关键资金或安全失败，要求生产熔断。"
+        else:
+            impact = "检查已失败并会显式报错，但未满足自动生产熔断条件。"
+        detail = {
+            "id": check_id,
+            "title": _single_line(rubric_by_id.get(check_id, {}).get("title", "审计异常"), 160),
+            "status": status,
+            "severity": severity,
+            "reason": _single_line(check.get("reason"), 1000) or "Agent 未提供具体原因。",
+            "impact": impact,
+            "evidence": [
+                _single_line(item, 200)
+                for item in _list(check.get("evidence"))
+                if _single_line(item, 200)
+            ],
+            "anomalies": anomalies_by_id.get(check_id, []),
+            "triggers_breaker": triggered,
+            "breaker_reason": (
+                "critical FAIL 或确定性资金/安全保护异常。"
+                if triggered
+                else "Warning、证据不足及非关键失败不会自动熔断。"
+            ),
+        }
+        (errors if status == "FAIL" else warnings).append(detail)
+
+    if agent_judgment_valid:
+        for check in _list(response.get("checks")):
+            if isinstance(check, dict) and check.get("status") in {
+                "WARN",
+                "FAIL",
+                "INSUFFICIENT_EVIDENCE",
+            }:
+                append_detail(check)
+    else:
+        warnings.append(
+            {
+                "id": "AUDIT-INFRASTRUCTURE",
+                "title": "Judge Agent 结论不可验证",
+                "status": "WARN",
+                "severity": "high",
+                "reason": _single_line(response.get("agent_notes"), 1000)
+                or "Judge Agent 未产生通过 schema 和工具轨迹校验的结论。",
+                "impact": "本轮保留为基础设施 Warning；不得据此声称业务通过，也不自动熔断交易。",
+                "evidence": ["agent_response.validated_judgment"],
+                "anomalies": [],
+                "triggers_breaker": False,
+                "breaker_reason": "无有效 Agent 判断时 fail-open 为告警，但确定性资金安全检查仍独立生效。",
+            }
+        )
+
+    existing_error_ids = {item["id"] for item in errors}
+    jobs = [item for item in _list(evidence.get("jobs")) if isinstance(item, dict)]
+    for index, job in enumerate(jobs, start=1):
+        conclusion = str(job.get("conclusion", ""))
+        if conclusion not in {"failure", "cancelled", "timed_out"}:
+            continue
+        job_name = _single_line(job.get("name"), 160) or f"job-{index}"
+        detail_id = f"WORKFLOW-{index:03d}"
+        if detail_id in existing_error_ids:
+            continue
+        failed_steps = [
+            _single_line(step.get("name"), 160)
+            for step in _list(job.get("steps"))
+            if isinstance(step, dict)
+            and step.get("conclusion") in {"failure", "cancelled", "timed_out"}
+        ]
+        errors.append(
+            {
+                "id": detail_id,
+                "title": f"父流程阶段异常：{job_name}",
+                "status": "FAIL",
+                "severity": "high",
+                "reason": f"GitHub job 结论为 {conclusion}。"
+                + (" 失败步骤：" + "；".join(failed_steps) if failed_steps else ""),
+                "impact": "父流程未按预期完整成功；需根据运行日志和诊断 artifact 定位。",
+                "evidence": ["jobs"],
+                "anomalies": [],
+                "triggers_breaker": False,
+                "breaker_reason": "普通 workflow 失败会暴露为 Error，但不等同于明确的资金安全失败。",
+            }
+        )
+
+    document = {
+        "schema_version": "1.0",
+        "overall_status": str(response.get("overall_status", "WARN")),
+        "confidence": str(response.get("confidence", "LOW")),
+        "agent_judgment_valid": agent_judgment_valid,
+        "warning_count": len(warnings),
+        "error_count": len(errors),
+        "serious_finding_count": len(serious),
+        "warnings": warnings,
+        "errors": errors,
+        "missing_evidence": [
+            _single_line(item, 500)
+            for item in _list(response.get("missing_evidence"))
+            if _single_line(item, 500)
+        ],
+    }
+    reject_secret_like_text(document)
+    return document
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "command", choices=("validate", "normalize", "extract", "fallback", "classify")
+        "command",
+        choices=("validate", "normalize", "extract", "fallback", "classify", "notification"),
     )
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--rubric", type=Path, required=True)
@@ -504,6 +691,7 @@ def main() -> int:
     parser.add_argument("--trace-output", type=Path)
     parser.add_argument("--parent-run-id", default="0")
     parser.add_argument("--agent-judgment-valid", action="store_true")
+    parser.add_argument("--serious-findings", default="[]")
     args = parser.parse_args()
 
     rubric = load_json(args.rubric, "rubric")
@@ -532,6 +720,29 @@ def main() -> int:
                 agent_judgment_valid=args.agent_judgment_valid,
             ),
         }
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return 0
+    if args.command == "notification":
+        response = load_json(args.input, "audit result")
+        try:
+            serious_findings = json.loads(args.serious_findings)
+        except json.JSONDecodeError as exc:
+            raise AuditValidationError("serious findings must be a JSON array") from exc
+        if not isinstance(serious_findings, list) or not all(
+            isinstance(item, str) for item in serious_findings
+        ):
+            raise AuditValidationError("serious findings must be a JSON string array")
+        result = build_notification_details(
+            response,
+            rubric,
+            evidence,
+            serious_findings=serious_findings,
+            agent_judgment_valid=args.agent_judgment_valid,
+        )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(
             json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n",

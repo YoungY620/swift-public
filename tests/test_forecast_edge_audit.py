@@ -120,6 +120,12 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertNotIn("overall", color_logic)
         self.assertNotIn("parent_conclusion", color_logic)
         self.assertIn("**执行回执**", self.workflow)
+        self.assertIn('tag:"collapsible_panel"', self.workflow)
+        self.assertIn("expanded:false", self.workflow)
+        self.assertIn("Warning 详情", self.workflow)
+        self.assertIn("Error 详情", self.workflow)
+        self.assertIn("audit-notification.json", self.workflow)
+        self.assertIn('width_mode:"default"', self.workflow)
         profile = FEISHU_AGENT_PROFILE_PATH.read_text(encoding="utf-8")
         prompt = FEISHU_PROMPT_PATH.read_text(encoding="utf-8")
         schema = json.loads(FEISHU_SCHEMA_PATH.read_text(encoding="utf-8"))
@@ -130,6 +136,10 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertIn("一、私人操作建议", prompt)
         self.assertIn("二、简报", prompt)
         self.assertIn("无可执行交易意图", prompt)
+        self.assertIn("**组合概况**", prompt)
+        self.assertIn("**研究覆盖**", prompt)
+        self.assertIn("**本轮结论**", prompt)
+        self.assertIn("+82.4pp", prompt)
         self.assertIn("source-inventory.json", prompt)
         self.assertIn("source-inventory.json", profile)
         self.assertIn("forecast_edge_feishu_brief.py\" inventory", self.workflow)
@@ -230,9 +240,16 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         with self.assertRaisesRegex(audit_module.AuditValidationError, "critical check failure"):
             audit_module.validate_response(response, self.rubric, self.evidence, self.schema)
 
-    def test_secret_like_output_is_rejected(self) -> None:
+    def test_safe_secret_names_are_allowed_but_assigned_values_are_rejected(self) -> None:
         response = self.response()
-        response["agent_notes"] = "POLYMARKET_CLOB_API_SECRET"
+        response["agent_notes"] = (
+            "Grep 检查了 AWS_SECRET_ACCESS_KEY、GITHUB_TOKEN 和 "
+            "POLYMARKET_CLOB_API_SECRET 的安全名称，未读取任何值。"
+        )
+        audit_module.validate_response(response, self.rubric, self.evidence, self.schema)
+        response["agent_notes"] = "GITHUB_TOKEN=${{ github.token }}"
+        audit_module.validate_response(response, self.rubric, self.evidence, self.schema)
+        response["agent_notes"] = "KIMI_CODE_API_KEY=kimi_actual_value_123456789"
         with self.assertRaisesRegex(audit_module.AuditValidationError, "secret-like"):
             audit_module.validate_response(response, self.rubric, self.evidence, self.schema)
 
@@ -240,9 +257,16 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         text = 'progress\n• {"old":true}\nNeed final JSON.\n' + json.dumps(self.response(), ensure_ascii=False)
         self.assertEqual(audit_module.extract_last_json_object(text), self.response())
 
-    def test_extract_rejects_secret_like_chatter(self) -> None:
+    def test_extract_allows_secret_name_search_but_rejects_assignment(self) -> None:
+        safe = (
+            'Grep pattern="AWS_SECRET_ACCESS_KEY|GITHUB_TOKEN"\n'
+            + json.dumps(self.response(), ensure_ascii=False)
+        )
+        self.assertEqual(audit_module.extract_last_json_object(safe), self.response())
         with self.assertRaisesRegex(audit_module.AuditValidationError, "secret-like"):
-            audit_module.extract_last_json_object("progress POLYMARKET_CLOB_API_SECRET")
+            audit_module.extract_last_json_object(
+                "progress\nKIMI_CODE_API_KEY=kimi_actual_value_123456789"
+            )
 
     def test_extract_requires_real_read_and_subagent_tool_trace(self) -> None:
         response_text = json.dumps(self.response(), ensure_ascii=False)
@@ -353,6 +377,42 @@ class ForecastEdgeAuditTests(unittest.TestCase):
             ),
             [],
         )
+
+    def test_notification_details_separate_nonblocking_warnings_and_errors(self) -> None:
+        response = self.response()
+        response["overall_status"] = "FAIL"
+        response["checks"][0]["status"] = "FAIL"
+        response["checks"][0]["reason"] = "确定性资金安全检查失败。"
+        response["checks"][1]["status"] = "WARN"
+        response["checks"][1]["reason"] = "初次研究校验失败，第 1 次 repair 已恢复。"
+        serious_id = response["checks"][0]["id"]
+        details = audit_module.build_notification_details(
+            response,
+            self.rubric,
+            self.evidence,
+            serious_findings=[serious_id],
+            agent_judgment_valid=True,
+        )
+        self.assertEqual(details["warning_count"], 1)
+        self.assertEqual(details["error_count"], 1)
+        self.assertFalse(details["warnings"][0]["triggers_breaker"])
+        self.assertTrue(details["errors"][0]["triggers_breaker"])
+        self.assertIn("流水线继续", details["warnings"][0]["impact"])
+        self.assertIn("生产熔断", details["errors"][0]["impact"])
+
+    def test_invalid_agent_notification_is_one_visible_nonblocking_warning(self) -> None:
+        response = audit_module.fallback_response(self.rubric, "123", "timeout")
+        details = audit_module.build_notification_details(
+            response,
+            self.rubric,
+            self.evidence,
+            serious_findings=[],
+            agent_judgment_valid=False,
+        )
+        self.assertEqual(details["warning_count"], 1)
+        self.assertEqual(details["error_count"], 0)
+        self.assertEqual(details["warnings"][0]["id"], "AUDIT-INFRASTRUCTURE")
+        self.assertFalse(details["warnings"][0]["triggers_breaker"])
 
     def test_only_valid_explicit_critical_agent_failures_trip(self) -> None:
         response = self.response()
