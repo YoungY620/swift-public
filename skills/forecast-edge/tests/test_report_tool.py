@@ -153,10 +153,43 @@ class ReportToolTests(unittest.TestCase):
         with self.assertRaisesRegex(report_tool.ReportError, "generic execution boilerplate"):
             report_tool.validate_report(report)
 
+    def test_candidate_research_probability_must_match_structured_value(self) -> None:
+        report = load_report()
+        report["candidates"][0]["model"]["conclusion"] = (
+            "该市场的专属历史基准率支持模型 P(YES) 为 58%。"
+        )
+        with self.assertRaisesRegex(report_tool.ReportError, "model.yes_probability"):
+            report_tool.validate_report(report)
+
+        report = load_report()
+        report["candidates"][0]["signal"]["rationale"] = (
+            "相关事件的历史基准率支持模型 P(YES) 为 58%；"
+            "当前可执行价格 0.5、费后净优势 20pp，且组合已分配资金，因此买入。"
+        )
+        with self.assertRaisesRegex(report_tool.ReportError, "model.yes_probability"):
+            report_tool.validate_report(report)
+
+    def test_candidate_probability_allows_normal_display_rounding(self) -> None:
+        self.assertTrue(
+            report_tool.narrative_mentions_probability(
+                "模型 P(YES) 约为 70.5%。", 0.7046
+            )
+        )
+        self.assertTrue(
+            report_tool.narrative_mentions_probability(
+                "模型 YES 概率为 0.7046。", 0.7046
+            )
+        )
+        self.assertFalse(
+            report_tool.narrative_mentions_probability(
+                "模型 P(YES) 约为 68%。", 0.7046
+            )
+        )
+
     def test_distinct_candidates_cannot_copy_evidence_conclusion(self) -> None:
         candidates = [copy.deepcopy(load_report()["candidates"][0]) for _ in range(2)]
-        candidates[1]["signal"]["rationale"] = "第三个事件的官方进度支持当前概率，且执行数值满足入场要求。"
-        candidates[1]["model"]["conclusion"] = "第三个事件的专属公开记录支持当前概率判断。"
+        candidates[1]["signal"]["rationale"] = "第三个事件的官方进度支持模型 P(YES) 为 70%，且执行数值满足入场要求。"
+        candidates[1]["model"]["conclusion"] = "第三个事件的专属公开记录支持模型 P(YES) 为 70%。"
         candidates[1]["evidence"][0]["summary"] = "第三个事件的官方记录给出了独有的进度数据。"
         with self.assertRaisesRegex(report_tool.ReportError, "conclusion duplicates"):
             report_tool.validate_candidate_research_quality(candidates)
@@ -208,8 +241,8 @@ class ReportToolTests(unittest.TestCase):
 
     def test_similar_execution_reason_must_use_each_candidates_numbers(self) -> None:
         candidates = [copy.deepcopy(load_report()["candidates"][0]) for _ in range(2)]
-        candidates[1]["signal"]["rationale"] = "另一事件的专属证据支持当前概率，并满足买入要求。"
-        candidates[1]["model"]["conclusion"] = "另一事件的独立政策证据支持当前概率。"
+        candidates[1]["signal"]["rationale"] = "另一事件的专属证据支持模型 P(YES) 为 70%，并满足买入要求。"
+        candidates[1]["model"]["conclusion"] = "另一事件的独立政策证据支持模型 P(YES) 为 70%。"
         candidates[1]["evidence"][0]["summary"] = "另一事件公布了独立的政策进度。"
         candidates[1]["evidence"][0]["conclusion"] = "该进度支持另一事件的因子权重。"
         report_tool.validate_candidate_research_quality(candidates)
@@ -379,6 +412,36 @@ class ReportToolTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(report_tool.ReportError, "previously-researched"):
                 report_tool.archive_report(source, root / "archive", [])
+
+    def test_adapter_archive_checks_cumulative_history_index(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive_root = root / "archive"
+            reports_root = archive_root / "reports"
+            reports_root.mkdir(parents=True)
+            source = root / "candidate-report.json"
+            report = adapter_report()
+            source.write_text(json.dumps(report), encoding="utf-8")
+            candidate = report["candidates"][0]
+            (reports_root / "previously-researched.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "adapters": {
+                            "polymarket": {
+                                "researched_market_identifiers": [
+                                    candidate["market"]["multi_market_identifier"]
+                                ],
+                                "researched_report_market_ids": [],
+                                "researched_event_identifiers": [],
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(report_tool.ReportError, "previously-researched"):
+                report_tool.archive_report(source, archive_root, [])
 
 
 if __name__ == "__main__":

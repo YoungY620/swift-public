@@ -19,12 +19,62 @@ class ResearchHistoryError(ValueError):
     """Raised when the reports archive is unavailable or malformed."""
 
 
+INDEX_FILENAME = "previously-researched.json"
+IDENTIFIER_FIELDS = (
+    "researched_market_identifiers",
+    "researched_report_market_ids",
+    "researched_event_identifiers",
+)
+
+
+def index_identifiers(
+    index_path: Path, adapter: str | None
+) -> tuple[set[str], set[str], set[str]]:
+    """Read a cumulative, venue-keyed identifier index."""
+
+    try:
+        document = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ResearchHistoryError(f"unreadable history index {index_path}: {exc}") from exc
+    adapters = document.get("adapters") if isinstance(document, dict) else None
+    if (
+        not isinstance(document, dict)
+        or document.get("schema_version") != "1.0"
+        or not isinstance(adapters, dict)
+    ):
+        raise ResearchHistoryError(f"history index {index_path} violates schema_version 1.0")
+    selected = adapters.values() if adapter is None else [adapters.get(adapter, {})]
+    collected = [set(), set(), set()]
+    for entry in selected:
+        if not isinstance(entry, dict):
+            raise ResearchHistoryError(f"history index {index_path} has an invalid adapter entry")
+        for target, field in zip(collected, IDENTIFIER_FIELDS):
+            values = entry.get(field, [])
+            if not isinstance(values, list) or any(
+                not isinstance(value, str) or not value.strip() for value in values
+            ):
+                raise ResearchHistoryError(
+                    f"history index {index_path} has an invalid {field} list"
+                )
+            target.update(values)
+    return collected[0], collected[1], collected[2]
+
+
 def collect_researched(reports_dir: Path, adapter: str | None = None) -> dict[str, Any]:
     if not reports_dir.is_dir():
         raise ResearchHistoryError(f"reports directory not found: {reports_dir}")
     market_ids: set[str] = set()
     report_market_ids: set[str] = set()
     event_identifiers: set[str] = set()
+    index_path = reports_dir / INDEX_FILENAME
+    history_index_loaded = index_path.is_file()
+    if history_index_loaded:
+        indexed_markets, indexed_report_ids, indexed_events = index_identifiers(
+            index_path, adapter
+        )
+        market_ids.update(indexed_markets)
+        report_market_ids.update(indexed_report_ids)
+        event_identifiers.update(indexed_events)
     scanned = 0
     for path in sorted(reports_dir.glob("*/report.json")):
         try:
@@ -68,6 +118,7 @@ def collect_researched(reports_dir: Path, adapter: str | None = None) -> dict[st
         "researched_market_count": len(market_ids),
         "adapter": adapter,
         "researched_event_count": len(event_identifiers),
+        "history_index_loaded": history_index_loaded,
         "researched_market_identifiers": sorted(market_ids, key=sort_key),
         "researched_report_market_ids": sorted(report_market_ids, key=sort_key),
         "researched_event_identifiers": sorted(event_identifiers),

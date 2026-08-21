@@ -26,13 +26,19 @@ class ResearchIterationTests(unittest.TestCase):
         trade_intents = root / "trade-intents.jsonl"
         trade_intents.write_text("", encoding="utf-8")
         placeholders = {}
-        for name in ("trade_schema", "account_snapshots_manifest", "adapter_registry"):
+        for name in (
+            "trade_schema",
+            "account_snapshots_manifest",
+            "adapter_registry",
+            "history_index",
+        ):
             path = root / f"{name}.json"
             path.write_text("{}\n", encoding="utf-8")
             placeholders[name] = path
         return argparse.Namespace(
             reports_root=reports_root,
             baseline_reports=baseline,
+            history_index=placeholders["history_index"],
             enabled_venues=enabled,
             trade_intents=trade_intents,
             trade_schema=placeholders["trade_schema"],
@@ -76,6 +82,8 @@ class ResearchIterationTests(unittest.TestCase):
                     return '{"items": 0, "venues": {}}\n'
                 self.assertIn("--history-reports-list", command)
                 self.assertIn(str(args.baseline_reports), command)
+                self.assertIn("--history-index", command)
+                self.assertIn(str(args.history_index), command)
                 return '{"valid": true}\n'
 
             with patch.object(iteration, "run_checked", side_effect=fake_run):

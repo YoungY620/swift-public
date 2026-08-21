@@ -110,6 +110,54 @@ class PreviouslyResearchedTests(unittest.TestCase):
             self.assertEqual(payload["researched_market_count"], 0)
             self.assertEqual(payload["researched_event_count"], 0)
 
+    def test_cumulative_index_keeps_identifiers_older_than_local_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            reports = Path(tmp)
+            (reports / "previously-researched.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "adapters": {
+                            "polymarket": {
+                                "researched_market_identifiers": ["old-condition"],
+                                "researched_report_market_ids": ["old-market"],
+                                "researched_event_identifiers": ["old-event"],
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            write_report(
+                reports,
+                "run-new",
+                {
+                    "run": {"account": {"adapter": "polymarket"}},
+                    "current_positions": [],
+                    "candidates": [
+                        {
+                            "market": {
+                                "id": "new-market",
+                                "multi_market_identifier": "new-condition",
+                                "event_identifier": "new-event",
+                            }
+                        }
+                    ],
+                },
+            )
+
+            code, payload, _ = self.run_script(reports, "polymarket")
+
+            self.assertEqual(code, 0)
+            self.assertTrue(payload["history_index_loaded"])
+            self.assertEqual(
+                payload["researched_market_identifiers"],
+                ["new-condition", "old-condition"],
+            )
+            self.assertEqual(
+                payload["researched_event_identifiers"], ["new-event", "old-event"]
+            )
+
     def test_missing_directory_is_invalid_input(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             code, _, stderr = self.run_script(Path(tmp) / "nope")

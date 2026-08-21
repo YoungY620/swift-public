@@ -27,6 +27,7 @@ from report_tool import (  # noqa: E402
     ReportError,
     is_generic_candidate_research_text,
     market_has_mechanical_status_evidence,
+    narrative_mentions_probability,
     normalize_narrative,
 )
 
@@ -83,6 +84,23 @@ def validate_candidate_brief_sources(candidates: list[Any], report_path: Path) -
             raise BriefValidationError(
                 f"Warning: candidate {index} has generic model conclusion in {report_path}"
             )
+        if not mechanical:
+            yes_probability = model.get("yes_probability") if isinstance(model, dict) else None
+            try:
+                probability_bound = (
+                    narrative_mentions_probability(rationale, yes_probability)
+                    and narrative_mentions_probability(conclusion, yes_probability)
+                )
+            except ReportError as exc:
+                raise BriefValidationError(
+                    f"Warning: candidate {index} has malformed model probability in "
+                    f"{report_path}: {exc}"
+                ) from exc
+            if not probability_bound:
+                raise BriefValidationError(
+                    f"Warning: candidate {index} research prose does not match "
+                    f"model.yes_probability in {report_path}"
+                )
         for label, value, owners in (
             ("signal rationale", rationale, signal_owners),
             ("model conclusion", conclusion, conclusion_owners),

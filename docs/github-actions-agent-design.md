@@ -111,7 +111,7 @@ Release tag 的 target 是本轮真正执行的 `GITHUB_SHA`。主分支更新 W
 - `iteration-release-manifest.json`：记录执行是否请求、配置是否齐全、子图结果与最终资产摘要；
 - 执行成功时的 `execution-receipt.json` 和 `execution-verification.json`。
 
-每轮开始时按创建时间选择 tag 前缀匹配的最近 N 个已发布 Release，逐个下载当轮报告包和 Manifest，校验仓库、tag、源 commit、lineage、报告清单和 SHA-256 后解压。恢复逻辑兼容历史单报告 manifest `1.0` 与新的多报告 manifest `2.0`。默认 N 为 `2`；Repository Variable `FORECAST_EDGE_HISTORY_RELEASE_COUNT` 可将其调整为 `2` 至 `20`。
+每轮开始时按创建时间选择 tag 前缀匹配的最近 N 个已发布 Release，逐个下载当轮报告包和 Manifest，校验仓库、tag、源 commit、lineage、报告清单和 SHA-256 后解压。恢复逻辑兼容历史单报告 manifest `1.0` 与新的多报告 manifest `2.0`。默认 N 为 `20`，用于完整报告对比和首次上线时的历史回填；同时每个新 Release 携带只含 event/multi-market/market id 的累积 `research-history.json`，因此超过 N 轮的旧研究也不会丢失。本轮执行前历史另以 `previously-researched.json` 进入诊断包，供研究校验与 Judge 逐项对照；Repository Variable `FORECAST_EDGE_HISTORY_RELEASE_COUNT` 可将其调整为 `2` 至 `20`。
 
 Agent 对最近报告的使用必须保持 Skill 语义：历史概率不能直接成为本轮答案，全部当前持仓每轮都要重新研究；历史仅用于证据比较、近期机会质量、参考仓位规模和其他明确要求的滚动计算。每个新 Release 只保存本轮结果，旧 Release 永不由 workflow 覆盖或修改；若仓库支持 Immutable Releases，建议启用以保护已发布 tag 和 assets。
 
@@ -139,7 +139,7 @@ GitHub Release 继承仓库可见性。private repository 中的 Release 受仓�
 | `FORECAST_EDGE_MARKET_ADAPTERS` | 无，必需 | 逗号分隔的已注册 adapter 列表。 |
 | `FORECAST_EDGE_INTERVAL_HOURS` | `8` | 定时 iteration 间隔，整数且至少 6。 |
 | `FORECAST_EDGE_ANCHOR_UTC_HOUR` | `2` | 定时窗口的 UTC 锚点。 |
-| `FORECAST_EDGE_HISTORY_RELEASE_COUNT` | `2` | 恢复多少个最近单轮 Release，允许 2–20。 |
+| `FORECAST_EDGE_HISTORY_RELEASE_COUNT` | `20` | 恢复多少个最近完整单轮 Release，允许 2–20；更早标识符由累积 `research-history.json` 保留。 |
 | `CREATE_TRADE_INTENT_ISSUE` | `true` | private repository 中是否创建交易意图 Issue。 |
 | `ALLOW_PUBLIC_TRADE_INTENTS` | `false` | public repository 中对公开 JSONL 的显式风险确认。 |
 | `ALLOW_PUBLIC_RESEARCH_RELEASES` | `false` | public repository 中对公开研究报告的显式风险确认。 |

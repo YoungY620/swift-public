@@ -32,10 +32,11 @@ class ForecastEdgeFeishuBriefTests(unittest.TestCase):
                     "research_novelty": {"classification": "FIRST_RESEARCH"},
                     "signal": {
                         "action": action,
-                        "rationale": "该事件的官方进度数据支持当前概率，执行判断采用报告数值。",
+                        "rationale": "该事件的官方进度数据支持模型 P(YES) 为 40%，执行判断采用报告数值。",
                     },
                     "model": {
-                        "conclusion": "该事件独有的官方进度与历史基准率支持当前概率。"
+                        "yes_probability": 0.4,
+                        "conclusion": "该事件独有的官方进度与历史基准率支持模型 P(YES) 为 40%。"
                     },
                     "evidence": [
                         {
@@ -143,6 +144,22 @@ class ForecastEdgeFeishuBriefTests(unittest.TestCase):
             report_path.write_text(json.dumps(report), encoding="utf-8")
             with self.assertRaisesRegex(
                 brief_module.BriefValidationError, "generic signal rationale"
+            ):
+                brief_module.report_inventory(reports)
+
+    def test_probability_mismatch_refuses_normal_briefing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            reports = Path(tmp)
+            self.write_report(reports)
+            report_path = reports / "report-polymarket.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["candidates"][0]["signal"]["rationale"] = (
+                "该事件的官方进度数据支持模型 P(YES) 为 58%，"
+                "执行判断采用报告数值。"
+            )
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(
+                brief_module.BriefValidationError, "does not match model.yes_probability"
             ):
                 brief_module.report_inventory(reports)
 

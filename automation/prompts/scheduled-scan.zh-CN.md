@@ -17,7 +17,7 @@
 
 候选新颖性必须依据 `previously_researched.py` 返回的历史集合，不得只凭当前未持仓判断。逐项比较 `event_identifier`、`multi_market_identifier` 和报告 `market.id`：真正未研究过的事件写 `research_novelty.classification=FIRST_RESEARCH`；父事件研究过但具体子市场未研究过的写 `EXISTING_EVENT_NEW_MARKET`；具体市场已进入历史集合的不能冒充新增候选。`event_previously_researched` 与 `market_previously_researched` 必须如实填写。
 
-候选的研究与执行理由必须分层：`model.conclusion` 和 evidence 解释研究概率；`opportunity.reason` 必须引用该市场报告内真实的 `executable_price`、`raw_edge`、`net_edge`、`minimum_raw_edge`，并解释 `entry_eligible`、流动性、最小金额、现金、组合约束和最终 allocation，因此得出 BUY 或未持仓 MAINTAIN。数值只能来自本报告，禁止猜测或硬编码。关闭、已结算、停止接单或无 active book 的重复机械理由仅在写明结构化 `opportunity.market_status` 且每个市场都有明确状态证据时允许。
+候选的研究与执行理由必须分层：`model.conclusion` 和 evidence 解释研究概率，且 `model.conclusion` 和 `signal.rationale` 都必须把结构化 `model.yes_probability` 以 `P(YES)` 形式准确引用（允许正常显示四舍五入）；`opportunity.reason` 必须引用该市场报告内真实的 `executable_price`、`raw_edge`、`net_edge`、`minimum_raw_edge`，并解释 `entry_eligible`、流动性、最小金额、现金、组合约束和最终 allocation，因此得出 BUY 或未持仓 MAINTAIN。数值只能来自本报告，禁止猜测或硬编码。关闭、已结算、停止接单或无 active book 的重复机械理由仅在写明结构化 `opportunity.market_status` 且每个市场都有明确状态证据时允许。
 
 调用仓库脚本时必须采用 Skill 中的精确命令格式，未列出的调用先运行该脚本的 `--help`，不得猜测参数。研究历史的固定调用是 `python3 scripts/previously_researched.py REPORTS_DIR --adapter ADAPTER --pretty`，其中 `REPORTS_DIR` 是位置参数；只解析命令 stdout 或明确的 `.json`/`.jsonl` 文件，绝不能把 `.py` 源文件当 JSON。对 Polymarket 当前持仓，先用持仓的 `market_slug` 查询 market metadata；仅当 `closed=false` 且 `accepting_orders=true` 时才用 `instrument_identifier` 查询 book。关闭或停止接单的市场没有 active book 时记录为结构化 `MAINTAIN` 机械原因，不得把 outcome token 传给 market，也不得把 condition id 或 slug 传给 book。
 

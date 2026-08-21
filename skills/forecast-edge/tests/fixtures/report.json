@@ -176,7 +176,7 @@
       "model": {
         "yes_probability": 0.7,
         "model_value": 0.7,
-        "conclusion": "证据支持模型价值高于当前可执行价格。",
+      "conclusion": "相关事件的历史基准率支持模型 P(YES) 为 70%，高于当前可执行价格。",
         "tree": {
           "root": {
             "id": "candidate-root",

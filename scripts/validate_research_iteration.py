@@ -138,6 +138,8 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
                 row["path"],
                 "--history-reports-list",
                 str(args.baseline_reports),
+                "--history-index",
+                str(args.history_index),
             ],
             f"private report validation for {row['adapter']}",
         )
@@ -195,6 +197,7 @@ def build_parser(root: Path) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reports-root", type=Path, required=True)
     parser.add_argument("--baseline-reports", type=Path, required=True)
+    parser.add_argument("--history-index", type=Path, required=True)
     parser.add_argument("--enabled-venues", required=True)
     parser.add_argument("--trade-intents", type=Path, required=True)
     parser.add_argument("--trade-schema", type=Path, required=True)

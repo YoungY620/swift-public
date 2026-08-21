@@ -125,6 +125,22 @@ class WorkflowContractTests(unittest.TestCase):
             validate,
         )
 
+    def test_research_restores_broad_history_and_exposes_novelty_evidence(self) -> None:
+        self.assertIn("FORECAST_EDGE_HISTORY_RELEASE_COUNT || '20'", self.research)
+        restore = self.step(self.research, "Restore recent research Releases")
+        self.assertIn("previously_researched.py", restore)
+        self.assertIn("PREVIOUS_RESEARCH_HISTORY_PATH", restore)
+        self.assertIn("research-history.json", restore)
+        self.assertIn("research_history_sha256", restore)
+        diagnostics = self.step(
+            self.research, "Prepare secret-free research diagnostics"
+        )
+        self.assertIn("previously-researched.json", diagnostics)
+        package = self.step(self.research, "Build current-iteration research Release")
+        self.assertIn("updated-research-history.ndjson", package)
+        self.assertIn("research-history.json", package)
+        self.assertIn("research_history_sha256", package)
+
     def test_trade_intents_use_digest_bound_actions_artifact_without_ec2(self) -> None:
         stage = self.step(self.research, "Build secret-free research artifact handoff")
         upload = self.step(self.research, "Upload research handoff for downstream jobs")
@@ -312,6 +328,8 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn('diff -u "$expected_reports" "$actual_reports" || true', verify)
         self.assertNotIn('actual_direct_reports[*]', verify)
         self.assertNotIn('expected_direct_reports[*]', verify)
+        self.assertIn('release-assets/research-history.json', verify)
+        self.assertIn('.research_history_sha256', verify)
 
     def test_release_accepts_only_verified_warning_receipts(self) -> None:
         release = self.step(self.parent, "Build final iteration manifest")

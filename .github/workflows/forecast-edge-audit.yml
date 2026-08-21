@@ -272,7 +272,7 @@ jobs:
               assets:[.assets[] | {name,size,digest,created_at,updated_at}]
             }' "$release_api" > "$release_dir/metadata.json"
             for asset in iteration-release-manifest.json research-release-manifest.json \
-              validation-summary.json execution-receipt.json execution-verification.json \
+              research-history.json validation-summary.json execution-receipt.json execution-verification.json \
               execution-diagnostic-summary.json execution-diagnostic-manifest.json; do
               if jq -e --arg asset "$asset" '.assets | any(.name == $asset)' "$release_api" >/dev/null; then
                 gh release download "$release_tag" --pattern "$asset" --dir "$release_dir"
@@ -309,7 +309,7 @@ jobs:
             jq -n '{found:false,assets:[]}' > "$release_dir/metadata.json"
           fi
           for optional_json in iteration-release-manifest.json research-release-manifest.json \
-            validation-summary.json execution-receipt.json execution-verification.json \
+            research-history.json validation-summary.json execution-receipt.json execution-verification.json \
             execution-diagnostic-summary.json execution-diagnostic-manifest.json; do
             if [[ ! -f "$release_dir/$optional_json" ]]; then
               printf 'null\n' > "$release_dir/$optional_json"
@@ -317,7 +317,7 @@ jobs:
           done
           : > "$release_dir/downloaded-assets.ndjson"
           for optional_json in iteration-release-manifest.json research-release-manifest.json \
-            validation-summary.json execution-receipt.json execution-verification.json \
+            research-history.json validation-summary.json execution-receipt.json execution-verification.json \
             execution-diagnostic-summary.json execution-diagnostic-manifest.json; do
             if jq -e 'type != "null"' "$release_dir/$optional_json" >/dev/null; then
               jq -cn \
@@ -465,6 +465,7 @@ jobs:
             --slurpfile downloaded_assets "$release_dir/downloaded-assets.json" \
             --slurpfile manifest "${release_dir}/iteration-release-manifest.json" \
             --slurpfile research_manifest "${release_dir}/research-release-manifest.json" \
+            --slurpfile research_history "${release_dir}/research-history.json" \
             --slurpfile validation_summary "${release_dir}/validation-summary.json" \
             --slurpfile execution_receipt "${release_dir}/execution-receipt.json" \
             --slurpfile execution_verification "${release_dir}/execution-verification.json" \
@@ -489,6 +490,7 @@ jobs:
                 metadata:($metadata[0] + {downloaded_assets:$downloaded_assets[0]}),
                 manifest:($manifest[0] // null),
                 research_manifest:($research_manifest[0] // null),
+                research_history:($research_history[0] // null),
                 validation_summary:($validation_summary[0] // null),
                 execution_receipt:($execution_receipt[0] // null),
                 execution_verification:($execution_verification[0] // null),

@@ -34,7 +34,7 @@ jobs:
     env:
       ENABLED_PREDICTION_MARKETS: ${{ vars.FORECAST_EDGE_MARKET_ADAPTERS }}
       MARKET_ACCOUNTS_JSON: ${{ secrets.FORECAST_EDGE_MARKET_ACCOUNTS_JSON }}
-      HISTORY_RELEASE_COUNT: ${{ vars.FORECAST_EDGE_HISTORY_RELEASE_COUNT || '2' }}
+      HISTORY_RELEASE_COUNT: ${{ vars.FORECAST_EDGE_HISTORY_RELEASE_COUNT || '20' }}
       REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
       ALLOW_PUBLIC_TRADE_INTENTS: ${{ vars.ALLOW_PUBLIC_TRADE_INTENTS || 'false' }}
       ALLOW_PUBLIC_RESEARCH_RELEASES: ${{ vars.ALLOW_PUBLIC_RESEARCH_RELEASES || 'false' }}
@@ -157,6 +157,7 @@ jobs:
             echo "BASELINE_REPORTS_PATH=$runtime_dir/baseline-reports.txt"
             echo "CURRENT_REPORTS_MANIFEST=$runtime_dir/current-reports-manifest.json"
             echo "HISTORY_RELEASE_TAGS_PATH=$runtime_dir/history-release-tags.json"
+            echo "PREVIOUS_RESEARCH_HISTORY_PATH=$runtime_dir/previously-researched.json"
             echo "RELEASE_ASSETS_DIR=$release_assets_dir"
             echo "REPORT_ARCHIVE_PATH=$release_assets_dir/forecast-edge-research-report.tar.gz"
             echo "RELEASE_MANIFEST_PATH=$release_assets_dir/research-release-manifest.json"
@@ -277,6 +278,18 @@ jobs:
               echo "::error::Research Release tag does not point to its declared source commit"
               exit 1
             fi
+            if (( index == 0 )) && jq -e '
+              .research_history_asset == "research-history.json"
+              and (.research_history_sha256 | type) == "string"
+              and (.research_history_sha256 | test("^[a-f0-9]{64}$"))
+            ' "$restore_dir/research-release-manifest.json" >/dev/null; then
+              gh release download "$previous_tag" \
+                --pattern research-history.json --dir "$restore_dir"
+              test "$(sha256sum "$restore_dir/research-history.json" | cut -d ' ' -f 1)" = \
+                "$(jq -r '.research_history_sha256' "$restore_dir/research-release-manifest.json")"
+              install -m 600 "$restore_dir/research-history.json" \
+                "$REPORTS_DIR/reports/previously-researched.json"
+            fi
             restored_report_rows="$restore_dir/report-rows.json"
             if [[ "$manifest_schema" == "1.0" ]]; then
               if [[ "$manifest_report_count" != "1" ]]; then
@@ -381,6 +394,21 @@ jobs:
               "$report" --historical-read-only >/dev/null
           done < <(find "$REPORTS_DIR/reports" -type f -name report.json | sort)
           find "$REPORTS_DIR/reports" -type f -name report.json | sort > "$BASELINE_REPORTS_PATH"
+          history_rows="$RUNTIME_DIR/previously-researched.ndjson"
+          : > "$history_rows"
+          IFS=',' read -ra adapters <<< "$ENABLED_PREDICTION_MARKETS"
+          for adapter in "${adapters[@]}"; do
+            python3 skills/forecast-edge/scripts/previously_researched.py \
+              --adapter "$adapter" "$REPORTS_DIR/reports" >> "$history_rows"
+          done
+          jq -s '
+            {
+              schema_version:"1.0",
+              adapters:(map({key:.adapter,value:.}) | from_entries)
+            }
+          ' "$history_rows" > "$PREVIOUS_RESEARCH_HISTORY_PATH"
+          install -m 600 "$PREVIOUS_RESEARCH_HISTORY_PATH" \
+            "$REPORTS_DIR/reports/previously-researched.json"
 
       - name: Capture normalized account snapshots
         id: account-snapshots
@@ -503,6 +531,7 @@ jobs:
           if ! python3 scripts/validate_research_iteration.py \
             --reports-root "$REPORTS_DIR" \
             --baseline-reports "$BASELINE_REPORTS_PATH" \
+            --history-index "$PREVIOUS_RESEARCH_HISTORY_PATH" \
             --enabled-venues "$ENABLED_PREDICTION_MARKETS" \
             --trade-intents "$TRADE_INTENTS_PATH" \
             --trade-schema "$TRADE_INTENT_SCHEMA_PATH" \
@@ -572,6 +601,7 @@ jobs:
           if ! python3 scripts/validate_research_iteration.py \
             --reports-root "$REPORTS_DIR" \
             --baseline-reports "$BASELINE_REPORTS_PATH" \
+            --history-index "$PREVIOUS_RESEARCH_HISTORY_PATH" \
             --enabled-venues "$ENABLED_PREDICTION_MARKETS" \
             --trade-intents "$TRADE_INTENTS_PATH" \
             --trade-schema "$TRADE_INTENT_SCHEMA_PATH" \
@@ -645,6 +675,7 @@ jobs:
           if ! python3 scripts/validate_research_iteration.py \
             --reports-root "$REPORTS_DIR" \
             --baseline-reports "$BASELINE_REPORTS_PATH" \
+            --history-index "$PREVIOUS_RESEARCH_HISTORY_PATH" \
             --enabled-venues "$ENABLED_PREDICTION_MARKETS" \
             --trade-intents "$TRADE_INTENTS_PATH" \
             --trade-schema "$TRADE_INTENT_SCHEMA_PATH" \
@@ -720,6 +751,7 @@ jobs:
           if ! python3 scripts/validate_research_iteration.py \
             --reports-root "$REPORTS_DIR" \
             --baseline-reports "$BASELINE_REPORTS_PATH" \
+            --history-index "$PREVIOUS_RESEARCH_HISTORY_PATH" \
             --enabled-venues "$ENABLED_PREDICTION_MARKETS" \
             --trade-intents "$TRADE_INTENTS_PATH" \
             --trade-schema "$TRADE_INTENT_SCHEMA_PATH" \
@@ -1015,7 +1047,23 @@ jobs:
             "${current_report_directories[@]}"
           jq -s '.' "$release_report_rows" > "$RUNTIME_DIR/release-reports.json"
 
+          updated_history_rows="$RUNTIME_DIR/updated-research-history.ndjson"
+          : > "$updated_history_rows"
+          IFS=',' read -ra adapters <<< "$ENABLED_PREDICTION_MARKETS"
+          for adapter in "${adapters[@]}"; do
+            python3 skills/forecast-edge/scripts/previously_researched.py \
+              --adapter "$adapter" "$REPORTS_DIR/reports" >> "$updated_history_rows"
+          done
+          jq -s '
+            {
+              schema_version:"1.0",
+              adapters:(map({key:.adapter,value:.}) | from_entries)
+            }
+          ' "$updated_history_rows" > "$RELEASE_ASSETS_DIR/research-history.json"
+
           report_archive_digest=$(sha256sum "$REPORT_ARCHIVE_PATH" | cut -d ' ' -f 1)
+          research_history_digest=$(sha256sum \
+            "$RELEASE_ASSETS_DIR/research-history.json" | cut -d ' ' -f 1)
           trade_intents_digest=$(sha256sum "$TRADE_INTENTS_PATH" | cut -d ' ' -f 1)
           jq -n \
             --arg schema_version "2.0" \
@@ -1028,6 +1076,8 @@ jobs:
             --arg generated_at "$generated_at" \
             --arg report_archive_asset "forecast-edge-research-report.tar.gz" \
             --arg report_archive_sha256 "$report_archive_digest" \
+            --arg research_history_asset "research-history.json" \
+            --arg research_history_sha256 "$research_history_digest" \
             --arg trade_intents_sha256 "$trade_intents_digest" \
             --argjson history_release_count_requested "$HISTORY_RELEASE_COUNT" \
             --argjson report_count "$report_count" \
@@ -1048,6 +1098,8 @@ jobs:
               reports: $reports[0],
               report_archive_asset: $report_archive_asset,
               report_archive_sha256: $report_archive_sha256,
+              research_history_asset: $research_history_asset,
+              research_history_sha256: $research_history_sha256,
               history_release_count_requested: $history_release_count_requested,
               history_releases_used: $history_releases[0],
               successful_kimi_attempt: $successful_kimi_attempt,
@@ -1115,6 +1167,8 @@ jobs:
           install -m 600 "$REPORT_ARCHIVE_PATH" "$handoff_root/release-assets/"
           install -m 600 "$RELEASE_MANIFEST_PATH" "$handoff_root/release-assets/"
           install -m 600 "$RELEASE_ASSETS_DIR/validation-summary.json" \
+            "$handoff_root/release-assets/"
+          install -m 600 "$RELEASE_ASSETS_DIR/research-history.json" \
             "$handoff_root/release-assets/"
           while IFS= read -r asset; do
             if [[ ! "$asset" =~ ^report-[a-z][a-z0-9-]*\.(json|md)$ ]]; then
@@ -1192,7 +1246,7 @@ jobs:
               validation-attempt-*.stdout validation-attempt-*.errors.txt \
               iteration-validation.stdout validation-errors.txt validation-summary.json \
               report-validation.json current-reports-manifest.json \
-              history-release-tags.json url_verification.json; do
+              history-release-tags.json previously-researched.json url_verification.json; do
               while IFS= read -r source; do
                 install -m 600 "$source" "$staging_root/runtime/$(basename "$source")"
               done < <(find "$RUNTIME_DIR" -maxdepth 1 -type f -name "$candidate" -print)

@@ -9,12 +9,13 @@ import math
 import re
 import shutil
 import sys
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 import probability_tree
+import previously_researched
 
 
 LEGACY_SIGNALS = {"BUY", "ADD", "HOLD", "SELL"}
@@ -292,6 +293,39 @@ def _mentions_numeric(value: Any, expected: Any, *, percentage_points: bool) -> 
     return False
 
 
+def narrative_mentions_probability(value: Any, expected: Any) -> bool:
+    """Return true when prose cites its own P(YES), allowing normal display rounding."""
+
+    probability = decimal_value(expected, "candidate yes_probability")
+    if probability > Decimal(1):
+        raise ReportError("candidate yes_probability must not exceed 1")
+    text = str(value).lower().replace("％", "%")
+    compact = re.sub(r"\s+", "", text)
+    if re.search(
+        r"p[\(（]yes[\)）]|yes概率|结算概率|模型.{0,12}概率",
+        compact,
+        re.IGNORECASE,
+    ) is None:
+        return False
+
+    raw = format(probability, "f").rstrip("0").rstrip(".") or "0"
+    variants = {raw}
+    if raw.startswith("0."):
+        variants.add(raw[1:])
+    percentage = probability * Decimal(100)
+    for places in range(4):
+        quantum = Decimal(1).scaleb(-places)
+        rendered = format(
+            percentage.quantize(quantum, rounding=ROUND_HALF_UP),
+            f".{places}f",
+        ).rstrip("0").rstrip(".")
+        variants.update({f"{rendered}%", f"百分之{rendered}"})
+    return any(
+        re.search(rf"(?<![0-9.]){re.escape(token)}(?![0-9])", compact)
+        for token in variants
+    )
+
+
 def validate_candidate_execution_reason(analysis: dict[str, Any], path: str) -> None:
     """Bind candidate execution prose to its own deterministic numeric fields."""
 
@@ -377,6 +411,15 @@ def validate_candidate_research_quality(candidates: list[Any]) -> None:
                 raise ReportError(
                     f"{path}.signal.rationale must cite market-specific support from its own evidence"
                 )
+            yes_probability = analysis["model"]["yes_probability"]
+            for field_path, value in (
+                (f"{path}.model.conclusion", model_text),
+                (f"{path}.signal.rationale", signal_text),
+            ):
+                if not narrative_mentions_probability(value, yes_probability):
+                    raise ReportError(
+                        f"{field_path} must cite its own model.yes_probability as P(YES)"
+                    )
         for label, value, owners in (
             ("signal.rationale", signal_text, signal_owners),
             ("model.conclusion", model_text, model_owners),
@@ -429,7 +472,9 @@ def validate_candidate_novelty_shape(value: Any, path: str) -> None:
 
 
 def _history_identifiers(
-    report_paths: list[Path], adapter: str
+    report_paths: list[Path],
+    adapter: str,
+    history_index_path: Path | None = None,
 ) -> tuple[set[str], set[str], set[str]]:
     event_identifiers: set[str] = set()
     multi_market_identifiers: set[str] = set()
@@ -464,11 +509,23 @@ def _history_identifiers(
                     multi_market_identifiers.add(multi_market_identifier)
                 if report_market_id:
                     report_market_ids.add(report_market_id)
+    if history_index_path is not None and history_index_path.is_file():
+        try:
+            indexed_markets, indexed_report_ids, indexed_events = (
+                previously_researched.index_identifiers(history_index_path, adapter)
+            )
+        except previously_researched.ResearchHistoryError as exc:
+            raise ReportError(str(exc)) from exc
+        multi_market_identifiers.update(indexed_markets)
+        report_market_ids.update(indexed_report_ids)
+        event_identifiers.update(indexed_events)
     return event_identifiers, multi_market_identifiers, report_market_ids
 
 
 def validate_candidate_history(
-    report: dict[str, Any], history_report_paths: list[Path]
+    report: dict[str, Any],
+    history_report_paths: list[Path],
+    history_index_path: Path | None = None,
 ) -> None:
     """Verify candidate novelty against immutable venue-local historical reports."""
 
@@ -477,7 +534,7 @@ def validate_candidate_history(
     if not isinstance(adapter, str):
         raise ReportError("candidate history validation requires run.account.adapter")
     historical_events, historical_markets, historical_report_ids = _history_identifiers(
-        history_report_paths, adapter
+        history_report_paths, adapter, history_index_path
     )
     for index, analysis in enumerate(report["candidates"]):
         path = f"report.candidates[{index}]"
@@ -1560,7 +1617,8 @@ def archive_report(report_path: Path, output_root: Path, snapshots: list[Path]) 
     adapter = report["run"]["account"].get("adapter")
     if isinstance(adapter, str):
         history_paths = sorted((output_root / "reports").glob("*/report.json"))
-        validate_candidate_history(report, history_paths)
+        history_index_path = output_root / "reports" / previously_researched.INDEX_FILENAME
+        validate_candidate_history(report, history_paths, history_index_path)
     timestamp = safe_component(str(report["run"]["completed_at"]).replace(":", "-"))
     run_id = safe_component(str(report["run"]["id"]))
     adapter_component = f"_{safe_component(str(adapter))}" if adapter else ""
@@ -1631,6 +1689,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Newline-delimited historical report paths used to verify candidate novelty",
     )
     validate.add_argument(
+        "--history-index",
+        help="Cumulative venue-keyed identifier index used to verify candidate novelty",
+    )
+    validate.add_argument(
         "--historical-read-only",
         action="store_true",
         help="Read an immutable legacy report without applying newly introduced candidate-quality gates",
@@ -1658,15 +1720,16 @@ def main(argv: list[str] | None = None) -> int:
                 enforce_candidate_quality=not args.historical_read_only,
             )
             history_validated = False
-            if args.history_reports_list:
+            if args.history_reports_list or args.history_index:
                 history_paths = [
                     Path(line.strip())
                     for line in Path(args.history_reports_list)
                     .read_text(encoding="utf-8")
                     .splitlines()
                     if line.strip()
-                ]
-                validate_candidate_history(report, history_paths)
+                ] if args.history_reports_list else []
+                history_index_path = Path(args.history_index) if args.history_index else None
+                validate_candidate_history(report, history_paths, history_index_path)
                 history_validated = True
             result: Any = {
                 "valid": True,

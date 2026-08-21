@@ -235,6 +235,7 @@ jobs:
           required = {
               "release-assets/forecast-edge-research-report.tar.gz",
               "release-assets/research-release-manifest.json",
+              "release-assets/research-history.json",
               "release-assets/validation-summary.json",
               "release-notes.md",
               "issue.md",
@@ -278,6 +279,8 @@ jobs:
              .workflow_run_attempt == $run_attempt and
              .commit_sha == $commit_sha and
              .trade_intents_sha256 == $trade_digest and
+             .research_history_asset == "research-history.json" and
+             (.research_history_sha256 | test("^[a-f0-9]{64}$")) and
              (.report_count | type == "number" and . > 0) and
              (.reports | type == "array") and
              .report_count == (.reports | length) and
@@ -291,6 +294,17 @@ jobs:
             "$manifest" >/dev/null
           test "$(sha256sum "$archive" | cut -d ' ' -f 1)" = \
             "$(jq -r '.report_archive_sha256' "$manifest")"
+          test "$(sha256sum "$RELEASE_ASSETS_DIR/research-history.json" | cut -d ' ' -f 1)" = \
+            "$(jq -r '.research_history_sha256' "$manifest")"
+          jq -e '
+            .schema_version == "1.0"
+            and (.adapters | type == "object")
+            and all(.adapters[];
+              (.researched_market_identifiers | type == "array")
+              and (.researched_report_market_ids | type == "array")
+              and (.researched_event_identifiers | type == "array")
+            )
+          ' "$RELEASE_ASSETS_DIR/research-history.json" >/dev/null
           while IFS=$'\t' read -r json_asset markdown_asset report_digest; do
             test -f "$RELEASE_ASSETS_DIR/$json_asset"
             test -f "$RELEASE_ASSETS_DIR/$markdown_asset"
@@ -482,6 +496,7 @@ jobs:
           assets=(
             "$RELEASE_ASSETS_DIR/forecast-edge-research-report.tar.gz"
             "$RELEASE_ASSETS_DIR/research-release-manifest.json"
+            "$RELEASE_ASSETS_DIR/research-history.json"
             "$RELEASE_ASSETS_DIR/validation-summary.json"
             "$RELEASE_RUNTIME_DIR/iteration-release-manifest.json"
           )
