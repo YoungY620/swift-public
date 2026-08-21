@@ -34,4 +34,4 @@ Polymarket signer private key、account wallet、wallet type 和 CLOB credential
 
 ## 本机边界
 
-Mac 上的旧 `forecast-edge-scan` launchd 任务和 `local-mac-forecast-edge` self-hosted runner 已停用并从仓库注销。定时研究只由私有仓库父 workflow 发起，研究使用 GitHub-hosted Ubuntu，真实交易只在带专用标签的 EC2 runner 上执行。
+旧的本地 launchd 任务和 Mac self-hosted runner 已停用并从仓库注销。定时研究只由私有仓库父 workflow 发起，研究使用 GitHub-hosted Ubuntu，真实交易只在带专用标签的 EC2 runner 上执行。

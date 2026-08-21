@@ -31,7 +31,7 @@ Polymarket 的 Google/email、外部 wallet、legacy Proxy/Safe 与新 Deposit W
 
 ## 本机定时任务
 
-本机 `launchd` 任务 `forecast-edge-scan` 每天北京时间 08:00 和 20:00 执行 `~/.forecast-edge-cron/run.sh`。这条本机链路读取已安装的 `~/.agents/skills/forecast-edge`，不读取本仓库中的前端、旧展示 Skill或旧通用调度器。
+定时研究只通过私有 GitHub 仓库中的工作流运行，不依赖个人电脑上的本地定时任务。
 
 ## 验证
 
