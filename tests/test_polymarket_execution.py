@@ -176,7 +176,7 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(order.quantity, Decimal("9.09"))
         self.assertLessEqual(order.limit_gross_notional, Decimal("5"))
 
-    def test_simulated_vwap_is_checked_against_notional_per_suggested_share(self) -> None:
+    def test_simulated_vwap_allows_price_improvement(self) -> None:
         limits = RiskLimits(
             max_price_deviation_bps=500,
             max_quantity_reduction_bps=2000,
@@ -191,14 +191,24 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(plan.orders[0].limit_price, Decimal("0.52"))
         self.assertEqual(plan.orders[0].vwap, Decimal("0.52"))
 
-        with self.assertRaisesRegex(PlanningError, "simulated VWAP"):
-            build_execution_plan(
-                intents=[intent(price="0.49", notional="5", quantity="10")],
-                markets={TOKEN: market(asks=(("0.47", "100"),))},
-                positions={},
-                available_cash=Decimal("100"),
-                limits=limits,
-            )
+        improved = build_execution_plan(
+            intents=[intent(price="0.49", notional="5", quantity="10")],
+            markets={TOKEN: market(asks=(("0.47", "100"),))},
+            positions={},
+            available_cash=Decimal("100"),
+            limits=limits,
+        )
+        self.assertEqual(improved.orders[0].vwap, Decimal("0.47"))
+
+    def test_sell_simulated_vwap_allows_price_improvement(self) -> None:
+        plan = build_execution_plan(
+            intents=[intent(side="sell", price="0.50", notional="5", quantity="10")],
+            markets={TOKEN: market(bids=(("0.55", "100"),))},
+            positions={TOKEN: Decimal("10")},
+            available_cash=Decimal("0"),
+            limits=RiskLimits(max_price_deviation_bps=300),
+        )
+        self.assertEqual(plan.orders[0].vwap, Decimal("0.55"))
 
     def test_abnormal_order_notional_fails_the_whole_batch(self) -> None:
         with self.assertRaisesRegex(PlanningError, "exceeds"):

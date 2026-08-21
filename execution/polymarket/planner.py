@@ -216,11 +216,20 @@ def _plan_one(
     gross = sum((fill.gross_notional for fill in fills), ZERO)
     fee = sum((fill.fee for fill in fills), ZERO)
     vwap = gross / filled_quantity
-    live_deviation_bps = abs(vwap - suggested_price) / suggested_price * BPS
-    if live_deviation_bps > Decimal(limits.max_price_deviation_bps):
+    # The research price is a one-sided protection boundary, not a target that
+    # rejects price improvement.  A lower VWAP helps a buy and a higher VWAP
+    # helps a sell; only movement against the intent consumes the deviation
+    # allowance.
+    adverse_price_delta = (
+        max(ZERO, vwap - suggested_price)
+        if intent.side == "buy"
+        else max(ZERO, suggested_price - vwap)
+    )
+    adverse_deviation_bps = adverse_price_delta / suggested_price * BPS
+    if adverse_deviation_bps > Decimal(limits.max_price_deviation_bps):
         raise PlanningError(
-            f"intent {index} simulated VWAP differs from suggested notional/quantity price "
-            "beyond the configured limit"
+            f"intent {index} simulated VWAP moves adversely from suggested "
+            "notional/quantity price beyond the configured limit"
         )
     cash_effect = gross + fee if intent.side == "buy" else gross - fee
     limit_gross_notional = filled_quantity * limit_price
