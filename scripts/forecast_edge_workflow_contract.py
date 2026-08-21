@@ -200,6 +200,14 @@ def main() -> int:
             and 'kill -TERM -- "-$session_pid"' in kimi_watchdog
             and "exit 124" in kimi_watchdog
         ),
+        "nonretryable_kimi_failures_stop_repairs": (
+            "Probe Kimi model routing" in research
+            and research.count("scripts/classify_kimi_failure.py") == 4
+            and "steps.kimi-initial.outputs.retryable == 'true'" in research
+            and "steps.kimi-repair-1.outputs.retryable == 'true'" in research
+            and "steps.kimi-repair-2.outputs.retryable == 'true'" in research
+            and "Kimi Code initial invocation failed with a non-retryable authentication or quota error" in research
+        ),
         "final_iteration_notification": (
             "  notify:\n" in audit
             and "always()" in between(audit, "  notify:\n")

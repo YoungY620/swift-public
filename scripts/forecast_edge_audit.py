@@ -705,7 +705,10 @@ def build_notification_details(
         )
 
     existing_error_ids = {item["id"] for item in errors}
-    jobs = [item for item in _list(evidence.get("jobs")) if isinstance(item, dict)]
+    jobs_value = evidence.get("jobs")
+    if isinstance(jobs_value, dict):
+        jobs_value = jobs_value.get("all")
+    jobs = [item for item in _list(jobs_value) if isinstance(item, dict)]
     for index, job in enumerate(jobs, start=1):
         conclusion = str(job.get("conclusion", ""))
         if conclusion not in {"failure", "cancelled", "timed_out"}:
@@ -845,10 +848,17 @@ def main() -> int:
         args.output.write_text(json.dumps(response, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return 0
     if args.command == "fallback":
-        response = fallback_response(rubric, args.parent_run_id, "agent 没有返回可校验的 JSON")
+        try:
+            fallback_reason = args.input.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError as exc:
+            raise AuditValidationError(f"could not read fallback reason: {exc}") from exc
+        if not fallback_reason:
+            fallback_reason = "agent 没有返回可校验的 JSON"
+        response = fallback_response(rubric, args.parent_run_id, fallback_reason)
     else:
         response = load_json(args.input, "agent response")
         validate_response(response, rubric, evidence, schema)
+    reject_secret_like_text(response)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(response, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return 0

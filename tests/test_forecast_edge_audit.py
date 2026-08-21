@@ -576,6 +576,32 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertIn("流水线继续", details["warnings"][0]["impact"])
         self.assertIn("生产熔断", details["errors"][0]["impact"])
 
+    def test_notification_reads_parent_jobs_from_normalized_all_collection(self) -> None:
+        evidence = dict(self.evidence)
+        evidence["jobs"] = {
+            "all": [
+                {
+                    "name": "research / research",
+                    "conclusion": "failure",
+                    "steps": [
+                        {"name": "Enforce retry limit", "conclusion": "failure"}
+                    ],
+                }
+            ]
+        }
+        details = audit_module.build_notification_details(
+            self.response(),
+            self.rubric,
+            evidence,
+            serious_findings=[],
+            agent_judgment_valid=True,
+            feishu_brief_valid=True,
+        )
+        self.assertEqual(details["error_count"], 1)
+        self.assertEqual(details["errors"][0]["title"], "父流程阶段异常：research / research")
+        self.assertIn("Enforce retry limit", details["errors"][0]["reason"])
+        self.assertFalse(details["errors"][0]["triggers_breaker"])
+
     def test_invalid_agent_notification_is_one_visible_nonblocking_warning(self) -> None:
         response = audit_module.fallback_response(self.rubric, "123", "timeout")
         details = audit_module.build_notification_details(

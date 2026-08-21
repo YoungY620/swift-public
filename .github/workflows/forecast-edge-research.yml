@@ -166,7 +166,7 @@ jobs:
             echo "PYTHON_VENV_DIR=$runtime_dir/python-venv"
           } >> "$GITHUB_ENV"
 
-      - name: Probe Kimi model availability
+      - name: Probe Kimi model routing
         env:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
         shell: bash
@@ -184,7 +184,7 @@ jobs:
             echo "::error::Configured Kimi model is unavailable from the configured provider"
             exit 1
           fi
-          echo "Kimi provider exposes the configured model"
+          echo "Kimi provider exposes the configured model route; the Agent invocation remains the authoritative quota check"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -526,10 +526,22 @@ jobs:
           set -e
           if (( status != 0 )); then
             echo "succeeded=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Kimi initial attempt was incomplete; private diagnostics were retained and repair will be attempted"
+            classification=$(python3 scripts/classify_kimi_failure.py \
+              "$RUNTIME_DIR/kimi-attempt-1.stderr")
+            retryable=$(jq -r '.retryable' <<< "$classification")
+            category=$(jq -r '.category' <<< "$classification")
+            echo "retryable=$retryable" >> "$GITHUB_OUTPUT"
+            echo "failure-category=$category" >> "$GITHUB_OUTPUT"
+            if [[ "$retryable" == "true" ]]; then
+              echo "::warning::Kimi initial attempt was incomplete; private diagnostics were retained and repair will be attempted"
+            else
+              echo "::warning::Kimi initial attempt failed with non-retryable authentication or quota status; prompt repair will not be attempted"
+            fi
             exit 0
           fi
           echo "succeeded=true" >> "$GITHUB_OUTPUT"
+          echo "retryable=true" >> "$GITHUB_OUTPUT"
+          echo "failure-category=NONE" >> "$GITHUB_OUTPUT"
 
       - name: Validate initial trade intents
         id: validate-initial
@@ -574,7 +586,9 @@ jobs:
 
       - name: Run Kimi Code — repair 1 of 3
         id: kimi-repair-1
-        if: ${{ steps.validate-initial.outputs.valid != 'true' }}
+        if: >-
+          steps.validate-initial.outputs.valid != 'true' &&
+          steps.kimi-initial.outputs.retryable == 'true'
         timeout-minutes: 120
         env:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
@@ -595,14 +609,28 @@ jobs:
           set -e
           if (( status != 0 )); then
             echo "succeeded=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Kimi repair attempt 1 was incomplete; private diagnostics were retained and another repair will be attempted"
+            classification=$(python3 scripts/classify_kimi_failure.py \
+              "$RUNTIME_DIR/kimi-attempt-2.stderr")
+            retryable=$(jq -r '.retryable' <<< "$classification")
+            category=$(jq -r '.category' <<< "$classification")
+            echo "retryable=$retryable" >> "$GITHUB_OUTPUT"
+            echo "failure-category=$category" >> "$GITHUB_OUTPUT"
+            if [[ "$retryable" == "true" ]]; then
+              echo "::warning::Kimi repair attempt 1 was incomplete; private diagnostics were retained and another repair will be attempted"
+            else
+              echo "::warning::Kimi repair attempt 1 failed with non-retryable authentication or quota status; later repairs will be skipped"
+            fi
             exit 0
           fi
           echo "succeeded=true" >> "$GITHUB_OUTPUT"
+          echo "retryable=true" >> "$GITHUB_OUTPUT"
+          echo "failure-category=NONE" >> "$GITHUB_OUTPUT"
 
       - name: Validate repaired trade intents — 1 of 3
         id: validate-repair-1
-        if: ${{ steps.validate-initial.outputs.valid != 'true' }}
+        if: >-
+          steps.validate-initial.outputs.valid != 'true' &&
+          steps.kimi-initial.outputs.retryable == 'true'
         env:
           KIMI_SUCCEEDED: ${{ steps.kimi-repair-1.outputs.succeeded }}
         shell: bash
@@ -646,7 +674,8 @@ jobs:
         id: kimi-repair-2
         if: >-
           steps.validate-initial.outputs.valid != 'true' &&
-          steps.validate-repair-1.outputs.valid != 'true'
+          steps.validate-repair-1.outputs.valid != 'true' &&
+          steps.kimi-repair-1.outputs.retryable == 'true'
         timeout-minutes: 120
         env:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
@@ -667,16 +696,29 @@ jobs:
           set -e
           if (( status != 0 )); then
             echo "succeeded=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Kimi repair attempt 2 was incomplete; private diagnostics were retained and another repair will be attempted"
+            classification=$(python3 scripts/classify_kimi_failure.py \
+              "$RUNTIME_DIR/kimi-attempt-3.stderr")
+            retryable=$(jq -r '.retryable' <<< "$classification")
+            category=$(jq -r '.category' <<< "$classification")
+            echo "retryable=$retryable" >> "$GITHUB_OUTPUT"
+            echo "failure-category=$category" >> "$GITHUB_OUTPUT"
+            if [[ "$retryable" == "true" ]]; then
+              echo "::warning::Kimi repair attempt 2 was incomplete; private diagnostics were retained and another repair will be attempted"
+            else
+              echo "::warning::Kimi repair attempt 2 failed with non-retryable authentication or quota status; the final repair will be skipped"
+            fi
             exit 0
           fi
           echo "succeeded=true" >> "$GITHUB_OUTPUT"
+          echo "retryable=true" >> "$GITHUB_OUTPUT"
+          echo "failure-category=NONE" >> "$GITHUB_OUTPUT"
 
       - name: Validate repaired trade intents — 2 of 3
         id: validate-repair-2
         if: >-
           steps.validate-initial.outputs.valid != 'true' &&
-          steps.validate-repair-1.outputs.valid != 'true'
+          steps.validate-repair-1.outputs.valid != 'true' &&
+          steps.kimi-repair-1.outputs.retryable == 'true'
         env:
           KIMI_SUCCEEDED: ${{ steps.kimi-repair-2.outputs.succeeded }}
         shell: bash
@@ -721,7 +763,8 @@ jobs:
         if: >-
           steps.validate-initial.outputs.valid != 'true' &&
           steps.validate-repair-1.outputs.valid != 'true' &&
-          steps.validate-repair-2.outputs.valid != 'true'
+          steps.validate-repair-2.outputs.valid != 'true' &&
+          steps.kimi-repair-2.outputs.retryable == 'true'
         timeout-minutes: 120
         env:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
@@ -742,17 +785,30 @@ jobs:
           set -e
           if (( status != 0 )); then
             echo "succeeded=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Kimi repair attempt 3 was incomplete; private diagnostics were retained"
+            classification=$(python3 scripts/classify_kimi_failure.py \
+              "$RUNTIME_DIR/kimi-attempt-4.stderr")
+            retryable=$(jq -r '.retryable' <<< "$classification")
+            category=$(jq -r '.category' <<< "$classification")
+            echo "retryable=$retryable" >> "$GITHUB_OUTPUT"
+            echo "failure-category=$category" >> "$GITHUB_OUTPUT"
+            if [[ "$retryable" == "true" ]]; then
+              echo "::warning::Kimi repair attempt 3 was incomplete; private diagnostics were retained"
+            else
+              echo "::warning::Kimi repair attempt 3 failed with non-retryable authentication or quota status"
+            fi
             exit 0
           fi
           echo "succeeded=true" >> "$GITHUB_OUTPUT"
+          echo "retryable=true" >> "$GITHUB_OUTPUT"
+          echo "failure-category=NONE" >> "$GITHUB_OUTPUT"
 
       - name: Validate repaired trade intents — 3 of 3
         id: validate-repair-3
         if: >-
           steps.validate-initial.outputs.valid != 'true' &&
           steps.validate-repair-1.outputs.valid != 'true' &&
-          steps.validate-repair-2.outputs.valid != 'true'
+          steps.validate-repair-2.outputs.valid != 'true' &&
+          steps.kimi-repair-2.outputs.retryable == 'true'
         env:
           KIMI_SUCCEEDED: ${{ steps.kimi-repair-3.outputs.succeeded }}
         shell: bash
@@ -799,6 +855,10 @@ jobs:
           REPAIR_1_VALIDATION: ${{ steps.validate-repair-1.outputs.valid }}
           REPAIR_2_VALIDATION: ${{ steps.validate-repair-2.outputs.valid }}
           REPAIR_3_VALIDATION: ${{ steps.validate-repair-3.outputs.valid }}
+          INITIAL_RETRYABLE: ${{ steps.kimi-initial.outputs.retryable }}
+          REPAIR_1_RETRYABLE: ${{ steps.kimi-repair-1.outputs.retryable }}
+          REPAIR_2_RETRYABLE: ${{ steps.kimi-repair-2.outputs.retryable }}
+          REPAIR_3_RETRYABLE: ${{ steps.kimi-repair-3.outputs.retryable }}
         shell: bash
         run: |
           set -euo pipefail
@@ -807,6 +867,16 @@ jobs:
                 "$REPAIR_2_VALIDATION" == "true" || \
                 "$REPAIR_3_VALIDATION" == "true" ]]; then
             exit 0
+          fi
+          if [[ "$INITIAL_RETRYABLE" == "false" ]]; then
+            echo "::error::Kimi Code initial invocation failed with a non-retryable authentication or quota error; no repair was attempted"
+            exit 1
+          fi
+          if [[ "$REPAIR_1_RETRYABLE" == "false" || \
+                "$REPAIR_2_RETRYABLE" == "false" || \
+                "$REPAIR_3_RETRYABLE" == "false" ]]; then
+            echo "::error::Kimi Code repair stopped after a non-retryable authentication or quota error"
+            exit 1
           fi
           echo "::error::Trade intents failed validation after the initial attempt and three repairs"
           exit 1

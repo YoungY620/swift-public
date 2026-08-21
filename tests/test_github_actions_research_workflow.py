@@ -245,6 +245,9 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertNotIn("continue-on-error", step)
             self.assertIn('echo "succeeded=false" >> "$GITHUB_OUTPUT"', step)
             self.assertIn('echo "succeeded=true" >> "$GITHUB_OUTPUT"', step)
+            self.assertIn("scripts/classify_kimi_failure.py", step)
+            self.assertIn('echo "retryable=$retryable" >> "$GITHUB_OUTPUT"', step)
+            self.assertIn('echo "retryable=true" >> "$GITHUB_OUTPUT"', step)
             self.assertNotIn("::error::", step)
 
         for name in (
@@ -261,7 +264,17 @@ class WorkflowContractTests(unittest.TestCase):
 
         enforce = self.step(self.research, "Enforce retry limit")
         self.assertIn("steps.validate-initial.outputs.valid", enforce)
+        self.assertIn("steps.kimi-initial.outputs.retryable", enforce)
+        self.assertIn("non-retryable authentication or quota error", enforce)
         self.assertIn("::error::Trade intents failed validation", enforce)
+
+        for name in (
+            "Run Kimi Code — repair 1 of 3",
+            "Run Kimi Code — repair 2 of 3",
+            "Run Kimi Code — repair 3 of 3",
+        ):
+            step = self.step(self.research, name)
+            self.assertIn("outputs.retryable == 'true'", step)
 
         for attempt, name in enumerate(
             (

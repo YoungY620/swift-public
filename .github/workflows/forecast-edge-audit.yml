@@ -743,7 +743,18 @@ jobs:
             echo "Validated the audit agent's structured judgment"
             echo "agent-judgment-valid=true" >> "$GITHUB_OUTPUT"
           else
-            printf '%s\n' 'agent response unavailable or invalid' > "$AUDIT_RUNTIME_DIR/fallback-reason.txt"
+            fallback_reason='Judge Agent response unavailable or failed deterministic validation'
+            if [[ "${{ steps.audit-agent.outcome }}" != "success" && \
+                  -s "$AUDIT_RUNTIME_DIR/agent.stderr" ]]; then
+              failure_category=$(python3 scripts/classify_kimi_failure.py \
+                "$AUDIT_RUNTIME_DIR/agent.stderr" | jq -r '.category')
+              if [[ "$failure_category" == "AUTH_OR_QUOTA" ]]; then
+                fallback_reason='Judge Agent 未运行：Kimi Code 认证、计费额度或配额错误。'
+              else
+                fallback_reason='Judge Agent 进程失败；原始 stderr 已保存到秘密扫描后的审计诊断包。'
+              fi
+            fi
+            printf '%s\n' "$fallback_reason" > "$AUDIT_RUNTIME_DIR/fallback-reason.txt"
             "$validator" "$GITHUB_WORKSPACE/scripts/forecast_edge_audit.py" fallback \
               --input "$AUDIT_RUNTIME_DIR/fallback-reason.txt" \
               --rubric "$AUDIT_RUBRIC_PATH" \
@@ -845,8 +856,16 @@ jobs:
         run: |
           set -euo pipefail
           reports_dir="$AUDIT_REPORTS_DIR"
-          test -d "$reports_dir"
-          test -n "$(find "$reports_dir" -maxdepth 1 -name 'report-*.json' -type f -print -quit)"
+          if [[ ! -d "$reports_dir" ]]; then
+            printf '%s\n' '上游没有提供经过绑定校验的报告目录，无法生成正常 Agent 简报。' \
+              > "$AUDIT_RUNTIME_DIR/feishu-brief-quality.errors"
+            exit 1
+          fi
+          if [[ -z "$(find "$reports_dir" -maxdepth 1 -name 'report-*.json' -type f -print -quit)" ]]; then
+            printf '%s\n' '上游研究失败且没有经过绑定校验的 report JSON，无法生成正常 Agent 简报。' \
+              > "$AUDIT_RUNTIME_DIR/feishu-brief-quality.errors"
+            exit 1
+          fi
           install -d -m 700 "$FEISHU_BRIEF_AGENT_DIR/reports"
           cp "$reports_dir"/report-*.json "$FEISHU_BRIEF_AGENT_DIR/reports/"
           cp "$reports_dir"/report-*.md "$FEISHU_BRIEF_AGENT_DIR/reports/"
@@ -906,6 +925,16 @@ jobs:
             if [[ -s "$AUDIT_RUNTIME_DIR/feishu-brief-quality.errors" ]]; then
               tail -c 500 "$AUDIT_RUNTIME_DIR/feishu-brief-quality.errors" \
                 | tr '\r\n' ' ' > "$AUDIT_RUNTIME_DIR/feishu-brief-fallback-reason.txt"
+            elif [[ -s "$AUDIT_RUNTIME_DIR/feishu-brief.stderr" ]]; then
+              failure_category=$(python3 scripts/classify_kimi_failure.py \
+                "$AUDIT_RUNTIME_DIR/feishu-brief.stderr" | jq -r '.category')
+              if [[ "$failure_category" == "AUTH_OR_QUOTA" ]]; then
+                printf '%s\n' '飞书简报 Agent 未运行：Kimi Code 认证、计费额度或配额错误。' \
+                  > "$AUDIT_RUNTIME_DIR/feishu-brief-fallback-reason.txt"
+              else
+                printf '%s\n' '飞书简报 Agent 进程失败；原始 stderr 已保存到秘密扫描后的审计诊断包。' \
+                  > "$AUDIT_RUNTIME_DIR/feishu-brief-fallback-reason.txt"
+              fi
             else
               printf '%s\n' 'Agent output unavailable or failed deterministic validation' \
                 > "$AUDIT_RUNTIME_DIR/feishu-brief-fallback-reason.txt"
