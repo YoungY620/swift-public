@@ -17,7 +17,7 @@
 
 ### 父图：统一编排与最终发布
 
-`.github/workflows/forecast-edge.yml` 是唯一的 schedule/manual 入口。它先运行配置 gate，再调用研究子图；只有交易开关开启且本轮存在意图时才调用执行子图。EC2 本地执行器在下单前校验本地凭据文件；校验失败会使执行失败且禁止发布。父图等待执行成功或确认执行被跳过后，才统一创建最终 Release、Issue 和飞书通知。
+`.github/workflows/forecast-edge.yml` 是唯一的 schedule/manual 入口。它先运行配置 gate，再调用研究子图；生产执行已请求时，研究成功后始终调用执行子图，不以交易意图数量为 gate。零意图也必须在 EC2 上完成撤单、preflight、空 plan、`NO_ACTIONS` 回执、verify 和诊断。EC2 本地执行器在下单前校验本地凭据文件；校验失败会使执行失败且禁止发布。父图等待执行成功，或确认本轮明确未请求生产执行后，才统一创建最终 Release、Issue；飞书通知在 post-run Judge 之后发送。
 
 ### 子图一：统一研究工作流
 
@@ -243,7 +243,7 @@ GitHub Release 和 Actions artifact 都不是应用层加密存储。最终 Rele
 
 每个 venue 执行器都实现为 `workflow_call` reusable workflow：
 
-- 只由父图在研究成功、存在交易意图、生产交易已开启且配置齐全时调用；
+- 只由父图在研究成功、生产执行已请求且配置齐全时调用；零交易意图也必须运行完整 EC2 执行生命周期；
 - 使用 `GITHUB_RUN_ID` 和 `GITHUB_RUN_ATTEMPT` 下载本轮唯一命名的 Actions handoff artifact；
 - 使用父图传入的 SHA-256 校验 `trade-intents.jsonl`，再独立完成 JSONL Schema、市场、持仓和实时报价校验；
 - 使用 `GITHUB_REPOSITORY`、run ID、attempt 和摘要派生 execution ID，并用长期 EC2 上的 SQLite ledger 保证重试幂等和共享单日限额；

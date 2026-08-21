@@ -24,7 +24,7 @@ JSONL 的每一行都必须包含 `(venue, multi_market_identifier, instrument_i
 
 自动审计的严重失败会触发三重熔断：关闭 `POLYMARKET_LIVE_TRADING_ENABLED`、设置 `FORECAST_EDGE_AUTOMATION_PAUSED=true` 并禁用父 workflow。修改仓库 Variables/禁用 workflow 的权限不依赖默认 `GITHUB_TOKEN`；生产仓库必须配置 GitHub Actions Secret `FORECAST_EDGE_BREAKER_TOKEN`（最小的 Actions 写权限）。该 token 只在配置 gate 与熔断步骤检查/使用，不传给 Kimi Code Agent，也不进入任何诊断、Release 或通知内容。
 
-`.github/workflows/execute-polymarket.yml` 只消费成功研究子图生成、经 SHA-256 绑定并重新验证过的私有交易意图。它直接运行在 `poly-edge-ec2-eu-north-1` Linux/X64 self-hosted runner 上，不再从 Mac SSH 中转。只有显式启用交易、存在交易意图且 EC2 本地凭据文件安全可用时才进入执行路径；执行代码位于 `execution/` 和对应的 `scripts/`。
+`.github/workflows/execute-polymarket.yml` 只消费成功研究子图生成、经 SHA-256 绑定并重新验证过的私有交易意图。它直接运行在 `poly-edge-ec2-eu-north-1` Linux/X64 self-hosted runner 上，不再从 Mac SSH 中转。只要本轮显式请求生产执行且 EC2 本地凭据文件安全可用，就必须进入完整执行路径，不以 `has-intents` 为 gate。零交易意图也要在 EC2 上完成 artifact 校验、取消旧挂单、preflight、空 plan、`NO_ACTIONS` 回执、verify 和诊断打包；执行代码位于 `execution/` 和对应的 `scripts/`。
 
 Polymarket signer private key、account wallet、wallet type 和 CLOB credentials 只保存在 EC2 的 `/home/ubuntu/poly-edge-live/runtime/secrets.json`（`0600`），不保存为 GitHub Secret。父图和 research 都不读取或传递凭据值；execution 在 EC2 本机短暂读取凭据，外部业务输入只有 Actions artifact 中的交易意图及其 SHA-256。
 
@@ -32,6 +32,6 @@ Polymarket signer private key、account wallet、wallet type 和 CLOB credential
 
 执行器通过官方 SDK 自动识别 `EOA`、`POLY_PROXY`、`GNOSIS_SAFE` 和 `DEPOSIT_WALLET`，不能根据 Google/email 或浏览器钱包登录名称猜测签名类型。账户与 CLOB 凭证配置见 [Polymarket 账户认证与执行器配置](polymarket-authentication.md)。
 
-## 本机 launchd
+## 本机边界
 
-本机另有独立的 `forecast-edge-scan` launchd 任务。它执行 `~/.forecast-edge-cron/run.sh`，使用 `~/.forecast-edge-cron/prompt.txt`、`~/.agents/skills/forecast-edge`、`~/.agents/skills/feishu-larva` 和 `~/.forecast-edge-runs`，不调用本仓库内已移除的旧通用调度器。
+Mac 上的旧 `forecast-edge-scan` launchd 任务和 `local-mac-forecast-edge` self-hosted runner 已停用并从仓库注销。定时研究只由私有仓库父 workflow 发起，研究使用 GitHub-hosted Ubuntu，真实交易只在带专用标签的 EC2 runner 上执行。

@@ -13,6 +13,8 @@ AUDIT_PATH = ROOT / ".github" / "workflows" / "forecast-edge-audit.yml"
 SCHEDULED_PROMPT_PATH = ROOT / "automation" / "prompts" / "scheduled-scan.zh-CN.md"
 REPAIR_PROMPT_PATH = ROOT / "automation" / "prompts" / "repair-trade-intents.zh-CN.md"
 KIMI_WATCHDOG_PATH = ROOT / "scripts" / "run_kimi_code_with_idle_timeout.sh"
+AUTOMATION_DOC_PATH = ROOT / "docs" / "automation.md"
+AGENT_DESIGN_DOC_PATH = ROOT / "docs" / "github-actions-agent-design.md"
 
 
 class WorkflowContractTests(unittest.TestCase):
@@ -23,6 +25,8 @@ class WorkflowContractTests(unittest.TestCase):
         cls.execution = EXECUTION_PATH.read_text(encoding="utf-8")
         cls.audit = AUDIT_PATH.read_text(encoding="utf-8")
         cls.kimi_watchdog = KIMI_WATCHDOG_PATH.read_text(encoding="utf-8")
+        cls.automation_doc = AUTOMATION_DOC_PATH.read_text(encoding="utf-8")
+        cls.agent_design_doc = AGENT_DESIGN_DOC_PATH.read_text(encoding="utf-8")
 
     @staticmethod
     def step(workflow: str, name: str) -> str:
@@ -54,6 +58,13 @@ class WorkflowContractTests(unittest.TestCase):
         )
         self.assertIn('"$RESEARCH_ONLY" != "true"', self.parent)
         self.assertIn('"$EVENT_NAME" == "workflow_dispatch"', self.parent)
+
+    def test_docs_require_zero_intent_production_execution_lifecycle(self) -> None:
+        combined = self.automation_doc + self.agent_design_doc
+        self.assertIn("不以 `has-intents` 为 gate", combined)
+        self.assertIn("零交易意图也必须运行完整 EC2 执行生命周期", combined)
+        self.assertNotIn("只有交易开关开启且本轮存在意图时", combined)
+        self.assertNotIn("存在交易意图且 EC2", combined)
 
     def test_parent_manifest_records_the_effective_schedule_gate(self) -> None:
         self.assertIn("interval-hours=$interval", self.parent)
