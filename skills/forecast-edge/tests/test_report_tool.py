@@ -168,6 +168,21 @@ class ReportToolTests(unittest.TestCase):
         )
         self.assertTrue(report_tool.validate_report(report))
 
+    def test_legacy_history_remains_readable_without_weakening_new_validation(self) -> None:
+        report = load_report()
+        report["candidates"][0]["signal"]["rationale"] = (
+            "基于最新订单簿重新计算；未触发可执行交叉或硬门槛，维持现状。"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "report.json"
+            path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(report_tool.ReportError, "generic execution"):
+                report_tool.read_report(path)
+            historical = report_tool.read_report(
+                path, enforce_candidate_quality=False
+            )
+            self.assertEqual(historical["run"]["id"], "sample-run")
+
     def test_closed_candidates_may_share_explicit_mechanical_reason(self) -> None:
         candidates = [copy.deepcopy(load_report()["candidates"][0]) for _ in range(2)]
         for candidate in candidates:

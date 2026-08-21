@@ -430,6 +430,7 @@ class WorkflowContractTests(unittest.TestCase):
         stage = self.step(self.research, "Build secret-free research artifact handoff")
         self.assertIn("gh release download", restore)
         self.assertIn("report_archive_sha256", restore)
+        self.assertIn("--historical-read-only", restore)
         self.assertIn('"${current_report_directories[@]}"', package)
         self.assertIn('--arg schema_version "2.0"', package)
         self.assertIn('reports: $reports[0]', package)

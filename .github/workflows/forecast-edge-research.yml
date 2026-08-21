@@ -377,7 +377,8 @@ jobs:
             exit 1
           fi
           while IFS= read -r report; do
-            python3 skills/forecast-edge/scripts/report_tool.py validate "$report" >/dev/null
+            python3 skills/forecast-edge/scripts/report_tool.py validate \
+              "$report" --historical-read-only >/dev/null
           done < <(find "$REPORTS_DIR/reports" -type f -name report.json | sort)
           find "$REPORTS_DIR/reports" -type f -name report.json | sort > "$BASELINE_REPORTS_PATH"
 

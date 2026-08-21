@@ -1630,6 +1630,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--history-reports-list",
         help="Newline-delimited historical report paths used to verify candidate novelty",
     )
+    validate.add_argument(
+        "--historical-read-only",
+        action="store_true",
+        help="Read an immutable legacy report without applying newly introduced candidate-quality gates",
+    )
     render = subparsers.add_parser("render", help="Render report JSON as Markdown")
     render.add_argument("report")
     render.add_argument("output", help="Output Markdown path, or - for stdout")
@@ -1648,7 +1653,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "validate":
-            report = read_report(Path(args.report))
+            report = read_report(
+                Path(args.report),
+                enforce_candidate_quality=not args.historical_read_only,
+            )
             history_validated = False
             if args.history_reports_list:
                 history_paths = [
