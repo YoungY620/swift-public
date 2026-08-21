@@ -7,6 +7,7 @@ import json
 import re
 import sys
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,20 @@ from report_tool import (  # noqa: E402
 
 
 ACTIONABLE_ACTIONS = {"BUY", "ADD", "TRIM", "SELL"}
+POLYMARKET_URL = re.compile(
+    r"https://(?:www\.)?polymarket\.com/event/[A-Za-z0-9._~%-]+(?:\?tid=[0-9]+)?/?"
+)
+ACTION_LABELS = {
+    "BUY": "买入",
+    "ADD": "加仓",
+    "MAINTAIN": "维持",
+    "TRIM": "减仓",
+    "SELL": "卖出",
+}
+NOVELTY_LABELS = {
+    "FIRST_RESEARCH": "该历史轮次首次研究",
+    "EXISTING_EVENT_NEW_MARKET": "既有事件的新子市场",
+}
 
 
 class BriefValidationError(ValueError):
@@ -393,6 +408,183 @@ def display_money(value: Any, currency: Any) -> str:
     return "可用抵押资金 **未获得**"
 
 
+def markdown_text(value: Any, *, fallback: str = "未命名市场") -> str:
+    if not isinstance(value, str):
+        return fallback
+    rendered = " ".join(value.split())
+    if not rendered:
+        return fallback
+    for character in ("\\", "`", "*", "_", "[", "]"):
+        rendered = rendered.replace(character, f"\\{character}")
+    return rendered
+
+
+def market_link(question: Any, url: Any) -> str:
+    label = markdown_text(question)
+    if isinstance(url, str) and POLYMARKET_URL.fullmatch(url):
+        return f"[{label}]({url})"
+    return label
+
+
+def decimal_value(value: Any) -> Decimal | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return number if number.is_finite() else None
+
+
+def compact_decimal(value: Any) -> str | None:
+    number = decimal_value(value)
+    if number is None:
+        return None
+    rendered = format(number, "f")
+    return rendered.rstrip("0").rstrip(".") if "." in rendered else rendered
+
+
+def percent_text(value: Any, suffix: str) -> str | None:
+    number = decimal_value(value)
+    if number is None:
+        return None
+    rendered = format(number * Decimal("100"), ".2f").rstrip("0").rstrip(".")
+    return f"{rendered}{suffix}"
+
+
+def current_position_details_markdown(context: dict[str, Any] | None) -> str:
+    accounts = context.get("account_snapshots", []) if context is not None else []
+    sections: list[str] = []
+    for account in accounts:
+        if not isinstance(account, dict):
+            continue
+        venue = account.get("venue")
+        positions = account.get("positions")
+        if not isinstance(venue, str) or not isinstance(positions, list):
+            continue
+        currency = account.get("currency")
+        lines: list[str] = []
+        for position in positions:
+            if not isinstance(position, dict):
+                continue
+            outcome = str(position.get("outcome") or "").upper()
+            if outcome not in {"YES", "NO"}:
+                continue
+            details: list[str] = []
+            quantity = compact_decimal(position.get("quantity"))
+            displayed_value = compact_decimal(position.get("displayed_value"))
+            if quantity is not None:
+                details.append(f"份额 {quantity}")
+            if displayed_value is not None:
+                unit = f" {markdown_text(currency, fallback='')}" if currency else ""
+                details.append(f"快照价值 {displayed_value}{unit}")
+            suffix = f"｜{'｜'.join(details)}" if details else ""
+            lines.append(
+                f"- **持有 {outcome}**｜"
+                f"{market_link(position.get('question'), position.get('url'))}{suffix}"
+            )
+        if lines:
+            sections.append(
+                f"**{markdown_text(venue)} 当前账户持仓快照（本轮研究前）**\n" + "\n".join(lines)
+            )
+    if sections:
+        return "\n\n".join(sections)
+    return "**逐项持仓快照未取得**；已知持仓总数仍显示在组合概况中。"
+
+
+def report_market_line(market: dict[str, Any], *, historical: bool) -> str | None:
+    outcome = str(market.get("outcome") or "").upper()
+    action = str(market.get("action") or "").upper()
+    kind = str(market.get("kind") or "")
+    if outcome not in {"YES", "NO"} or action not in ACTION_LABELS:
+        return None
+    category = "持仓" if kind == "CURRENT_POSITION" else "候选"
+    novelty = NOVELTY_LABELS.get(str(market.get("research_novelty") or ""))
+    if kind == "CANDIDATE" and novelty:
+        category = f"{category}（{novelty}）"
+    metrics: list[str] = []
+    yes_probability = percent_text(market.get("yes_probability"), "%")
+    raw_edge = percent_text(market.get("raw_edge"), "pp")
+    net_edge = percent_text(market.get("net_edge"), "pp")
+    executable_price = compact_decimal(market.get("executable_price"))
+    if yes_probability is not None:
+        metrics.append(f"P(YES) {yes_probability}")
+    if executable_price is not None:
+        metrics.append(f"可执行价 {executable_price}")
+    if raw_edge is not None:
+        metrics.append(f"raw edge {raw_edge}")
+    if net_edge is not None:
+        metrics.append(f"费后优势 {net_edge}")
+    recommended_cash = compact_decimal(market.get("recommended_cash"))
+    recommended_shares = compact_decimal(market.get("recommended_shares"))
+    recommended_cash_value = decimal_value(recommended_cash)
+    recommended_shares_value = decimal_value(recommended_shares)
+    if (
+        recommended_cash is not None
+        and recommended_cash_value is not None
+        and recommended_cash_value > 0
+    ):
+        metrics.append(f"建议金额 {recommended_cash}")
+    if (
+        recommended_shares is not None
+        and recommended_shares_value is not None
+        and recommended_shares_value > 0
+    ):
+        metrics.append(f"建议份额 {recommended_shares}")
+    prefix = "历史" if historical else "本轮"
+    line = (
+        f"- **{category} {outcome}｜{ACTION_LABELS[action]}**｜"
+        f"{market_link(market.get('question'), market.get('url'))}"
+    )
+    if metrics:
+        line += "｜" + "｜".join(metrics)
+    research = market.get("research_conclusion")
+    execution = market.get("execution_reason")
+    if isinstance(research, str) and research.strip():
+        line += f"\n  - {prefix}研究结论：{markdown_text(research)}"
+    if isinstance(execution, str) and execution.strip():
+        line += f"\n  - {prefix}执行判断：{markdown_text(execution)}"
+    return line
+
+
+def report_market_details_markdown(
+    reports: list[Any],
+    *,
+    historical: bool,
+) -> str:
+    sections: list[str] = []
+    for report in reports:
+        if not isinstance(report, dict):
+            continue
+        venue = report.get("venue")
+        completed_at = report.get("completed_at")
+        markets = report.get("market_summaries")
+        if not isinstance(venue, str) or not isinstance(markets, list):
+            continue
+        lines = [
+            line
+            for market in markets
+            if isinstance(market, dict)
+            for line in [report_market_line(market, historical=historical)]
+            if line is not None
+        ]
+        if not lines:
+            continue
+        date = completed_at[:10] if isinstance(completed_at, str) else "日期未获得"
+        if historical:
+            heading = (
+                f"**上一份已验证报告市场明细｜{markdown_text(venue)} {date}"
+                "（历史参考，非本轮建议）**"
+            )
+        else:
+            heading = f"**本轮已验证报告市场明细｜{markdown_text(venue)} {date}**"
+        sections.append(heading + "\n" + "\n".join(lines))
+    if sections:
+        return "\n\n".join(sections)
+    label = "上一份已验证报告" if historical else "本轮已验证报告"
+    return f"**{label}只取得数量汇总，逐市场明细未取得**。"
+
+
 def account_snapshot_markdown(context: dict[str, Any] | None) -> str:
     accounts = context.get("account_snapshots", []) if context is not None else []
     rendered: list[str] = []
@@ -483,7 +675,12 @@ def command_fallback(args: argparse.Namespace) -> None:
             f"本轮已验证报告覆盖 {display_count(current_count, '个当前持仓')}、"
             f"{display_count(candidate_count, '个新增候选')}"
         )
-        baseline_summary = "本轮已验证报告仍可作为数量清单，市场专属结论未在 fallback 中二次生成"
+        baseline_summary = "本轮报告已通过确定性校验；下方逐市场内容直接转述报告字段"
+        position_details = report_market_details_markdown(
+            context.get("current_validated_reports", []) if context is not None else [],
+            historical=False,
+        )
+        market_details = ""
     else:
         portfolio_summary = account_snapshot_markdown(context)
         research_summary = (
@@ -491,6 +688,11 @@ def command_fallback(args: argparse.Namespace) -> None:
             "当前持仓重研数量、新增候选数量和市场专属结论均为 **未获得/不可验证**"
         )
         baseline_summary = f"上一份验证报告基线：{baseline_markdown(context)}"
+        position_details = current_position_details_markdown(context)
+        market_details = report_market_details_markdown(
+            context.get("latest_validated_baselines", []) if context is not None else [],
+            historical=True,
+        )
 
     if actionable_count == 0:
         action_summary = "经验证报告确认：本轮无可执行交易意图。"
@@ -508,11 +710,13 @@ def command_fallback(args: argparse.Namespace) -> None:
             f"**研究覆盖**：{research_summary}。\n\n"
             "**本轮结论**：⚠️ **Warning：未取得可验证的市场专属研究结论**，请查看完整报告和下方异常详情。\n\n"
             "### 一、私人操作建议\n\n"
-            "Agent 简报生成失败，本卡不会补造研究理由或操作建议；"
-            "只有经过验证的报告才能作为交易建议来源。\n\n"
+            "**Agent 简报生成失败，本卡不会补造新的研究理由或操作建议。** "
+            "以下逐项内容只来自账户快照或已验证报告，并明确区分本轮与历史。\n\n"
+            f"{position_details}\n\n"
             "### 二、简报\n\n"
             f"**本轮已完成步骤**：{progress_markdown(context)}。\n\n"
             f"**可用基线**：{baseline_summary}。\n\n"
+            f"{market_details}\n\n"
             f"**执行判断状态**：{action_summary}\n\n"
             f"**Warning 详情**：{reason or 'unknown'}"
         ),

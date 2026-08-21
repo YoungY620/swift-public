@@ -31,7 +31,19 @@ class ForecastEdgeFallbackContextTests(unittest.TestCase):
                             "identifier": "0xprivate-account-identifier-is-not-copied"
                         },
                         "portfolio": {"currency": "pUSD", "available_cash": "134.7200"},
-                        "positions": {"count": 14, "positions": []},
+                        "positions": {
+                            "count": 14,
+                            "positions": [
+                                {
+                                    "question": "Will the sample policy pass?",
+                                    "outcome": "no",
+                                    "quantity": "12.5000",
+                                    "displayed_value": "4.2500",
+                                    "url": "https://polymarket.com/event/sample-policy",
+                                    "market_identifier": "not-copied",
+                                }
+                            ],
+                        },
                     }
                 ),
                 encoding="utf-8",
@@ -57,9 +69,63 @@ class ForecastEdgeFallbackContextTests(unittest.TestCase):
                                 "available_collateral": 120,
                                 "estimated_bankroll": 190,
                             },
-                            "current_positions": [{}] * positions,
-                            "candidates": [{}] * candidates,
-                            "actions": [{"action": "BUY"}, {"action": "MAINTAIN"}],
+                            "current_positions": [
+                                {
+                                    "market": {
+                                        "id": "held-market",
+                                        "question": "Will the held policy pass?",
+                                        "url": "https://polymarket.com/event/held-policy",
+                                        "outcome": "NO",
+                                    },
+                                    "model": {
+                                        "yes_probability": 0.25,
+                                        "conclusion": "官方投票日程支持 25% 的 YES 概率。",
+                                    },
+                                    "signal": {"action": "MAINTAIN"},
+                                    "opportunity": {
+                                        "executable_price": 0.7,
+                                        "raw_edge": 0.05,
+                                        "net_edge": 0.04,
+                                        "reason": "未触发卖出交叉，维持持仓。",
+                                    },
+                                }
+                            ]
+                            + [{}] * (positions - 1),
+                            "candidates": [
+                                {
+                                    "research_novelty": {
+                                        "classification": "FIRST_RESEARCH"
+                                    },
+                                    "market": {
+                                        "id": "candidate-market",
+                                        "question": "Will the new bill pass?",
+                                        "url": "https://polymarket.com/event/new-bill",
+                                        "outcome": "YES",
+                                    },
+                                    "model": {
+                                        "yes_probability": 0.6,
+                                        "conclusion": "委员会票数支持 60% 的 YES 概率。",
+                                    },
+                                    "signal": {"action": "BUY"},
+                                    "opportunity": {
+                                        "executable_price": 0.4,
+                                        "raw_edge": 0.2,
+                                        "net_edge": 0.19,
+                                        "reason": "费后优势超过硬门槛并获得组合分配。",
+                                    },
+                                    "allocation": {"allocated_cash": 5},
+                                }
+                            ]
+                            + [{}] * (candidates - 1),
+                            "actions": [
+                                {
+                                    "action": "BUY",
+                                    "market_id": "candidate-market",
+                                    "recommended_cash": 5,
+                                    "recommended_shares": 12.5,
+                                },
+                                {"action": "MAINTAIN", "market_id": "held-market"},
+                            ],
                         }
                     ),
                     encoding="utf-8",
@@ -92,9 +158,26 @@ class ForecastEdgeFallbackContextTests(unittest.TestCase):
             self.assertEqual(context["account_snapshots"][0]["current_position_count"], 14)
             self.assertNotIn("account", context["account_snapshots"][0])
             self.assertEqual(
+                context["account_snapshots"][0]["positions"][0],
+                {
+                    "question": "Will the sample policy pass?",
+                    "outcome": "NO",
+                    "quantity": "12.5",
+                    "displayed_value": "4.25",
+                    "url": "https://polymarket.com/event/sample-policy",
+                },
+            )
+            self.assertEqual(
                 context["latest_validated_baselines"][0]["completed_at"],
                 "2026-08-20T03:00:00+00:00",
             )
+            baseline_markets = context["latest_validated_baselines"][0][
+                "market_summaries"
+            ]
+            self.assertEqual(len(baseline_markets), 2)
+            self.assertEqual(baseline_markets[0]["question"], "Will the held policy pass?")
+            self.assertEqual(baseline_markets[1]["recommended_cash"], "5")
+            self.assertNotIn("market_id", baseline_markets[1])
             self.assertEqual(
                 context["progress"]["last_reached_stage"],
                 "REPORT_GENERATED_UNVALIDATED",

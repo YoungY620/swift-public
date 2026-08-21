@@ -313,6 +313,15 @@ class ForecastEdgeFeishuBriefTests(unittest.TestCase):
                                 "currency": "pUSD",
                                 "available_cash": "134.72",
                                 "current_position_count": 14,
+                                "positions": [
+                                    {
+                                        "question": "Will the held policy pass?",
+                                        "outcome": "NO",
+                                        "quantity": "12.5",
+                                        "displayed_value": "4.25",
+                                        "url": "https://polymarket.com/event/held-policy",
+                                    }
+                                ],
                             }
                         ],
                         "latest_validated_baselines": [
@@ -326,6 +335,46 @@ class ForecastEdgeFeishuBriefTests(unittest.TestCase):
                                 "currency": "pUSD",
                                 "available_collateral": "120",
                                 "estimated_bankroll": "190",
+                                "market_summaries": [
+                                    {
+                                        "kind": "CURRENT_POSITION",
+                                        "question": "Will the held policy pass?",
+                                        "url": "https://polymarket.com/event/held-policy",
+                                        "outcome": "NO",
+                                        "action": "MAINTAIN",
+                                        "research_novelty": None,
+                                        "yes_probability": "0.25",
+                                        "executable_price": "0.7",
+                                        "raw_edge": "0.05",
+                                        "net_edge": "0.04",
+                                        "recommended_cash": "0",
+                                        "recommended_shares": "0",
+                                        "research_conclusion": (
+                                            "官方投票日程支持 25% 的 YES 概率。"
+                                        ),
+                                        "execution_reason": "未触发卖出交叉，维持持仓。",
+                                    },
+                                    {
+                                        "kind": "CANDIDATE",
+                                        "question": "Will the new bill pass?",
+                                        "url": "https://polymarket.com/event/new-bill",
+                                        "outcome": "YES",
+                                        "action": "BUY",
+                                        "research_novelty": "FIRST_RESEARCH",
+                                        "yes_probability": "0.6",
+                                        "executable_price": "0.4",
+                                        "raw_edge": "0.2",
+                                        "net_edge": "0.19",
+                                        "recommended_cash": "5",
+                                        "recommended_shares": "12.5",
+                                        "research_conclusion": (
+                                            "委员会票数支持 60% 的 YES 概率。"
+                                        ),
+                                        "execution_reason": (
+                                            "费后优势超过硬门槛并获得组合分配。"
+                                        ),
+                                    },
+                                ],
                             }
                         ],
                         "current_validated_reports": [],
@@ -365,6 +414,14 @@ class ForecastEdgeFeishuBriefTests(unittest.TestCase):
             self.assertIn("账户当前持仓 **14 个**", result["markdown"])
             self.assertIn("上一份验证报告基线", result["markdown"])
             self.assertIn("**13 个当前持仓**", result["markdown"])
+            self.assertIn("当前账户持仓快照（本轮研究前）", result["markdown"])
+            self.assertIn("持有 NO", result["markdown"])
+            self.assertIn("份额 12.5", result["markdown"])
+            self.assertIn("快照价值 4.25 pUSD", result["markdown"])
+            self.assertIn("历史参考，非本轮建议", result["markdown"])
+            self.assertIn("Will the new bill pass?", result["markdown"])
+            self.assertIn("P(YES) 60%", result["markdown"])
+            self.assertIn("历史研究结论：委员会票数支持 60%", result["markdown"])
             self.assertIn("报告校验已运行，但尚未通过", result["markdown"])
             self.assertNotIn("0 个当前持仓", result["markdown"])
 
@@ -401,6 +458,92 @@ class ForecastEdgeFeishuBriefTests(unittest.TestCase):
             self.assertEqual(result["researched_market_count"], 0)
             self.assertEqual(result["actionable_recommendation_count"], 0)
             self.assertIn("本轮无可执行交易意图", result["markdown"])
+
+    def test_fallback_lists_current_validated_report_when_brief_agent_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reports = root / "reports"
+            reports.mkdir()
+            self.write_report(reports, actionable=True)
+            reason = root / "reason.txt"
+            context = root / "fallback-context.json"
+            output = root / "brief.json"
+            reason.write_text("brief agent quota unavailable", encoding="utf-8")
+            context.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "research_date": "2026-08-21",
+                        "venues": ["polymarket"],
+                        "account_snapshots": [],
+                        "latest_validated_baselines": [],
+                        "current_validated_reports": [
+                            {
+                                "venue": "polymarket",
+                                "completed_at": "2026-08-21T03:26:33+00:00",
+                                "current_position_count": 1,
+                                "candidate_count": 1,
+                                "researched_market_count": 2,
+                                "actionable_recommendation_count": 1,
+                                "market_summaries": [
+                                    {
+                                        "kind": "CANDIDATE",
+                                        "question": "Will the new bill pass?",
+                                        "url": "https://polymarket.com/event/new-bill",
+                                        "outcome": "YES",
+                                        "action": "BUY",
+                                        "research_novelty": "FIRST_RESEARCH",
+                                        "yes_probability": "0.6",
+                                        "executable_price": "0.4",
+                                        "raw_edge": "0.2",
+                                        "net_edge": "0.19",
+                                        "recommended_cash": "5",
+                                        "recommended_shares": "12.5",
+                                        "research_conclusion": (
+                                            "委员会票数支持 60% 的 YES 概率。"
+                                        ),
+                                        "execution_reason": (
+                                            "费后优势超过硬门槛并获得组合分配。"
+                                        ),
+                                    }
+                                ],
+                            }
+                        ],
+                        "progress": {
+                            "last_reached_stage": "REPORT_VALIDATED",
+                            "restored_historical_report_count": 2,
+                            "account_snapshot_count": 1,
+                            "research_agent_attempt_count": 1,
+                            "report_validation_attempt_count": 1,
+                            "generated_report_count": 1,
+                            "validated_report_count": 1,
+                            "validated_trade_intent_count": 1,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "schema": SCHEMA_PATH,
+                    "reports_dir": reports,
+                    "research_date": "2026-08-21",
+                    "context": context,
+                    "reason": reason,
+                    "output": output,
+                },
+            )()
+            brief_module.command_fallback(args)
+            result = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(result["current_position_count"], 1)
+            self.assertEqual(result["researched_market_count"], 2)
+            self.assertEqual(result["actionable_recommendation_count"], 1)
+            self.assertIn("本轮已验证报告市场明细", result["markdown"])
+            self.assertIn("Will the new bill pass?", result["markdown"])
+            self.assertIn("本轮研究结论：委员会票数支持 60%", result["markdown"])
+            self.assertNotIn("历史参考，非本轮建议", result["markdown"])
 
 
 if __name__ == "__main__":

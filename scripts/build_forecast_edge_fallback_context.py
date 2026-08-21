@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -12,6 +13,9 @@ from typing import Any
 
 
 ACTIONABLE_ACTIONS = {"BUY", "ADD", "TRIM", "SELL"}
+ALLOWED_ACTIONS = ACTIONABLE_ACTIONS | {"MAINTAIN"}
+ALLOWED_NOVELTY = {"FIRST_RESEARCH", "EXISTING_EVENT_NEW_MARKET"}
+POLYMARKET_URL = re.compile(r"https://(?:www\.)?polymarket\.com/event/[^\s]+")
 
 
 class ContextError(ValueError):
@@ -37,6 +41,67 @@ def decimal_text(value: Any) -> str | None:
         return None
     rendered = format(number, "f")
     return rendered.rstrip("0").rstrip(".") if "." in rendered else rendered
+
+
+def signed_decimal_text(value: Any) -> str | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    if not number.is_finite():
+        return None
+    rendered = format(number, "f")
+    return rendered.rstrip("0").rstrip(".") if "." in rendered else rendered
+
+
+def probability_text(value: Any) -> str | None:
+    rendered = decimal_text(value)
+    if rendered is None:
+        return None
+    number = Decimal(rendered)
+    return rendered if number <= 1 else None
+
+
+def clean_text(value: Any, *, limit: int = 520) -> str | None:
+    if not isinstance(value, str):
+        return None
+    rendered = " ".join(value.split())
+    if not rendered:
+        return None
+    return rendered[:limit]
+
+
+def safe_market_url(value: Any) -> str | None:
+    if not isinstance(value, str) or not POLYMARKET_URL.fullmatch(value):
+        return None
+    return value
+
+
+def position_summaries(position_rows: Any) -> list[dict[str, Any]]:
+    if not isinstance(position_rows, list):
+        return []
+    summaries: list[dict[str, Any]] = []
+    for raw in position_rows:
+        if not isinstance(raw, dict):
+            continue
+        outcome = str(raw.get("outcome") or "").upper()
+        if outcome not in {"YES", "NO"}:
+            continue
+        question = clean_text(raw.get("question"), limit=240)
+        if question is None:
+            continue
+        summaries.append(
+            {
+                "question": question,
+                "outcome": outcome,
+                "quantity": decimal_text(raw.get("quantity")),
+                "displayed_value": decimal_text(raw.get("displayed_value")),
+                "url": safe_market_url(raw.get("url")),
+            }
+        )
+    return summaries
 
 
 def nonnegative_int(value: Any) -> int | None:
@@ -80,6 +145,7 @@ def account_snapshots(directory: Path | None) -> list[dict[str, Any]]:
                 "currency": currency if isinstance(currency, str) and currency else None,
                 "available_cash": decimal_text(portfolio.get("available_cash")),
                 "current_position_count": count,
+                "positions": position_summaries(position_rows),
             }
         )
     return rows
@@ -96,6 +162,87 @@ def read_baseline_paths(path: Path | None) -> list[Path]:
         ]
     except OSError:
         return []
+
+
+def report_market_summaries(report: dict[str, Any]) -> list[dict[str, Any]]:
+    action_by_market: dict[str, dict[str, Any]] = {}
+    actions = report.get("actions")
+    if isinstance(actions, list):
+        for raw_action in actions:
+            if not isinstance(raw_action, dict):
+                continue
+            market_id = raw_action.get("market_id")
+            if isinstance(market_id, str) and market_id and market_id not in action_by_market:
+                action_by_market[market_id] = raw_action
+
+    summaries: list[dict[str, Any]] = []
+    for kind, collection_name in (
+        ("CURRENT_POSITION", "current_positions"),
+        ("CANDIDATE", "candidates"),
+    ):
+        collection = report.get(collection_name)
+        if not isinstance(collection, list):
+            continue
+        for analysis in collection:
+            if not isinstance(analysis, dict):
+                continue
+            market = analysis.get("market")
+            model = analysis.get("model")
+            signal = analysis.get("signal")
+            opportunity = analysis.get("opportunity")
+            allocation = analysis.get("allocation")
+            if not all(
+                isinstance(value, dict)
+                for value in (market, model, signal, opportunity)
+            ):
+                continue
+            question = clean_text(market.get("question"), limit=240)
+            outcome = str(market.get("outcome") or "").upper()
+            action = str(signal.get("action") or "").upper()
+            if question is None or outcome not in {"YES", "NO"} or action not in ALLOWED_ACTIONS:
+                continue
+            market_id = market.get("id")
+            raw_action = action_by_market.get(market_id) if isinstance(market_id, str) else None
+            novelty = analysis.get("research_novelty")
+            novelty_classification = (
+                novelty.get("classification") if isinstance(novelty, dict) else None
+            )
+            if novelty_classification not in ALLOWED_NOVELTY:
+                novelty_classification = None
+            summaries.append(
+                {
+                    "kind": kind,
+                    "question": question,
+                    "url": safe_market_url(market.get("url")),
+                    "outcome": outcome,
+                    "action": action,
+                    "research_novelty": novelty_classification,
+                    "yes_probability": probability_text(model.get("yes_probability")),
+                    "executable_price": signed_decimal_text(
+                        opportunity.get("executable_price")
+                    ),
+                    "raw_edge": signed_decimal_text(opportunity.get("raw_edge")),
+                    "net_edge": signed_decimal_text(opportunity.get("net_edge")),
+                    "allocated_cash": decimal_text(
+                        allocation.get("allocated_cash")
+                        if isinstance(allocation, dict)
+                        else None
+                    ),
+                    "recommended_cash": decimal_text(
+                        raw_action.get("recommended_cash")
+                        if isinstance(raw_action, dict)
+                        else None
+                    ),
+                    "recommended_shares": decimal_text(
+                        raw_action.get("recommended_shares")
+                        if isinstance(raw_action, dict)
+                        else None
+                    ),
+                    "research_conclusion": clean_text(model.get("conclusion")),
+                    "execution_reason": clean_text(opportunity.get("reason")),
+                }
+            )
+    return summaries
 
 
 def report_summary(path: Path) -> dict[str, Any] | None:
@@ -142,6 +289,7 @@ def report_summary(path: Path) -> dict[str, Any] | None:
         ),
         "available_collateral": decimal_text(portfolio.get("available_collateral")),
         "estimated_bankroll": decimal_text(portfolio.get("estimated_bankroll")),
+        "market_summaries": report_market_summaries(report),
     }
 
 
