@@ -71,7 +71,7 @@
       "title": "新增候选研究理由市场专属且与执行判断分离",
       "applies_when": "final research reports exist",
       "expected": "Judge 逐份读取最终 report JSON；candidates 的 signal.rationale、model.conclusion 和主要 evidence summary/conclusion 不得在不同市场间复制，不得只有订单簿或维持现状套话。每个候选必须说明市场专属事实、概率依据和关键不确定性，signal.rationale 与 model.conclusion 中的 P(YES) 必须来自本项 model.yes_probability；opportunity.reason 单独用本市场的价格、raw/net edge、10pp 门槛、eligibility 和 allocation 解释执行结论。research_novelty 必须与 research_diagnostics 中的历史 event/multi-market/market id 集合一致。",
-      "evidence_required": ["release.reports", "release.validation_summary", "research_diagnostics"],
+      "evidence_required": ["release.reports", "research_diagnostics.reports", "release.validation_summary", "research_diagnostics"],
       "pass_condition": "最终报告中每个候选都至少有一条仅属于该市场的研究依据，不同候选的主要研究文案不完全相同；研究概率文字、执行理由与结构化字段数值一致；首次研究/旧事件新子市场分类与 runtime/previously-researched.json 一致，已研究的具体市场不得再作为新候选。中间修复后最终通过可 WARN；这类研究质量问题不触发交易安全熔断。"
     },
     {

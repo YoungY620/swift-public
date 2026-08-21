@@ -277,7 +277,14 @@ def extract_agent_stream(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
 def normalize_unsupported_judgments(
     response: dict[str, Any], rubric: dict[str, Any], evidence: dict[str, Any]
 ) -> dict[str, Any]:
-    """Downgrade unsupported positive judgments; never upgrade an Agent judgment."""
+    """Remove harmless shape drift and downgrade unsupported positive judgments.
+
+    The Agent occasionally repeats missing evidence on the affected check even
+    though the schema keeps that inventory at the response root.  Preserve the
+    cited paths in the canonical root list instead of discarding an otherwise
+    complete multi-step Agent judgment.  Unknown fields other than this one are
+    intentionally left in place so schema validation still exposes them.
+    """
     checks = response.get("checks")
     rubric_checks = rubric.get("checks")
     if not isinstance(checks, list) or not isinstance(rubric_checks, list):
@@ -288,6 +295,12 @@ def normalize_unsupported_judgments(
     missing = {
         str(item) for item in response.get("missing_evidence", []) if isinstance(item, str)
     }
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        local_missing = check.pop("missing_evidence", [])
+        if isinstance(local_missing, list):
+            missing.update(str(item) for item in local_missing if isinstance(item, str))
     downgraded = False
     for check in checks:
         if not isinstance(check, dict) or check.get("status") not in {"PASS", "WARN"}:

@@ -155,6 +155,8 @@ jobs:
             echo "AUDIT_AGENT_TRACE_PATH=$runtime_dir/agent-trace.json"
             echo "AUDIT_RESULT_PATH=$runtime_dir/audit-result.json"
             echo "AUDIT_NOTIFICATION_PATH=$runtime_dir/audit-notification.json"
+            echo "AUDIT_REPORTS_DIR=$runtime_dir/evidence/report-source"
+            echo "AUDIT_REPORT_SOURCE_METADATA_PATH=$runtime_dir/evidence/report-source-metadata.json"
             echo "FEISHU_BRIEF_AGENT_DIR=$runtime_dir/feishu-brief-agent"
             echo "FEISHU_BRIEF_RAW_PATH=$runtime_dir/feishu-brief.raw.jsonl"
             echo "FEISHU_BRIEF_PATH=$runtime_dir/feishu-brief.json"
@@ -328,6 +330,83 @@ jobs:
             fi
           done
           jq -s '.' "$release_dir/downloaded-assets.ndjson" > "$release_dir/downloaded-assets.json"
+
+      - name: Collect verified report source for audit and notification
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$AUDIT_REPORTS_DIR"
+          release_reports="$AUDIT_EVIDENCE_DIR/release/reports"
+          if [[ -d "$release_reports" ]] && \
+             [[ -n "$(find "$release_reports" -maxdepth 1 -name 'report-*.json' -type f -print -quit)" ]]; then
+            cp "$release_reports"/report-*.json "$AUDIT_REPORTS_DIR/"
+            cp "$release_reports"/report-*.md "$AUDIT_REPORTS_DIR/"
+            install -m 600 "$AUDIT_EVIDENCE_DIR/release/research-release-manifest.json" \
+              "$AUDIT_REPORTS_DIR/research-release-manifest.json"
+            report_files_ndjson="$AUDIT_RUNTIME_DIR/report-source-files.ndjson"
+            : > "$report_files_ndjson"
+            while IFS= read -r path; do
+              jq -cn \
+                --arg path "$(basename "$path")" \
+                --arg sha256 "$(sha256sum "$path" | cut -d ' ' -f 1)" \
+                --arg size "$(stat -c '%s' "$path")" \
+                '{path:$path,sha256:$sha256,size:($size|tonumber)}' \
+                >> "$report_files_ndjson"
+            done < <(find "$AUDIT_REPORTS_DIR" -maxdepth 1 -type f -print | sort)
+            jq -s '.' "$report_files_ndjson" > "$AUDIT_RUNTIME_DIR/report-source-files.json"
+            jq -n \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg run_id "$PARENT_RUN_ID" \
+              --arg run_attempt "$(jq -r '.run_attempt' "$AUDIT_EVIDENCE_DIR/run.json")" \
+              --arg commit_sha "$(jq -r '.head_sha' "$AUDIT_EVIDENCE_DIR/run.json")" \
+              --slurpfile files "$AUDIT_RUNTIME_DIR/report-source-files.json" \
+              '{schema_version:"1.0",found:true,verified:true,source:"final_release",repository:$repository,workflow_run_id:$run_id,workflow_run_attempt:$run_attempt,commit_sha:$commit_sha,files:$files[0]}' \
+              > "$AUDIT_REPORT_SOURCE_METADATA_PATH"
+          else
+            run_attempt=$(jq -r '.run_attempt' "$AUDIT_EVIDENCE_DIR/run.json")
+            commit_sha=$(jq -r '.head_sha' "$AUDIT_EVIDENCE_DIR/run.json")
+            artifact_name="forecast-edge-research-handoff-$PARENT_RUN_ID-$run_attempt"
+            artifact_index="$AUDIT_RUNTIME_DIR/research-handoff-artifacts.json"
+            gh api --paginate \
+              "repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID/artifacts?per_page=100" \
+              | jq -s '[.[].artifacts[]]' > "$artifact_index"
+            artifact_count=$(jq --arg name "$artifact_name" \
+              '[.[] | select(.name == $name)] | length' "$artifact_index")
+            if [[ "$artifact_count" -gt 1 ]]; then
+              echo "::error::Parent run has duplicate research handoff artifacts"
+              exit 1
+            fi
+            if [[ "$artifact_count" -eq 1 ]] && \
+               [[ "$(jq -r --arg name "$artifact_name" '.[] | select(.name == $name) | .expired' "$artifact_index")" != "true" ]]; then
+              download_dir="$AUDIT_RUNTIME_DIR/research-handoff-download"
+              install -d -m 700 "$download_dir"
+              gh run download "$PARENT_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+                --name "$artifact_name" --dir "$download_dir"
+              test -s "$download_dir/research-handoff.tar.gz"
+              python3 scripts/extract_research_handoff_reports.py \
+                --archive "$download_dir/research-handoff.tar.gz" \
+                --destination "$AUDIT_REPORTS_DIR" \
+                --expected-repository "$GITHUB_REPOSITORY" \
+                --expected-run-id "$PARENT_RUN_ID" \
+                --expected-run-attempt "$run_attempt" \
+                --expected-commit-sha "$commit_sha" \
+                --output "$AUDIT_REPORT_SOURCE_METADATA_PATH"
+            else
+              jq -n \
+                --arg name "$artifact_name" \
+                --argjson expired "$([[ "$artifact_count" -eq 1 ]] && printf true || printf false)" \
+                '{schema_version:"1.0",found:false,verified:false,source:"unavailable",artifact_name:$name,expired:$expired,files:[]}' \
+                > "$AUDIT_REPORT_SOURCE_METADATA_PATH"
+            fi
+          fi
+          if [[ ! -f "$AUDIT_REPORTS_DIR/research-release-manifest.json" ]]; then
+            printf 'null\n' > "$AUDIT_REPORTS_DIR/research-release-manifest.json"
+          fi
+          jq -e \
+            '.schema_version == "1.0" and (.found | type == "boolean") and (.verified | type == "boolean") and (.files | type == "array")' \
+            "$AUDIT_REPORT_SOURCE_METADATA_PATH" >/dev/null
 
       - name: Collect and verify research diagnostic artifact
         env:
@@ -506,6 +585,8 @@ jobs:
             --slurpfile release_diagnostic_summary "${release_dir}/execution-diagnostic-summary.json" \
             --slurpfile release_diagnostic_manifest "${release_dir}/execution-diagnostic-manifest.json" \
             --slurpfile research_diagnostic_metadata "$AUDIT_EVIDENCE_DIR/research-diagnostics/metadata.json" \
+            --slurpfile report_source_metadata "$AUDIT_REPORT_SOURCE_METADATA_PATH" \
+            --slurpfile report_source_manifest "$AUDIT_REPORTS_DIR/research-release-manifest.json" \
             --slurpfile diagnostic_metadata "$AUDIT_EVIDENCE_DIR/diagnostics/metadata.json" \
             --slurpfile diagnostic_summary "$AUDIT_EVIDENCE_DIR/diagnostics/diagnostic-summary.json" \
             --slurpfile diagnostic_manifest "$AUDIT_EVIDENCE_DIR/diagnostics/diagnostic-manifest.json" \
@@ -548,7 +629,13 @@ jobs:
               },
               research_diagnostics:{
                 metadata:$research_diagnostic_metadata[0],
-                evidence_root:"evidence/research-diagnostics/files"
+                evidence_root:"evidence/research-diagnostics/files",
+                reports:{
+                  metadata:$report_source_metadata[0],
+                  root:"evidence/report-source",
+                  manifest:($report_source_manifest[0] // null),
+                  files:($report_source_metadata[0].files // [])
+                }
               },
               diagnostics:{
                 metadata:($diagnostic_metadata[0] + {
@@ -752,7 +839,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          reports_dir="$AUDIT_EVIDENCE_DIR/release/reports"
+          reports_dir="$AUDIT_REPORTS_DIR"
           test -d "$reports_dir"
           test -n "$(find "$reports_dir" -maxdepth 1 -name 'report-*.json' -type f -print -quit)"
           install -d -m 700 "$FEISHU_BRIEF_AGENT_DIR/reports"
@@ -819,7 +906,7 @@ jobs:
               "$GITHUB_WORKSPACE/scripts/forecast_edge_feishu_brief.py" fallback \
               --reason "$AUDIT_RUNTIME_DIR/feishu-brief-fallback-reason.txt" \
               --schema "$FEISHU_BRIEF_SCHEMA_PATH" \
-              --reports-dir "$AUDIT_EVIDENCE_DIR/release/reports" \
+              --reports-dir "$AUDIT_REPORTS_DIR" \
               --research-date "$(jq -r '.created_at[0:10]' "$AUDIT_EVIDENCE_DIR/run.json")" \
               --output "$FEISHU_BRIEF_PATH"
           fi

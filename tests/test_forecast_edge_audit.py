@@ -21,6 +21,7 @@ FEISHU_AGENT_PROFILE_PATH = (
 FEISHU_PROMPT_PATH = (
     ROOT / "automation" / "prompts" / "forecast-edge-feishu-brief.zh-CN.md"
 )
+AUDIT_PROMPT_PATH = ROOT / "automation" / "prompts" / "forecast-edge-audit.zh-CN.md"
 FEISHU_SCHEMA_PATH = ROOT / "schemas" / "forecast-edge-feishu-brief.schema.json"
 MODULE_PATH = ROOT / "scripts" / "forecast_edge_audit.py"
 
@@ -105,6 +106,14 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertIn('gh run download "$PARENT_RUN_ID"', self.workflow)
         self.assertIn("Collect and verify research diagnostic artifact", self.workflow)
         self.assertIn("forecast-edge-research-diagnostics-$PARENT_RUN_ID-$run_attempt", self.workflow)
+        self.assertIn("Collect verified report source for audit and notification", self.workflow)
+        self.assertIn("forecast-edge-research-handoff-$PARENT_RUN_ID-$run_attempt", self.workflow)
+        self.assertIn("extract_research_handoff_reports.py", self.workflow)
+        self.assertIn('reports_dir="$AUDIT_REPORTS_DIR"', self.workflow)
+        self.assertIn(
+            "research_diagnostics.reports",
+            AUDIT_PROMPT_PATH.read_text(encoding="utf-8"),
+        )
         self.assertIn("research_diagnostics", self.workflow)
         self.assertIn("verify_polymarket_execution_diagnostics.py", self.workflow)
         self.assertIn("Send final production iteration status to Feishu", self.workflow)
@@ -423,6 +432,18 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertEqual(normalized["checks"][0]["status"], "INSUFFICIENT_EVIDENCE")
         self.assertEqual(normalized["overall_status"], "INSUFFICIENT_EVIDENCE")
         self.assertIn("release.missing", normalized["missing_evidence"])
+
+    def test_normalizer_moves_per_check_missing_evidence_to_schema_location(self) -> None:
+        response = self.response()
+        response["checks"][0]["status"] = "INSUFFICIENT_EVIDENCE"
+        response["checks"][0]["missing_evidence"] = ["release.missing"]
+        response["overall_status"] = "INSUFFICIENT_EVIDENCE"
+        normalized = audit_module.normalize_unsupported_judgments(
+            response, self.rubric, self.evidence
+        )
+        self.assertNotIn("missing_evidence", normalized["checks"][0])
+        self.assertIn("release.missing", normalized["missing_evidence"])
+        audit_module.validate_response(normalized, self.rubric, self.evidence, self.schema)
 
     def test_normalizer_preserves_a_fail(self) -> None:
         response = self.response()
