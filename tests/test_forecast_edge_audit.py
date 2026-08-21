@@ -117,7 +117,14 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertIn("research_diagnostics", self.workflow)
         self.assertIn("verify_polymarket_execution_diagnostics.py", self.workflow)
         self.assertIn("Send final production iteration status to Feishu", self.workflow)
-        self.assertIn("github.event_name == 'workflow_run'", self.workflow)
+        notify = self.workflow[self.workflow.index("  notify:\n") :]
+        self.assertIn("always()", notify)
+        self.assertNotIn(
+            "github.event_name == 'workflow_run'", notify.split("runs-on:", 1)[0]
+        )
+        self.assertIn(
+            "github.event.workflow_run.id || inputs['parent-run-id']", notify
+        )
         self.assertIn("Enforce complete Agent Judge and briefing deliverables", self.workflow)
         self.assertIn("business_complete: ${{ steps.feishu-brief.outputs.business_complete }}", self.workflow)
 

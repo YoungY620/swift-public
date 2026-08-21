@@ -213,7 +213,9 @@ def main() -> int:
         "final_iteration_notification": (
             "  notify:\n" in audit
             and "always()" in between(audit, "  notify:\n")
-            and "github.event_name == 'workflow_run'" in between(audit, "  notify:\n")
+            and "github.event.workflow_run.id || inputs['parent-run-id']" in between(
+                audit, "  notify:\n"
+            )
             and "FEISHU_APP_ID" in between(audit, "  notify:\n")
             and "AUDIT_OVERALL_STATUS" in between(audit, "  notify:\n")
             and "Run read-only Kimi Code Feishu briefing agent" in audit

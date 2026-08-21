@@ -1241,7 +1241,6 @@ jobs:
     needs: [select, audit]
     if: >-
       always() &&
-      github.event_name == 'workflow_run' &&
       needs.select.outputs.audit-applicable == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1249,7 +1248,7 @@ jobs:
       actions: read
       contents: read
     env:
-      PARENT_RUN_ID: ${{ github.event.workflow_run.id }}
+      PARENT_RUN_ID: ${{ github.event.workflow_run.id || inputs['parent-run-id'] }}
       AUDIT_JOB_RESULT: ${{ needs.audit.result }}
       AUDIT_OVERALL_STATUS: ${{ needs.audit.outputs.overall_status }}
       AUDIT_CONFIDENCE: ${{ needs.audit.outputs.confidence }}
