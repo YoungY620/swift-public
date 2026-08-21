@@ -88,7 +88,7 @@ jobs:
     needs: select
     if: ${{ needs.select.outputs.audit-applicable == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 70
     outputs:
       overall_status: ${{ steps.classify.outputs.overall_status }}
       confidence: ${{ steps.classify.outputs.confidence }}
@@ -108,6 +108,7 @@ jobs:
       KIMI_MODEL_PROVIDER_TYPE: kimi
       KIMI_MODEL_BASE_URL: https://api.kimi.com/coding/v1
       KIMI_DISABLE_TELEMETRY: "1"
+      FEISHU_BRIEF_IDLE_TIMEOUT_SECONDS: "900"
       AUDIT_RUBRIC_PATH: ${{ github.workspace }}/automation/audit/forecast-edge-audit-rubric.json
       AUDIT_SCHEMA_PATH: ${{ github.workspace }}/schemas/forecast-edge-audit.schema.json
       AUDIT_PROMPT_PATH: ${{ github.workspace }}/automation/prompts/forecast-edge-audit.zh-CN.md
@@ -136,7 +137,7 @@ jobs:
             echo "::error::Required Actions secret KIMI_CODE_API_KEY is not configured"
             exit 1
           fi
-          for required_tool in gh jq npm python3 sha256sum stdbuf tee; do
+          for required_tool in awk find gh jq npm python3 setsid sha256sum stat stdbuf tee; do
             if ! command -v "$required_tool" >/dev/null; then
               echo "::error::Audit runner is missing required tool: $required_tool"
               exit 1
@@ -456,6 +457,39 @@ jobs:
           set -euo pipefail
           release_dir="$AUDIT_EVIDENCE_DIR/release"
           python3 scripts/forecast_edge_workflow_contract.py > "$AUDIT_EVIDENCE_DIR/source-contract.json"
+          execution_identity_path="$AUDIT_EVIDENCE_DIR/diagnostics/execution-identity.json"
+          trade_intents_digest=$(jq -r '.trade_intents.sha256 // empty' \
+            "$release_dir/iteration-release-manifest.json")
+          actual_execution_id=$(jq -r '.execution_id // empty' \
+            "$AUDIT_EVIDENCE_DIR/diagnostics/receipt.json")
+          if [[ -z "$actual_execution_id" ]]; then
+            actual_execution_id=$(jq -r '.execution_id // empty' \
+              "$release_dir/execution-receipt.json")
+          fi
+          if [[ "$trade_intents_digest" =~ ^[a-f0-9]{64}$ && \
+                -n "$actual_execution_id" ]]; then
+            expected_execution_id=$(printf '%s' \
+              "$GITHUB_REPOSITORY:$PARENT_RUN_ID:$(jq -r '.run_attempt' "$AUDIT_EVIDENCE_DIR/run.json"):$trade_intents_digest" \
+              | sha256sum | cut -d ' ' -f 1)
+            identity_matches=false
+            if [[ "$actual_execution_id" == "$expected_execution_id" ]]; then
+              identity_matches=true
+            fi
+            jq -n \
+              --arg algorithm sha256 \
+              --arg payload_format 'repository:workflow_run_id:workflow_run_attempt:trade_intents_sha256' \
+              --arg expected_execution_id "$expected_execution_id" \
+              --arg actual_execution_id "$actual_execution_id" \
+              --argjson matches "$identity_matches" \
+              '{available:true,algorithm:$algorithm,payload_format:$payload_format,expected_execution_id:$expected_execution_id,actual_execution_id:$actual_execution_id,matches:$matches}' \
+              > "$execution_identity_path"
+          else
+            jq -n \
+              --arg algorithm sha256 \
+              --arg payload_format 'repository:workflow_run_id:workflow_run_attempt:trade_intents_sha256' \
+              '{available:false,algorithm:$algorithm,payload_format:$payload_format,expected_execution_id:null,actual_execution_id:null,matches:null}' \
+              > "$execution_identity_path"
+          fi
           jq -n \
             --slurpfile run "$AUDIT_EVIDENCE_DIR/run.json" \
             --slurpfile jobs "$AUDIT_EVIDENCE_DIR/jobs.json" \
@@ -481,9 +515,16 @@ jobs:
             --slurpfile diagnostic_receipt "$AUDIT_EVIDENCE_DIR/diagnostics/receipt.json" \
             --slurpfile diagnostic_verification "$AUDIT_EVIDENCE_DIR/diagnostics/verification.json" \
             --slurpfile diagnostic_ledger "$AUDIT_EVIDENCE_DIR/diagnostics/ledger-snapshot.json" \
+            --slurpfile execution_identity "$AUDIT_EVIDENCE_DIR/diagnostics/execution-identity.json" \
             '{
               run:$run[0],
-              jobs:$jobs[0],
+              jobs:{
+                all:$jobs[0],
+                gate:([$jobs[0][] | select(.name == "gate")] | first // null),
+                research:([$jobs[0][] | select(.name | test("^research(?: /|$)"))] | first // null),
+                execution:([$jobs[0][] | select(.name == "execution")] | first // null),
+                release:([$jobs[0][] | select(.name == "release")] | first // null)
+              },
               configuration:$configuration[0],
               source_contract:$source_contract[0],
               release:{
@@ -495,14 +536,27 @@ jobs:
                 execution_receipt:($execution_receipt[0] // null),
                 execution_verification:($execution_verification[0] // null),
                 execution_diagnostic_summary:($release_diagnostic_summary[0] // null),
-                execution_diagnostic_manifest:($release_diagnostic_manifest[0] // null)
+                execution_diagnostic_manifest:($release_diagnostic_manifest[0] // null),
+                reports:{
+                  root:"evidence/release/reports",
+                  files:([
+                    ($research_manifest[0].reports // [])[] as $report
+                    | {path:$report.json_asset,kind:"json",sha256:$report.sha256},
+                      {path:$report.markdown_asset,kind:"markdown",sha256:null}
+                  ])
+                }
               },
               research_diagnostics:{
                 metadata:$research_diagnostic_metadata[0],
                 evidence_root:"evidence/research-diagnostics/files"
               },
               diagnostics:{
-                metadata:$diagnostic_metadata[0],
+                metadata:($diagnostic_metadata[0] + {
+                  files:(
+                    ($diagnostic_manifest[0].files // [])
+                    | map(. + {path:("execution-diagnostics/" + .path)})
+                  )
+                }),
                 summary:($diagnostic_summary[0] // null),
                 manifest:($diagnostic_manifest[0] // null),
                 phase_events:$diagnostic_phases[0],
@@ -511,6 +565,7 @@ jobs:
                 receipt:($diagnostic_receipt[0] // null),
                 verification:($diagnostic_verification[0] // null),
                 ledger:($diagnostic_ledger[0] // null),
+                execution_identity:$execution_identity[0],
                 evidence_root:"evidence/diagnostics/files/execution-diagnostics"
               },
               evidence_safety:{secret_value_scan_passed:false},
@@ -528,7 +583,7 @@ jobs:
           mv "$safe_evidence" "$AUDIT_EVIDENCE_PATH"
           jq -e \
             --arg run_id "$PARENT_RUN_ID" \
-            '.run.id == $run_id and (.jobs | type == "array") and (.configuration.interval_hours | type == "number")' \
+            '.run.id == $run_id and (.jobs.all | type == "array") and (.release.reports.files | type == "array") and (.configuration.interval_hours | type == "number")' \
             "$AUDIT_EVIDENCE_PATH" >/dev/null
 
       - name: Run read-only Kimi Code Judge agent
@@ -691,7 +746,7 @@ jobs:
       - name: Run read-only Kimi Code Feishu briefing agent
         id: feishu-brief-agent
         continue-on-error: true
-        timeout-minutes: 15
+        timeout-minutes: 25
         env:
           KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
         shell: bash
@@ -715,12 +770,16 @@ jobs:
           fi
           cd "$FEISHU_BRIEF_AGENT_DIR"
           set +e
-          stdbuf -oL -eL kimi --agent-file "$FEISHU_BRIEF_AGENT_PROFILE_PATH" \
-            --output-format stream-json \
-            -p "请遵循 prompt.md，使用只读工具和 explore subagent 检查全部报告；将 source-inventory.json 的权威字段原样写入结果，输出符合 brief.schema.json 的最终扫描简报 JSON。" \
-            2> >(stdbuf -oL tee "$AUDIT_RUNTIME_DIR/feishu-brief.stderr" >&2) \
-            | stdbuf -oL tee "$FEISHU_BRIEF_RAW_PATH"
-          kimi_status=${PIPESTATUS[0]}
+          "$GITHUB_WORKSPACE/scripts/run_kimi_code_with_idle_timeout.sh" \
+            --idle-seconds "$FEISHU_BRIEF_IDLE_TIMEOUT_SECONDS" \
+            --poll-seconds 10 \
+            --stdout-log "$FEISHU_BRIEF_RAW_PATH" \
+            --stderr-log "$AUDIT_RUNTIME_DIR/feishu-brief.stderr" \
+            --activity-root "$KIMI_CODE_HOME/sessions" \
+            -- kimi --agent-file "$FEISHU_BRIEF_AGENT_PROFILE_PATH" \
+              --output-format stream-json \
+              -p "请遵循 prompt.md，使用只读工具和 explore subagent 检查全部报告；将 source-inventory.json 的权威字段原样写入结果，输出符合 brief.schema.json 的最终扫描简报 JSON。"
+          kimi_status=$?
           set -e
           if (( kimi_status != 0 )); then
             echo "::error::Feishu briefing Agent failed"

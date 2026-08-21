@@ -239,6 +239,19 @@ def main() -> int:
             and '"execution_style": "protected_market"'
             in (root / "execution/polymarket/engine.py").read_text(encoding="utf-8")
         ),
+        "execution_id_derivation": {
+            "algorithm": "sha256",
+            "payload_format": (
+                "repository:workflow_run_id:workflow_run_attempt:"
+                "trade_intents_sha256"
+            ),
+            "source_verified": (
+                '"$GITHUB_REPOSITORY:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT:$actual_digest"'
+                in execution
+                and "| sha256sum | cut -d ' ' -f 1" in execution
+                and 'echo "EXECUTION_ID=$execution_id" >> "$GITHUB_ENV"' in execution
+            ),
+        },
         "notification_order": (
             release.index("Publish one final iteration Release")
             < release.index("Create post-release Issue notification")

@@ -68,7 +68,7 @@ def load_json(path: Path, label: str) -> Any:
         raise AuditValidationError(f"could not read {label}: {exc}") from exc
 
 
-def resolve(document: Any, dotted: str) -> tuple[bool, Any]:
+def _resolve_dotted(document: Any, dotted: str) -> tuple[bool, Any]:
     value = document
     for part in dotted.split("."):
         if isinstance(value, dict) and part in value:
@@ -76,6 +76,51 @@ def resolve(document: Any, dotted: str) -> tuple[bool, Any]:
         else:
             return False, None
     return True, value
+
+
+def _canonical_file_reference(value: str) -> str:
+    return re.sub(r"[./]+", "/", value.strip().strip("/"))
+
+
+def resolve(document: Any, dotted: str) -> tuple[bool, Any]:
+    """Resolve JSON evidence paths and recognized evidence-file citations."""
+
+    exists, value = _resolve_dotted(document, dotted)
+    if exists:
+        return True, value
+
+    file_indexes = (
+        ("release.reports", "release.reports.files"),
+        ("research_diagnostics.files", "research_diagnostics.metadata.files"),
+        ("diagnostics.files", "diagnostics.metadata.files"),
+    )
+    for citation_root, index_path in file_indexes:
+        suffix = None
+        for separator in ("/", "."):
+            prefix = citation_root + separator
+            if dotted.startswith(prefix):
+                suffix = dotted[len(prefix) :]
+                break
+        if not suffix:
+            continue
+        index_exists, entries = _resolve_dotted(document, index_path)
+        if not index_exists or not isinstance(entries, list):
+            return False, None
+        expected = _canonical_file_reference(suffix)
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            path = entry.get("path") or entry.get("name")
+            if not isinstance(path, str):
+                continue
+            candidates = {
+                _canonical_file_reference(path),
+                _canonical_file_reference(Path(path).name),
+            }
+            if expected in candidates:
+                return True, entry
+        return False, None
+    return False, None
 
 
 def walk_strings(value: Any) -> list[str]:

@@ -153,6 +153,18 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertIn("source-inventory.json", prompt)
         self.assertIn("source-inventory.json", profile)
         self.assertIn("forecast_edge_feishu_brief.py\" inventory", self.workflow)
+        feishu_start = self.workflow.index(
+            "      - name: Run read-only Kimi Code Feishu briefing agent\n"
+        )
+        feishu_end = self.workflow.index(
+            "\n      - name: Validate agentic Feishu briefing or record a visible fallback",
+            feishu_start,
+        )
+        feishu_step = self.workflow[feishu_start:feishu_end]
+        self.assertIn("timeout-minutes: 25", feishu_step)
+        self.assertIn("scripts/run_kimi_code_with_idle_timeout.sh", feishu_step)
+        self.assertIn('--idle-seconds "$FEISHU_BRIEF_IDLE_TIMEOUT_SECONDS"', feishu_step)
+        self.assertIn('--activity-root "$KIMI_CODE_HOME/sessions"', feishu_step)
 
     def test_automatic_audits_trip_a_tiered_production_breaker(self) -> None:
         self.assertIn("Trip production circuit breaker on serious findings", self.workflow)
@@ -212,6 +224,17 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertTrue(all(boolean_items))
         self.assertEqual(contract["audit_agent_credential_count"], 1)
         self.assertEqual(contract["audit_workflow_credential_count"], 5)
+        self.assertEqual(
+            contract["execution_id_derivation"],
+            {
+                "algorithm": "sha256",
+                "payload_format": (
+                    "repository:workflow_run_id:workflow_run_attempt:"
+                    "trade_intents_sha256"
+                ),
+                "source_verified": True,
+            },
+        )
 
     def test_valid_complete_response_is_accepted(self) -> None:
         audit_module.validate_response(self.response(), self.rubric, self.evidence, self.schema)
@@ -221,6 +244,62 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         response["checks"][0]["evidence"] = ["release.missing"]
         with self.assertRaisesRegex(audit_module.AuditValidationError, "missing evidence path"):
             audit_module.validate_response(response, self.rubric, self.evidence, self.schema)
+
+    def test_evidence_file_citations_resolve_against_verified_indexes(self) -> None:
+        evidence = {
+            "release": {
+                "reports": {
+                    "files": [{"path": "report-polymarket.json", "sha256": "a" * 64}]
+                }
+            },
+            "research_diagnostics": {
+                "metadata": {
+                    "files": [
+                        {
+                            "path": "runtime/validation-attempt-1.errors.txt",
+                            "sha256": "b" * 64,
+                        }
+                    ]
+                }
+            },
+            "diagnostics": {
+                "metadata": {
+                    "files": [
+                        {
+                            "path": "execution-diagnostics/plan.json",
+                            "sha256": "c" * 64,
+                        }
+                    ]
+                }
+            },
+        }
+        for citation in (
+            "release.reports/report-polymarket.json",
+            "research_diagnostics.files.runtime.validation-attempt-1.errors.txt",
+            "diagnostics.files.execution-diagnostics/plan.json",
+        ):
+            self.assertTrue(audit_module.resolve(evidence, citation)[0], citation)
+        self.assertFalse(
+            audit_module.resolve(
+                evidence, "diagnostics.files.execution-diagnostics/missing.json"
+            )[0]
+        )
+
+    def test_evidence_contract_exposes_stable_job_report_and_identity_paths(self) -> None:
+        self.assertIn("jobs:{", self.workflow)
+        for stage in ("gate", "research", "execution", "release"):
+            self.assertIn(f"{stage}:([$jobs[0][]", self.workflow)
+        self.assertIn("reports:{", self.workflow)
+        self.assertIn("execution_identity:$execution_identity[0]", self.workflow)
+        self.assertIn('path:("execution-diagnostics/" + .path)', self.workflow)
+        prompt = (
+            ROOT / "automation" / "prompts" / "forecast-edge-audit.zh-CN.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("jobs.execution", prompt)
+        self.assertIn("release.reports", prompt)
+        self.assertIn("diagnostics.execution_identity", prompt)
+        self.assertIn("research_diagnostics.metadata.files", prompt)
+        self.assertIn("不得使用斜杠路径", prompt)
 
     def test_insufficient_evidence_may_cite_the_missing_path(self) -> None:
         response = self.response()

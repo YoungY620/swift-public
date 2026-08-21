@@ -99,7 +99,7 @@ Release tag 使用：
 forecast-edge-research/run-<workflow-run-id>-attempt-<run-attempt>
 ```
 
-Release tag 的 target 是本轮真正执行的 `GITHUB_SHA`。主分支更新 Workflow、Prompt、Schema 或 harness 后，下一轮自然锚定新 commit，同时仍可按滚动窗口读取旧版本报告，不需要合并、rebase 或维护数据分支。
+Release 发布前先通过 GitHub Git refs API 把 tag 显式创建在本轮真正执行的 `GITHUB_SHA`，随后使用 `--verify-tag` 发布；不能只依赖 Release API 的 `target_commitish` 元数据。历史恢复以 manifest 的 workflow run id、attempt、commit 与 GitHub Actions 源 run 元数据交叉验证。主分支更新 Workflow、Prompt、Schema 或 harness 后，下一轮自然锚定新 commit，同时仍可按滚动窗口读取旧版本报告，不需要合并、rebase 或维护数据分支。
 
 每个 Release 至少包含：
 

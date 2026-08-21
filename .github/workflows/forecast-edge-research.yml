@@ -257,10 +257,23 @@ jobs:
             manifest_repository=$(jq -er '.repository' "$restore_dir/research-release-manifest.json")
             manifest_tag=$(jq -er '.release_tag' "$restore_dir/research-release-manifest.json")
             manifest_commit=$(jq -er '.commit_sha' "$restore_dir/research-release-manifest.json")
+            manifest_run_id=$(jq -er '.workflow_run_id' "$restore_dir/research-release-manifest.json")
+            manifest_run_attempt=$(jq -er '.workflow_run_attempt' "$restore_dir/research-release-manifest.json")
             manifest_report_count=$(jq -er '.report_count' "$restore_dir/research-release-manifest.json")
-            tag_commit=$(
-              gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$previous_tag" --jq '.object.sha'
-            )
+            release_target=$(jq -er --arg tag "$previous_tag" '
+              map(.[])
+              | map(select(.tag_name == $tag))
+              | if length == 1 then .[0].target_commitish
+                else error("selected Release tag is not unique")
+                end
+            ' <<< "$releases_json")
+            source_run=$(gh api \
+              "repos/$GITHUB_REPOSITORY/actions/runs/$manifest_run_id")
+            source_run_repository=$(jq -er '.repository.full_name' <<< "$source_run")
+            source_run_commit=$(jq -er '.head_sha' <<< "$source_run")
+            source_run_attempt=$(jq -er '.run_attempt | tostring' <<< "$source_run")
+            source_run_status=$(jq -er '.status' <<< "$source_run")
+            source_run_conclusion=$(jq -er '.conclusion' <<< "$source_run")
             if [[ "$actual_digest" != "$expected_digest" ]]; then
               echo "::error::Research report archive digest does not match Release $previous_tag"
               exit 1
@@ -274,8 +287,13 @@ jobs:
               echo "::error::Research Release manifest does not match this repository and tag"
               exit 1
             fi
-            if [[ "$manifest_commit" != "$tag_commit" ]]; then
-              echo "::error::Research Release tag does not point to its declared source commit"
+            if [[ "$release_target" != "$manifest_commit" ]] || \
+              [[ "$source_run_repository" != "$manifest_repository" ]] || \
+              [[ "$source_run_commit" != "$manifest_commit" ]] || \
+              [[ "$source_run_attempt" != "$manifest_run_attempt" ]] || \
+              [[ "$source_run_status" != "completed" ]] || \
+              [[ "$source_run_conclusion" != "success" ]]; then
+              echo "::error::Research Release source workflow identity does not match its manifest"
               exit 1
             fi
             if (( index == 0 )) && jq -e '

@@ -89,7 +89,7 @@
       "title": "研究与执行通过 Actions artifact 摘要交接",
       "applies_when": "gate released the iteration",
       "expected": "研究仅在 GitHub-hosted runner 上运行，不接触 EC2；摘要绑定的研究 handoff artifact 由 execution 下载，执行诊断 artifact 只能在订单阶段结束后创建；execution-ready=true 时父 workflow 仅在 execution success 后发布，只有显式不请求执行时才允许 skipped。",
-      "evidence_required": ["source_contract.research_ec2_isolation", "source_contract.research_artifact_handoff", "source_contract.diagnostics_after_execution", "source_contract.release_after_execution", "jobs", "release.published_at"],
+      "evidence_required": ["source_contract.research_ec2_isolation", "source_contract.research_artifact_handoff", "source_contract.diagnostics_after_execution", "source_contract.release_after_execution", "jobs", "release.metadata.published_at"],
       "pass_condition": "research 无 EC2/SSH 路径且 artifact 摘要交接成立；执行诊断 artifact 晚于执行阶段，Release 发布时间不早于 execution job 完成时间；失败执行不存在最终 Release。"
     },
     {
@@ -197,8 +197,8 @@
       "title": "执行幂等且不重复成交",
       "applies_when": "execution receipt exists",
       "expected": "execution_id 与 repository/run/attempt/digest 唯一绑定；回执没有重复 order_id、trade id 或 transaction hash。",
-      "evidence_required": ["run", "release.manifest", "release.execution_receipt", "diagnostics.ledger"],
-      "pass_condition": "execution_id 精确匹配确定性计算且各标识符无重复；账本 run/order 状态与回执一致，且账本摘要不含签名原文。"
+      "evidence_required": ["run", "source_contract.execution_id_derivation", "release.manifest", "release.execution_receipt", "diagnostics.execution_identity", "diagnostics.ledger"],
+      "pass_condition": "source_contract 公开记录 SHA-256 输入契约，diagnostics.execution_identity.matches=true，且各标识符无重复；账本 run/order 状态与回执一致，且账本摘要不含签名原文。"
     },
     {
       "id": "EXEC-011",

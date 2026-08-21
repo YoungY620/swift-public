@@ -141,6 +141,23 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("research-history.json", package)
         self.assertIn("research_history_sha256", package)
 
+    def test_history_release_source_is_bound_to_the_completed_source_run(self) -> None:
+        restore = self.step(self.research, "Restore recent research Releases")
+        self.assertIn("actions/runs/$manifest_run_id", restore)
+        self.assertIn("source_run_repository", restore)
+        self.assertIn("source_run_commit", restore)
+        self.assertIn("source_run_attempt", restore)
+        self.assertIn("source_run_conclusion", restore)
+        self.assertIn("release_target", restore)
+        self.assertNotIn("git/ref/tags/$previous_tag", restore)
+
+    def test_release_creates_the_source_tag_at_the_parent_run_commit(self) -> None:
+        release = self.step(self.parent, "Publish one final iteration Release")
+        self.assertIn('ref="refs/tags/$RELEASE_TAG"', release)
+        self.assertIn('--raw-field sha="$GITHUB_SHA"', release)
+        self.assertIn("--verify-tag", release)
+        self.assertIn("GitHub Git refs API", self.agent_design_doc)
+
     def test_trade_intents_use_digest_bound_actions_artifact_without_ec2(self) -> None:
         stage = self.step(self.research, "Build secret-free research artifact handoff")
         upload = self.step(self.research, "Upload research handoff for downstream jobs")

@@ -493,6 +493,12 @@ jobs:
             echo "::error::Refusing to replace existing iteration Release $RELEASE_TAG"
             exit 1
           fi
+          # Create the immutable source ref explicitly. GitHub's Release API can
+          # retain target_commitish metadata while otherwise creating a missing
+          # tag at the then-current default-branch head.
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            --raw-field ref="refs/tags/$RELEASE_TAG" \
+            --raw-field sha="$GITHUB_SHA" >/dev/null
           assets=(
             "$RELEASE_ASSETS_DIR/forecast-edge-research-report.tar.gz"
             "$RELEASE_ASSETS_DIR/research-release-manifest.json"
@@ -525,6 +531,7 @@ jobs:
           fi
           gh release create "$RELEASE_TAG" \
             --target "$GITHUB_SHA" \
+            --verify-tag \
             --title "Forecast Edge iteration — $GENERATED_AT" \
             --notes-file "$RELEASE_NOTES_PATH" \
             --latest=false \
