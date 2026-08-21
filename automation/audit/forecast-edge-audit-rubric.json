@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "rubric_version": "1.10",
+  "rubric_version": "1.11",
   "rubric_id": "forecast-edge-production-audit",
   "description": "Forecast Edge 父工作流完成后的研究、真实执行、发布和安全审计。缺少必要证据时不得判定通过。",
   "statuses": [
@@ -25,9 +25,9 @@
       "severity": "high",
       "title": "八小时调度配置",
       "applies_when": "always",
-      "expected": "父工作流每小时唤醒，由 gate 按 8 小时间隔和合法 UTC anchor 放行；最终 manifest 记录本轮实际 gate 配置。",
+      "expected": "父工作流以静态 cron 在 UTC 02:23、10:23、18:23 直接触发完整 iteration，不使用小时唤醒或取模 gate；最终 manifest 记录固定 8 小时间隔和 UTC 02:00 anchor。",
       "evidence_required": ["configuration", "source_contract", "release.manifest.schedule"],
-      "pass_condition": "当前 FORECAST_EDGE_INTERVAL_HOURS 为 8，anchor 在 0..23，源码保留小时唤醒和取模 gate；实际执行轮次的 manifest.interval_hours 为 8。"
+      "pass_condition": "source_contract.direct_eight_hour_schedule=true，configuration.schedule_cron 为 23 2,10,18 * * *；实际执行轮次 manifest.interval_hours=8、anchor_utc_hour=2，且本次 schedule 的 research、execution、release 都不是 skipped。"
     },
     {
       "id": "SCHED-002",
@@ -39,13 +39,22 @@
       "pass_condition": "source_contract.parent_concurrency_safe=true。"
     },
     {
+      "id": "PIPELINE-001",
+      "severity": "high",
+      "title": "必要生产阶段完整且无跳过",
+      "applies_when": "parent event is schedule or production execution was requested",
+      "expected": "确定性 production acceptance verifier 必须证明 parent、gate、research、execution、release 全部 success，Release lineage 匹配，执行 receipt、七个 phase 和最终零挂单均通过；schedule 的任一必要 job skipped 都是失败。",
+      "evidence_required": ["production_acceptance", "jobs", "release.manifest", "release.execution_receipt", "release.execution_verification", "diagnostics.summary"],
+      "pass_condition": "production_acceptance.accepted=true 且 failed_checks=[]；stage_conclusions 的 gate、research、execution、release 均为 success。只有显式 research-only 手工运行允许 execution NOT_APPLICABLE。"
+    },
+    {
       "id": "GATE-001",
       "severity": "high",
       "title": "自动真实交易开关生效",
-      "applies_when": "parent event is schedule and the gate releases the iteration",
+      "applies_when": "parent event is schedule",
       "expected": "持久 live trading 开关为 true；已执行轮次 manifest 中 execution.requested 和 configuration_ready 都为 true。",
       "evidence_required": ["configuration.live_trading_enabled", "release.manifest.execution"],
-      "pass_condition": "所有适用布尔值均为 true；被正常 gate 掉的小时轮次标记 NOT_APPLICABLE。"
+      "pass_condition": "所有适用布尔值均为 true；任一 schedule run 都必须进入完整 iteration，不存在正常 gate-off 的小时轮次。"
     },
     {
       "id": "GATE-002",

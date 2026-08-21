@@ -67,7 +67,7 @@
 
 1. Checkout 固定的默认分支提交。
 2. 校验研究所需的全局变量和 Secret，但不接触或输出交易凭据。
-3. 判断本次 `schedule` 事件是否应该开始一次 iteration；`workflow_dispatch` 手动运行不受定时门控限制。
+3. 确认本次 `schedule` 事件具备完整生产配置并直接开始 iteration；`workflow_dispatch` 可显式选择完整执行或 `research-only`。
 4. 安装固定版本的 Kimi Code CLI，并缓存下载依赖。
 5. 为每个启用 adapter 获取一次不可变的标准化公开账户快照，供 Agent 和后续持仓校验共用。
 6. 拼装现有扫描 prompt 与交易意图输出 prompt，启动新的非交互 Kimi Code session。
@@ -137,8 +137,6 @@ GitHub Release 继承仓库可见性。private repository 中的 Release 受仓�
 | 名称 | 默认值 | 用途 |
 | --- | --- | --- |
 | `FORECAST_EDGE_MARKET_ADAPTERS` | 无，必需 | 逗号分隔的已注册 adapter 列表。 |
-| `FORECAST_EDGE_INTERVAL_HOURS` | `8` | 定时 iteration 间隔，整数且至少 6。 |
-| `FORECAST_EDGE_ANCHOR_UTC_HOUR` | `2` | 定时窗口的 UTC 锚点。 |
 | `FORECAST_EDGE_HISTORY_RELEASE_COUNT` | `20` | 恢复多少个最近完整单轮 Release，允许 2–20；更早标识符由累积 `research-history.json` 保留。 |
 | `CREATE_TRADE_INTENT_ISSUE` | `true` | private repository 中是否创建交易意图 Issue。 |
 | `ALLOW_PUBLIC_TRADE_INTENTS` | `false` | public repository 中对公开 JSONL 的显式风险确认。 |
@@ -146,7 +144,7 @@ GitHub Release 继承仓库可见性。private repository 中的 Release 受仓�
 
 稳定且公开的实现参数直接写在 Workflow：Kimi Code 为 `0.37.2`、模型名为 `kimi-for-coding`、provider URL 与类型、telemetry 开关、重试次数、总 timeout、900 秒无事件 timeout 和文件名。venue 不是实现常量，必须通过上述通用 Repository Variable 显式配置；账户输入只通过 Actions Secret 提供。`${{ github.token }}` 是 GitHub 为每次 Run 自动生成的短期 token，也不需要用户设置。
 
-父图先做 fail-closed 配置 gate。任一必需 Secret 或 Variable 缺失时，gate 自身成功结束并输出 `should-run=false`、`execution-ready=false`；research、execution、release 以及后续 Judge 均不启动。这样未配置的 fork 或 public mirror 不会因为一次定时唤醒而访问模型、市场、账户或通知服务。
+父图先做 fail-closed 配置 gate。任一必需 Secret 或 Variable 缺失、生产暂停，或 schedule 触发时 live trading 未开启，gate 都显式失败；不能用成功结论加 downstream `skipped` 掩盖配置错误。失败的父 run 仍进入 post-run audit 和最终通知。
 
 父图、研究子图和执行子图都不接收任何 Polymarket 签名私钥、CLOB Secret、VPN Secret 或 Kalshi Secret。Polymarket 凭据只存在于 EC2 本地 mode-0600 文件；父图只判断交易开关与意图是否存在，服务器本地执行器负责凭据完整性校验。
 
@@ -215,15 +213,15 @@ Schema 使用 `additionalProperties: false`，并校验价格范围、正数金�
 2. 建议金额按保护限价最多可买的份额 `notional / limit_price`；
 3. 实时可用现金扣除最低现金储备、并为最大费用留足空间后最多可买的份额。
 
-执行器逐档模拟在保护价格内的订单簿成交，计算 VWAP。模拟 VWAP 相对 `notional / quantity` 的不利偏差超过唯一的 `POLYMARKET_MAX_PRICE_DEVIATION_BPS` 阈值时拒绝提交；价格改善不会被误拒绝。名义金额偏差与该价格偏差在固定份额下是同一个比例，因此不再设置重复阈值。安全份额继续取建议金额与建议份额约束后的最小值；如果买单的签名金额低于 Polymarket CLOB 官方 1 pUSD 最低可成交 BUY 金额，则跳过该意图，不会扩大研究建议来凑单。执行开始前先取消账户全部未成交挂单并复查为空；新订单使用带 `max_price`/`min_price` 的 `FOK` 市价单，只允许立即全部成交或整笔不成交，不允许余量停留在订单簿，也不自动追价补单。
+执行器逐档模拟在保护价格内的订单簿成交，计算 VWAP。模拟 VWAP 相对 `notional / quantity` 的不利偏差超过唯一的 `POLYMARKET_MAX_PRICE_DEVIATION_BPS` 阈值时拒绝提交；价格改善不会被误拒绝。名义金额偏差与该价格偏差在固定份额下是同一个比例，因此不再设置重复阈值。安全份额继续取建议金额与建议份额约束后的最小值；如果买单的签名金额低于 Polymarket CLOB 官方 1 pUSD 最低可成交 BUY 金额，则跳过该意图，不会扩大研究建议来凑单。执行开始前先取消账户全部未成交挂单并复查为空；然后对所有新订单做无提交的整批预验证，包括最新盘口重规划、预存 allowance、本地 FOK 签名、SDK 舍入数量、实时 `min_order_size` 和 1 pUSD BUY 门槛。只有全部通过才允许第一笔 POST，预验证签名不写入 ledger；逐笔正式提交前仍重复重规划和签名以处理盘口变化。新订单使用带 `max_price`/`min_price` 的 `FOK` 市价单，只允许立即全部成交或整笔不成交，不允许余量停留在订单簿，也不自动追价补单。
 
-## 定时间隔 N
+## 固定八小时间隔
 
 ### GitHub 限制
 
-`on.schedule.cron` 是静态 YAML，不能引用 `${{ vars.* }}`。此外，Cron 的 `*/7` 小时会在每天午夜重置，并不能保证跨天严格每 7 小时运行。
+`on.schedule.cron` 是静态 YAML，不能引用 `${{ vars.* }}`。本生产目标已经确定为 8 小时，不再为任意 N 增加小时级 wake-up gate。
 
-父图支持任意整数 N：Workflow 每小时第 `23` 分钟触发一次，首个 gate step 校验 `FORECAST_EDGE_INTERVAL_HOURS` 是不小于 6 的整数，并按 UTC epoch hour 与可配置 anchor 决定是否开始 iteration。未命中的 run 很快结束，但 Actions 页面会出现按小时的跳过记录。父图使用 `concurrency` 防止长时间 iteration 重叠；`workflow_dispatch` 手动运行绕过时间 gate。
+父图使用 `23 2,10,18 * * *`，在 UTC 02:23、10:23、18:23 直接启动完整 iteration。每个 schedule run 都必须依次到达 research、execution、release；零交易意图也执行完整 EC2 生命周期。固定 concurrency group 与 `cancel-in-progress: false` 使耗时超过 8 小时的前一轮排队而不是相互取消。
 
 ## 重试语义
 
@@ -233,7 +231,7 @@ Schema 使用 `additionalProperties: false`，并校验价格范围、正数金�
 
 父图在 private repository 中默认于最终 Release 成功后创建一个新 Issue。将 Repository Variable `CREATE_TRADE_INTENT_ISSUE` 设为 `false` 可以关闭 Issue，仅保留本轮最终 Release；public repository 不创建包含交易数量的 Issue。
 
-父 workflow 不在研究或执行过程中发送飞书消息。post-run audit workflow 对每个真正进入 gate 的自动生产迭代只发送一张最终卡片：由只读 Kimi Code Agent 阅读已验证报告生成研究简报，并附父 run 各阶段结论、Judge 有效性、简报有效性、业务验收、严重检查项和熔断结果；执行失败或审计失败也必须通知，纯 gate-off 小时唤醒不通知。无熔断时卡片为绿色，实际触发或需要触发熔断时为红色；Warning 和 Error 详情分别放入折叠面板。若当轮报告未生成，fallback 读取秘密扫描后的账户摘要、上一份验证报告基线和实际研究阶段；未知数量使用 `null` 并显示“未获得”，只有验证报告明确证明零结果时才显示 0。Workflow 使用 App ID 与 App Secret 获取短期 tenant token，不保存该 token；发送请求带有基于 GitHub run 和 attempt 的幂等键。
+父 workflow 不在研究或执行过程中发送飞书消息。post-run audit workflow 对每个已完成的父 iteration 只发送一张最终卡片：由只读 Kimi Code Agent 阅读已验证报告生成研究简报，并附父 run 各阶段结论、Judge 有效性、简报有效性、业务验收、严重检查项和熔断结果；执行失败或审计失败也必须通知。无熔断时卡片为绿色，实际触发或需要触发熔断时为红色；Warning 和 Error 详情分别放入折叠面板。若当轮报告未生成，fallback 读取秘密扫描后的账户摘要、上一份验证报告基线和实际研究阶段；未知数量使用 `null` 并显示“未获得”，只有验证报告明确证明零结果时才显示 0。Workflow 使用 App ID 与 App Secret 获取短期 tenant token，不保存该 token；发送请求带有基于 GitHub run 和 attempt 的幂等键。
 
 如果仓库是 public，Issue 会公开交易方向、价格、金额、份额和账户线索，可能造成隐私、策略泄露或抢跑风险。默认建议只在 private repository 创建包含数量的 Issue；public repository 应使用主动降敏的公共简报格式。
 

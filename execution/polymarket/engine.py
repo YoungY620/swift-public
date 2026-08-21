@@ -196,6 +196,73 @@ def _cap_to_signed_market_quantity(
     )
 
 
+def _sign_validated_market_order(
+    *,
+    adapter: LivePolymarketAdapter,
+    original: PlannedOrder,
+    limits: RiskLimits,
+) -> tuple[PlannedOrder, Any]:
+    """Refresh, validate, and locally sign one order without submitting it."""
+
+    latest_health = adapter.health()
+    if latest_health["closed_only"] and original.side == "buy":
+        raise ExecutionError("account entered closed-only mode before order signing")
+    current, market = _replan_one(adapter=adapter, original=original, limits=limits)
+    _assert_allowance(adapter, current, market)
+    signed = adapter.create_market_order(
+        token_id=current.token_id,
+        price_limit=current.limit_price,
+        quantity=current.quantity,
+        side=current.side,
+        max_buy_spend=(
+            current.worst_case_cash_effect if current.side == "buy" else None
+        ),
+    )
+    current = _cap_to_signed_market_quantity(
+        current,
+        adapter.signed_market_order_quantity(signed, side=current.side),
+        limits,
+    )
+    if current.quantity < market.min_order_size:
+        raise ExecutionError(
+            "SDK-rounded market quantity is below the live minimum order size"
+        )
+    if (
+        current.side == "buy"
+        and current.limit_gross_notional < POLYMARKET_MIN_MARKETABLE_BUY_AMOUNT
+    ):
+        raise ExecutionError(
+            "SDK-rounded marketable BUY amount is below the Polymarket CLOB $1 minimum"
+        )
+    return current, signed
+
+
+def _prevalidate_unsigned_batch(
+    *,
+    adapter: LivePolymarketAdapter,
+    orders: Iterable[PlannedOrder],
+    limits: RiskLimits,
+    ledger: DynamoLedger | SQLiteLedger,
+    expires_at: datetime | None,
+) -> None:
+    """Prove every fresh order is locally submittable before the first POST.
+
+    These signatures are deliberately discarded and never persisted.  Live
+    submission repeats the refresh and signing step so a moving order book is
+    still checked immediately before each order.
+    """
+
+    for original in orders:
+        ledger.renew()
+        if expires_at is not None and datetime.now(timezone.utc) > expires_at:
+            raise ExecutionError("execution plan expired during batch prevalidation")
+        _sign_validated_market_order(
+            adapter=adapter,
+            original=original,
+            limits=limits,
+        )
+
+
 def _trade_ids_from_order(raw: dict[str, Any] | None) -> set[str]:
     if not raw:
         return set()
@@ -475,6 +542,7 @@ def execute_orders(
     receipts: list[dict[str, Any]] = []
     uncertain = False
     account_may_have_changed = False
+    fresh_batch_prevalidated = False
     try:
         health = adapter.health()
         if health["closed_only"] and any(order.side == "buy" for order in orders):
@@ -527,41 +595,27 @@ def execute_orders(
                     f"{previous.get('state', '<missing>')}"
                 )
             else:
-                latest_health = adapter.health()
-                if latest_health["closed_only"] and original.side == "buy":
-                    raise ExecutionError("account entered closed-only mode before order signing")
-                current, market = _replan_one(adapter=adapter, original=original, limits=limits)
-                _assert_allowance(adapter, current, market)
+                if not fresh_batch_prevalidated:
+                    unsigned_orders = tuple(
+                        candidate
+                        for candidate in orders
+                        if ledger.get(ledger.order_key(candidate.intent_index)) is None
+                    )
+                    _prevalidate_unsigned_batch(
+                        adapter=adapter,
+                        orders=unsigned_orders,
+                        limits=limits,
+                        ledger=ledger,
+                        expires_at=expires_at,
+                    )
+                    fresh_batch_prevalidated = True
+                current, newly_signed = _sign_validated_market_order(
+                    adapter=adapter,
+                    original=original,
+                    limits=limits,
+                )
                 before_token = adapter.conditional_balance(current.token_id)
                 before_cash = adapter.collateral_balance()
-                newly_signed = adapter.create_market_order(
-                    token_id=current.token_id,
-                    price_limit=current.limit_price,
-                    quantity=current.quantity,
-                    side=current.side,
-                    max_buy_spend=(
-                        current.worst_case_cash_effect if current.side == "buy" else None
-                    ),
-                )
-                current = _cap_to_signed_market_quantity(
-                    current,
-                    adapter.signed_market_order_quantity(
-                        newly_signed, side=current.side
-                    ),
-                    limits,
-                )
-                if current.quantity < market.min_order_size:
-                    raise ExecutionError(
-                        "SDK-rounded market quantity is below the live minimum order size"
-                    )
-                if (
-                    current.side == "buy"
-                    and current.limit_gross_notional
-                    < POLYMARKET_MIN_MARKETABLE_BUY_AMOUNT
-                ):
-                    raise ExecutionError(
-                        "SDK-rounded marketable BUY amount is below the Polymarket CLOB $1 minimum"
-                    )
                 ledger.save_signed_order(
                     current.intent_index,
                     newly_signed,

@@ -38,11 +38,6 @@ jobs:
     env:
       PARENT_RUN_ID: ${{ github.event.workflow_run.id || inputs['parent-run-id'] }}
       EXPECTED_PARENT_WORKFLOW: Forecast Edge research and optional execution
-      KIMI_CODE_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
-      FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
-      FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
-      FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}
-      FORECAST_EDGE_BREAKER_TOKEN: ${{ secrets.FORECAST_EDGE_BREAKER_TOKEN }}
     steps:
       - name: Select completed iterations that need agent review
         id: select
@@ -51,38 +46,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          missing_configuration=()
-          for name in KIMI_CODE_API_KEY FEISHU_APP_ID FEISHU_APP_SECRET FEISHU_CHAT_ID \
-            FORECAST_EDGE_BREAKER_TOKEN; do
-            if [[ -z "${!name:-}" ]]; then
-              missing_configuration+=("$name")
-            fi
-          done
-          if (( ${#missing_configuration[@]} > 0 )); then
-            printf '::notice::Forecast Edge audit is not configured; skipping this run (missing: %s)\n' \
-              "${missing_configuration[*]}"
-            echo "audit-applicable=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           if [[ ! "$PARENT_RUN_ID" =~ ^[0-9]+$ ]]; then
             echo "::error::parent-run-id must be a GitHub Actions run id"
             exit 1
           fi
           run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID")
-          jobs=$(gh api --paginate \
-            "repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID/jobs?per_page=100" \
-            | jq -s '[.[].jobs[]]')
           jq -e \
             --arg expected "$EXPECTED_PARENT_WORKFLOW" \
             '.name == $expected and .status == "completed"' <<< "$run" >/dev/null
-          applicable=$(jq -rn \
-            --argjson run "$run" \
-            --argjson jobs "$jobs" \
-            '($run.conclusion != "success") or any($jobs[]; (.name | test("^research(?: /|$)")) and .conclusion != "skipped")')
-          echo "audit-applicable=$applicable" >> "$GITHUB_OUTPUT"
-          if [[ "$applicable" != "true" ]]; then
-            echo "Successful hourly wake-up was gated off; no research or execution result needs agent review." >> "$GITHUB_STEP_SUMMARY"
-          fi
+          echo "audit-applicable=true" >> "$GITHUB_OUTPUT"
 
   audit:
     needs: select
@@ -195,8 +167,6 @@ jobs:
       - name: Collect read-only parent workflow evidence
         env:
           GH_TOKEN: ${{ github.token }}
-          CONFIGURED_INTERVAL_HOURS: ${{ vars.FORECAST_EDGE_INTERVAL_HOURS || '8' }}
-          CONFIGURED_ANCHOR_UTC_HOUR: ${{ vars.FORECAST_EDGE_ANCHOR_UTC_HOUR || '2' }}
           LIVE_TRADING_ENABLED: ${{ vars.POLYMARKET_LIVE_TRADING_ENABLED || 'false' }}
           AUTOMATION_PAUSED: ${{ vars.FORECAST_EDGE_AUTOMATION_PAUSED || 'false' }}
         shell: bash
@@ -237,14 +207,13 @@ jobs:
             steps:[.steps[]? | {name,status,conclusion,number,started_at,completed_at}]
           }]' "$AUDIT_EVIDENCE_DIR/jobs.raw.json" > "$AUDIT_EVIDENCE_DIR/jobs.json"
           jq -n \
-            --arg interval_hours "$CONFIGURED_INTERVAL_HOURS" \
-            --arg anchor_utc_hour "$CONFIGURED_ANCHOR_UTC_HOUR" \
             --arg live_trading_enabled "$LIVE_TRADING_ENABLED" \
             --arg automation_paused "$AUTOMATION_PAUSED" \
             --arg circuit_breaker_enabled "$CIRCUIT_BREAKER_ENABLED" \
             '{
-              interval_hours:($interval_hours|tonumber),
-              anchor_utc_hour:($anchor_utc_hour|tonumber),
+              schedule_cron:"23 2,10,18 * * *",
+              interval_hours:8,
+              anchor_utc_hour:2,
               live_trading_enabled:($live_trading_enabled == "true"),
               automation_paused:($automation_paused == "true"),
               circuit_breaker_enabled:($circuit_breaker_enabled == "true")
@@ -574,6 +543,15 @@ jobs:
               '{available:false,algorithm:$algorithm,payload_format:$payload_format,expected_execution_id:null,actual_execution_id:null,matches:null}' \
               > "$execution_identity_path"
           fi
+          production_acceptance_path="$AUDIT_EVIDENCE_DIR/production-acceptance.json"
+          python3 scripts/verify_forecast_edge_production_run.py \
+            --run "$AUDIT_EVIDENCE_DIR/run.json" \
+            --jobs "$AUDIT_EVIDENCE_DIR/jobs.json" \
+            --manifest "$release_dir/iteration-release-manifest.json" \
+            --receipt "$release_dir/execution-receipt.json" \
+            --verification "$release_dir/execution-verification.json" \
+            --diagnostic-summary "$release_dir/execution-diagnostic-summary.json" \
+            --output "$production_acceptance_path"
           jq -n \
             --slurpfile run "$AUDIT_EVIDENCE_DIR/run.json" \
             --slurpfile jobs "$AUDIT_EVIDENCE_DIR/jobs.json" \
@@ -602,13 +580,14 @@ jobs:
             --slurpfile diagnostic_verification "$AUDIT_EVIDENCE_DIR/diagnostics/verification.json" \
             --slurpfile diagnostic_ledger "$AUDIT_EVIDENCE_DIR/diagnostics/ledger-snapshot.json" \
             --slurpfile execution_identity "$AUDIT_EVIDENCE_DIR/diagnostics/execution-identity.json" \
+            --slurpfile production_acceptance "$production_acceptance_path" \
             '{
               run:$run[0],
               jobs:{
                 all:$jobs[0],
                 gate:([$jobs[0][] | select(.name == "gate")] | first // null),
                 research:([$jobs[0][] | select(.name | test("^research(?: /|$)"))] | first // null),
-                execution:([$jobs[0][] | select(.name == "execution")] | first // null),
+                execution:([$jobs[0][] | select(.name | test("^execution(?: /|$)"))] | first // null),
                 release:([$jobs[0][] | select(.name == "release")] | first // null)
               },
               configuration:$configuration[0],
@@ -660,6 +639,7 @@ jobs:
                 execution_identity:$execution_identity[0],
                 evidence_root:"evidence/diagnostics/files/execution-diagnostics"
               },
+              production_acceptance:$production_acceptance[0],
               evidence_safety:{secret_value_scan_passed:false},
               agent_response:{available:false}
             }' > "$AUDIT_EVIDENCE_PATH"
@@ -675,7 +655,7 @@ jobs:
           mv "$safe_evidence" "$AUDIT_EVIDENCE_PATH"
           jq -e \
             --arg run_id "$PARENT_RUN_ID" \
-            '.run.id == $run_id and (.jobs.all | type == "array") and (.release.reports.files | type == "array") and (.configuration.interval_hours | type == "number")' \
+            '.run.id == $run_id and (.jobs.all | type == "array") and (.release.reports.files | type == "array") and (.configuration.interval_hours | type == "number") and (.production_acceptance.accepted | type == "boolean")' \
             "$AUDIT_EVIDENCE_PATH" >/dev/null
 
       - name: Run read-only Kimi Code Judge agent
@@ -1213,6 +1193,19 @@ jobs:
           serious='${{ steps.classify.outputs.serious_findings }}'
           if [[ "$(jq 'length' <<< "$serious")" -gt 0 ]]; then
             echo "::error::Forecast Edge audit found critical safety failures: $(jq -r 'join(", ")' <<< "$serious")"
+            exit 1
+          fi
+
+      - name: Enforce deterministic production acceptance
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! jq -e '.accepted == true and (.failed_checks | length == 0)' \
+              "$AUDIT_EVIDENCE_DIR/production-acceptance.json" >/dev/null; then
+            failed_checks=$(jq -r '.failed_checks | join(", ")' \
+              "$AUDIT_EVIDENCE_DIR/production-acceptance.json")
+            echo "::error::Deterministic production acceptance failed: $failed_checks"
             exit 1
           fi
 

@@ -86,10 +86,16 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertIn("release.reports", check["evidence_required"])
         self.assertNotIn("RESEARCH-002", audit_module.AGENT_BREAKER_CHECK_IDS)
 
-    def test_workflow_runs_after_parent_and_gates_off_empty_hourly_wakeups(self) -> None:
+    def test_workflow_audits_every_completed_parent_run(self) -> None:
         self.assertIn("workflow_run:", self.workflow)
         self.assertIn("Forecast Edge research and optional execution", self.workflow)
         self.assertIn("Select completed iterations that need agent review", self.workflow)
+        select = self.workflow[
+            self.workflow.index("  select:\n") : self.workflow.index("\n  audit:\n")
+        ]
+        self.assertIn('echo "audit-applicable=true"', select)
+        self.assertNotIn('echo "audit-applicable=false"', select)
+        self.assertNotIn("Successful hourly wake-up was gated off", select)
         self.assertIn("needs.select.outputs.audit-applicable == 'true'", self.workflow)
         self.assertIn("Run read-only Kimi Code Judge agent", self.workflow)
         self.assertIn('--agent-file "$AUDIT_AGENT_PROFILE_PATH"', self.workflow)
@@ -116,6 +122,14 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         )
         self.assertIn("research_diagnostics", self.workflow)
         self.assertIn("verify_polymarket_execution_diagnostics.py", self.workflow)
+        self.assertIn("verify_forecast_edge_production_run.py", self.workflow)
+        self.assertIn("production-acceptance.json", self.workflow)
+        self.assertIn("production_acceptance:$production_acceptance[0]", self.workflow)
+        self.assertIn('test("^execution(?: /|$)")', self.workflow)
+        self.assertIn("Enforce deterministic production acceptance", self.workflow)
+        self.assertIn(
+            ".accepted == true and (.failed_checks | length == 0)", self.workflow
+        )
         self.assertIn("Send final production iteration status to Feishu", self.workflow)
         notify = self.workflow[self.workflow.index("  notify:\n") :]
         self.assertIn("always()", notify)

@@ -2,9 +2,9 @@ name: Forecast Edge research and optional execution
 
 on:
   schedule:
-    # Repository variables cannot be interpolated into cron. Trigger hourly and
-    # let the gate below enforce the configured interval.
-    - cron: "23 * * * *"
+    # Every scheduled event is one complete production iteration.  Use an
+    # explicit UTC sequence instead of hourly wake-ups that intentionally skip.
+    - cron: "23 2,10,18 * * *"
   workflow_dispatch:
     inputs:
       execute-live-trades:
@@ -43,8 +43,6 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           MANUAL_EXECUTION: ${{ inputs['execute-live-trades'] || false }}
           RESEARCH_ONLY: ${{ inputs['research-only'] || false }}
-          INTERVAL_HOURS: ${{ vars.FORECAST_EDGE_INTERVAL_HOURS || '8' }}
-          ANCHOR_UTC_HOUR: ${{ vars.FORECAST_EDGE_ANCHOR_UTC_HOUR || '2' }}
           LIVE_TRADING_ENABLED: ${{ vars.POLYMARKET_LIVE_TRADING_ENABLED || 'false' }}
           AUTOMATION_PAUSED: ${{ vars.FORECAST_EDGE_AUTOMATION_PAUSED || 'false' }}
           FORECAST_EDGE_MARKET_ADAPTERS: ${{ vars.FORECAST_EDGE_MARKET_ADAPTERS }}
@@ -66,59 +64,20 @@ jobs:
             fi
           done
 
-          # A public mirror (or a private fork that has not been configured yet)
-          # must be a harmless no-op.  Keep the gate successful and explicitly
-          # skip every downstream job instead of failing or attempting research.
           if (( ${#missing_configuration[@]} > 0 )); then
-            printf '::notice::Forecast Edge is not configured; skipping this run (missing: %s)\n' \
+            printf '::error::Forecast Edge production configuration is incomplete (missing: %s)\n' \
               "${missing_configuration[*]}"
-            {
-              echo "should-run=false"
-              echo "execution-requested=false"
-              echo "execution-ready=false"
-              echo "interval-hours=0"
-              echo "anchor-utc-hour=0"
-              echo "gate-event-name=$EVENT_NAME"
-              echo "automation-paused=$AUTOMATION_PAUSED"
-            } >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [[ ! "$INTERVAL_HOURS" =~ ^[0-9]+$ ]]; then
-            echo "::error::FORECAST_EDGE_INTERVAL_HOURS must be an integer greater than or equal to 6"
-            exit 1
-          fi
-          if [[ ! "$ANCHOR_UTC_HOUR" =~ ^[0-9]+$ ]]; then
-            echo "::error::FORECAST_EDGE_ANCHOR_UTC_HOUR must be an integer from 0 through 23"
-            exit 1
-          fi
-          interval=$((10#$INTERVAL_HOURS))
-          anchor=$((10#$ANCHOR_UTC_HOUR))
-          if (( interval < 6 || anchor > 23 )); then
-            echo "::error::Forecast Edge schedule configuration is outside the supported range"
             exit 1
           fi
 
-          should_run=false
           if [[ "$EVENT_NAME" == "workflow_dispatch" && "$RESEARCH_ONLY" == "true" ]]; then
             if [[ "$MANUAL_EXECUTION" == "true" ]]; then
               echo "::error::research-only cannot be combined with execute-live-trades"
               exit 1
             fi
-            should_run=true
           elif [[ "$AUTOMATION_PAUSED" == "true" ]]; then
-            echo "::warning::Forecast Edge automation is paused by the production circuit breaker"
-          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            should_run=true
-          else
-            epoch_hour=$(( $(date -u +%s) / 3600 ))
-            if (( (epoch_hour - anchor) % interval == 0 )); then
-              should_run=true
-            fi
-          fi
-
-          if [[ "$should_run" == "true" ]]; then
-            : # Required configuration was checked before schedule evaluation.
+            echo "::error::Forecast Edge automation is paused by the production circuit breaker"
+            exit 1
           fi
 
           execution_requested=false
@@ -127,13 +86,17 @@ jobs:
                 ("$LIVE_TRADING_ENABLED" == "true" || "$MANUAL_EXECUTION" == "true") ]]; then
             execution_requested=true
           fi
+          if [[ "$EVENT_NAME" == "schedule" && "$execution_requested" != "true" ]]; then
+            echo "::error::Scheduled production iterations require live trading to be enabled"
+            exit 1
+          fi
           execution_ready=$execution_requested
           {
-            echo "should-run=$should_run"
+            echo "should-run=true"
             echo "execution-requested=$execution_requested"
             echo "execution-ready=$execution_ready"
-            echo "interval-hours=$interval"
-            echo "anchor-utc-hour=$anchor"
+            echo "interval-hours=8"
+            echo "anchor-utc-hour=2"
             echo "gate-event-name=$EVENT_NAME"
             echo "automation-paused=$AUTOMATION_PAUSED"
           } >> "$GITHUB_OUTPUT"

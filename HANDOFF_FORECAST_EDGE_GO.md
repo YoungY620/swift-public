@@ -155,11 +155,11 @@ git diff --check
 核对以下事实：
 
 - `.github/workflows/forecast-edge.yml` 是唯一 schedule/manual parent；
-- parent 每小时第 23 分钟唤醒，由 `FORECAST_EDGE_INTERVAL_HOURS` 和 UTC anchor gate；生产配置默认期望 8 小时；
+- parent 在 UTC 02:23、10:23、18:23 直接启动完整 iteration，不使用小时唤醒或取模 gate；
 - research 与 audit 在 GitHub-hosted runner；execution 在 EC2 self-hosted runner；
 - child workflows 使用 `workflow_call`，不能自行发布 Release/Issue；
 - Release、Issue、Feishu 的顺序严格为 Release → Issue → Feishu；
-- audit 由 parent 完成后通过 `workflow_run` 触发；纯 gate-off 的小时唤醒不应伪造研究/执行结果，也不必发送生产 iteration 通知；
+- audit 由 parent 完成后通过 `workflow_run` 触发；每个已完成 parent run 都必须审计并发送最终通知；
 - research 诊断和 execution 诊断上传前都经过秘密扫描，执行诊断要包含安装、validate、cancel、preflight、plan、execute、verify 的逐阶段日志；
 - trade intent 通过本轮唯一 handoff artifact 和 SHA-256 交接，不读取“最新 artifact”。
 
@@ -192,8 +192,6 @@ FORECAST_EDGE_BREAKER_TOKEN
 
 ```text
 FORECAST_EDGE_MARKET_ADAPTERS          必填；逗号分隔，必须来自 adapters.json
-FORECAST_EDGE_INTERVAL_HOURS           期望 8；源码要求为 >= 6 的整数
-FORECAST_EDGE_ANCHOR_UTC_HOUR          0..23；当前默认/生产配置为 2
 FORECAST_EDGE_HISTORY_RELEASE_COUNT    2..20；默认 2
 POLYMARKET_LIVE_TRADING_ENABLED        生产目标为 true
 FORECAST_EDGE_AUTOMATION_PAUSED        生产目标为 false
@@ -316,12 +314,12 @@ validate-artifact
 父 workflow 只有在：
 
 1. research 成功；
-2. execution 成功，或明确合法地因为无意图而 skipped；
+2. production execution 成功；零意图也必须完成 EC2 撤单、preflight、空 plan、`NO_ACTIONS` 回执、verify 和诊断，不能 skipped；
 3. 私有 handoff、digest、receipt、verification 和诊断校验成功；
 
 之后才能创建唯一最终 Release。报告文件清单必须用排序文件和 `cmp`/`diff` 比较，不能用容易受 Bash 数组空格影响的字符串比较。Release 成功后才允许创建 Issue 和发送 post-release Feishu；执行失败时不得发布未成交的研究/意图。
 
-每个真正进入 gate 的生产轮次，无论成功、warning、失败或熔断，都要有一条 Feishu 状态通知。纯 hourly gate-off 不需要伪造交易通知。
+每个父轮次无论成功、warning、失败或熔断，都要有一条 Feishu 状态通知；不存在正常的 hourly gate-off。
 
 ## 7. 已知基线问题和修复要求
 
@@ -335,7 +333,7 @@ Private handoff direct reports differ from the signed manifest
 
 1. 把 actual/expected direct report 名称分别写入排序文件，使用 `LC_ALL=C sort -u` 和 `cmp -s`，失败时输出 `diff -u`；
 2. Release 接受经过 execution verification 的 `COMPLETED_WITH_WARNINGS`，但只接受 `FULL` 和带 `FOK_NOT_FILLED` 证明的 `NO_FILL`；
-3. 增加 workflow contract 和单元测试，覆盖 warning receipt、拒绝未知/部分状态、报告清单比较和正常 gate skip；
+3. 增加 workflow contract 和单元测试，覆盖 warning receipt、拒绝未知/部分状态、报告清单比较和直接八小时 schedule（不得出现正常 gate skip）；
 4. 不删除 Release 完整性校验，不把所有 execution failure 改成 warning。
 
 该运行的历史结论只能作为诊断证据，不能直接宣布当前部署成功。修复后必须重新跑完整 parent。
@@ -448,7 +446,7 @@ PASS       所有适用检查有证据且通过
 WARN       可操作但不构成资金安全异常，例如确定性 FOK NO_FILL、Judge timeout、证据不足或质量问题
 FAIL       明确违反关键安全/执行/发布契约
 INSUFFICIENT_EVIDENCE 适用证据缺失，不能当作 PASS
-NOT_APPLICABLE         例如正常 gate-off 的小时唤醒
+NOT_APPLICABLE         仅用于显式 research-only 等确实不适用的检查，不能用于 schedule 的必要阶段
 ```
 
 只有经过 Agent 判断且被分类为 critical 的资金安全 FAIL，或确定性的 `UNCERTAIN`、部分成交、保护越界、残留挂单、非法 no-fill、回执/诊断/秘密校验失败，才允许自动执行三重熔断：
@@ -463,19 +461,19 @@ Judge timeout、无效模型输出、证据不足和普通研究质量问题只�
 
 ## 11. 定时任务验收
 
-手动验证成功后不要把它当作 scheduled 成功。定时任务每小时唤醒，但只有 UTC epoch hour 与 anchor 按 8 小时间隔相交时才进入 research。必须等待并检查一轮真实放行的 scheduled run，至少看到：
+手动验证成功后不要把它当作 scheduled 成功。定时任务在 UTC 02:23、10:23、18:23 直接进入完整 production iteration。必须等待并检查一轮真实 scheduled run，至少看到：
 
 ```text
 event=schedule
 gate success 且 should-run=true
 research success
-execution success（如果本轮有 intents 且 live trading 开启）
+execution success（live trading 必须开启；即使零 intents 也执行完整生命周期）
 release success
 audit success
 Feishu notification success
 ```
 
-如果 scheduled run 仅 gate skip，这是预期行为，不是异常，也不能用它证明交易执行成功。若上一轮 audit 触发熔断，先停止下单并根据证据修复；只有维护者确认后才恢复两个生产变量和 workflow。
+如果 scheduled run 的 research、execution 或 release 被 skip，这是异常，不能当作正常时间 gate。若上一轮 audit 触发熔断，先停止下单并根据证据修复；只有维护者确认后才恢复两个生产变量和 workflow。
 
 ## 12. 最终交接报告格式
 
@@ -489,7 +487,7 @@ Feishu notification success
 6. 测试命令和通过数量；
 7. 手动 run URL/id，各 job conclusion、Release、Audit、Feishu 结果；
 8. 实际发生的每个交易结果只能引用脱敏 receipt/verification：intent index、side、状态、filled/no-fill、价格保护结论；不要输出私钥、签名、CLOB secret、cookie、Authorization header 或完整账户标识；
-9. scheduled run 是否真正进入 gate、是否真实执行；gate skip 要明确写成 skip；
+9. scheduled run 是否真实执行全部必要阶段；任一必要 job skipped 都要判为未通过；
 10. 仍未完成的事项、风险和下一步；不能用“看起来正常”替代证据。
 
 如果任一关键证据缺失，报告必须明确写 `BLOCKED` 或 `INSUFFICIENT_EVIDENCE`，并说明需要谁提供什么外部状态；不要编造成功。
@@ -506,7 +504,7 @@ Feishu notification success
 - Judge 真正使用 `Read` + `Agent/explore`，按 rubric 输出合法结果；
 - Feishu 收到该轮最终状态；
 - `POLYMARKET_LIVE_TRADING_ENABLED=true`、`FORECAST_EDGE_AUTOMATION_PAUSED=false` 仅在没有 critical safety finding 时保持；
-- 至少一轮真正放行的 8 小时 scheduled iteration 被观测并验证；
+- 至少一轮直接触发且没有必要阶段 skipped 的 8 小时 scheduled iteration 被观测并验证；
 - 没有任何秘密被提交、上传、发布或输出。
 
 任何一项不满足，都要停在可恢复状态并把真实阻塞原因交接给维护者。

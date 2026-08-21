@@ -716,6 +716,101 @@ class NoFillThenFillAdapter:
 
 
 class ExecuteNoFillTests(unittest.TestCase):
+    def test_batch_prevalidation_blocks_sell_before_later_rounded_buy_failure(self) -> None:
+        sell_condition = "0x" + "c" * 64
+        sell_token = "333333333"
+        buy_condition = "0x" + "d" * 64
+        buy_token = "444444444"
+        intents = [
+            intent(
+                side="sell",
+                condition=sell_condition,
+                token=sell_token,
+            ),
+            intent(
+                price="0.50",
+                notional="1.01",
+                quantity="2.02",
+                condition=buy_condition,
+                token=buy_token,
+            ),
+        ]
+        markets = {
+            sell_token: market(
+                bids=(("0.50", "100"),),
+                condition=sell_condition,
+                token=sell_token,
+                fee_rate="0",
+            ),
+            buy_token: market(
+                asks=(("0.50", "100"),),
+                condition=buy_condition,
+                token=buy_token,
+                fee_rate="0",
+            ),
+        }
+        limits = RiskLimits(
+            minimum_cash_reserve=Decimal("0"),
+            max_price_deviation_bps=0,
+        )
+        plan = build_execution_plan(
+            intents=intents,
+            markets=markets,
+            positions={sell_token: Decimal("10")},
+            available_cash=Decimal("20"),
+            limits=limits,
+        )
+        self.assertEqual([order.side for order in plan.orders], ["sell", "buy"])
+
+        class RoundedBuyFailureAdapter(NoFillThenFillAdapter):
+            def signed_market_order_quantity(self, _signed_order, *, side: str):
+                self.side = side
+                if side == "buy":
+                    return Decimal("1.99")
+                return self.current_quantity
+
+            def post_order(self, _signed_order):
+                self.post_count += 1
+                if self.side == "sell":
+                    self.tokens[self.current_token] -= self.current_quantity
+                    self.cash += self.current_quantity * self.current_price
+                else:
+                    self.tokens[self.current_token] += self.current_quantity
+                    self.cash -= self.current_quantity * self.current_price
+                raise AssertionError("batch prevalidation must prevent every POST")
+
+        adapter = RoundedBuyFailureAdapter(markets)
+        adapter.cash = Decimal("20")
+        adapter.tokens[sell_token] = Decimal("10")
+        initial_cash = adapter.cash
+        initial_tokens = dict(adapter.tokens)
+        ledger = SQLiteLedger(
+            path=Path(tempfile.mkdtemp()) / "ledger.sqlite3",
+            execution_id="execution-batch-prevalidation",
+            lease_owner="runner-a",
+        )
+        claim = ledger.claim_run(
+            artifact_sha256="d" * 64,
+            planned_notional=Decimal("6.01"),
+            daily_notional_limit=Decimal("20"),
+        )
+        with self.assertRaisesRegex(ExecutionError, "CLOB \\$1 minimum"):
+            execute_orders(
+                adapter=adapter,  # type: ignore[arg-type]
+                orders=plan.orders,
+                limits=limits,
+                ledger=ledger,
+                execution_id="execution-batch-prevalidation",
+                execution_claim=claim,
+                planning={"source_intent_count": 2},
+            )
+        self.assertEqual(adapter.post_count, 0)
+        self.assertEqual(adapter.cash, initial_cash)
+        self.assertEqual(adapter.tokens, initial_tokens)
+        self.assertIsNone(ledger.get(ledger.order_key(1)))
+        self.assertIsNone(ledger.get(ledger.order_key(2)))
+        self.assertEqual(ledger.get(ledger.run_key)["state"], "FAILED")
+
     def test_definitive_no_fill_warns_and_does_not_stop_later_orders(self) -> None:
         second_condition = "0x" + "b" * 64
         second_token = "987654321"

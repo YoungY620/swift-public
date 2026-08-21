@@ -1,0 +1,316 @@
+#!/usr/bin/env python3
+"""Deterministically verify one completed Forecast Edge parent iteration."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+from typing import Any
+
+
+class AcceptanceInputError(ValueError):
+    pass
+
+
+def load_json(path: Path, label: str, *, optional: bool = False) -> Any:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        if optional:
+            return None
+        raise AcceptanceInputError(f"could not read {label}: {exc}") from exc
+    return None if optional and value is None else value
+
+
+def write_json(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+
+
+def as_object(value: Any) -> dict[str, Any] | None:
+    return value if isinstance(value, dict) else None
+
+
+def normalize_jobs(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        value = value.get("jobs")
+    if not isinstance(value, list):
+        raise AcceptanceInputError("jobs must be an array or an object containing jobs")
+    return [item for item in value if isinstance(item, dict)]
+
+
+def stage_jobs(jobs: list[dict[str, Any]], stage: str) -> list[dict[str, Any]]:
+    pattern = re.compile(rf"^{re.escape(stage)}(?: /|$)")
+    return [item for item in jobs if pattern.search(str(item.get("name") or ""))]
+
+
+def build_document(
+    run: dict[str, Any],
+    jobs: list[dict[str, Any]],
+    manifest: dict[str, Any] | None,
+    receipt: dict[str, Any] | None,
+    verification: dict[str, Any] | None,
+    diagnostic_summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+
+    def check(identifier: str, passed: bool, evidence: list[str], reason: str) -> None:
+        checks.append(
+            {
+                "id": identifier,
+                "status": "PASS" if passed else "FAIL",
+                "evidence": evidence,
+                "reason": reason,
+            }
+        )
+
+    def not_applicable(identifier: str, reason: str) -> None:
+        checks.append(
+            {
+                "id": identifier,
+                "status": "NOT_APPLICABLE",
+                "evidence": [],
+                "reason": reason,
+            }
+        )
+
+    run_id = str(run.get("id") or "")
+    event = str(run.get("event") or "")
+    run_attempt = str(run.get("run_attempt") or "")
+    head_sha = str(run.get("head_sha") or "")
+    parent_success = run.get("status") == "completed" and run.get("conclusion") == "success"
+    check(
+        "PARENT-CONCLUSION",
+        parent_success,
+        ["run"],
+        f"parent status={run.get('status')!r}, conclusion={run.get('conclusion')!r}",
+    )
+
+    stage_conclusions: dict[str, str] = {}
+    for stage in ("gate", "research", "execution", "release"):
+        matches = stage_jobs(jobs, stage)
+        conclusion = str(matches[0].get("conclusion") or "missing") if len(matches) == 1 else "missing"
+        stage_conclusions[stage] = conclusion
+        check(
+            f"STAGE-{stage.upper()}",
+            len(matches) == 1 and conclusion == "success",
+            ["jobs"],
+            f"matched={len(matches)}, conclusion={conclusion}",
+        )
+
+    manifest_execution = as_object(manifest.get("execution")) if manifest else None
+    execution_requested = (
+        manifest_execution.get("requested") is True
+        if manifest_execution
+        else event == "schedule" or stage_conclusions["execution"] != "skipped"
+    )
+    research_only = event == "workflow_dispatch" and not execution_requested
+    if research_only:
+        execution_matches = stage_jobs(jobs, "execution")
+        execution_conclusion = (
+            str(execution_matches[0].get("conclusion") or "missing")
+            if len(execution_matches) == 1
+            else "missing"
+        )
+        execution_check_index = next(
+            index for index, item in enumerate(checks) if item["id"] == "STAGE-EXECUTION"
+        )
+        checks[execution_check_index] = {
+            "id": "STAGE-EXECUTION",
+            "status": "NOT_APPLICABLE" if execution_conclusion == "skipped" else "FAIL",
+            "evidence": ["jobs"],
+            "reason": (
+                "explicit research-only manual iteration"
+                if execution_conclusion == "skipped"
+                else f"research-only execution conclusion={execution_conclusion}"
+            ),
+        }
+
+    if manifest is None:
+        check("RELEASE-LINEAGE", False, ["release.manifest"], "final manifest unavailable")
+    else:
+        lineage_ok = (
+            str(manifest.get("workflow_run_id") or "") == run_id
+            and str(manifest.get("workflow_run_attempt") or "") == run_attempt
+            and str(manifest.get("commit_sha") or "") == head_sha
+        )
+        check(
+            "RELEASE-LINEAGE",
+            lineage_ok,
+            ["run", "release.manifest"],
+            "manifest run id, attempt and commit must match the completed parent run",
+        )
+
+    if event == "schedule":
+        schedule = as_object(manifest.get("schedule")) if manifest else None
+        execution = manifest_execution
+        schedule_ok = bool(
+            schedule
+            and execution
+            and schedule.get("event_name") == "schedule"
+            and schedule.get("interval_hours") == 8
+            and schedule.get("anchor_utc_hour") == 2
+            and schedule.get("gate_should_run") is True
+            and schedule.get("automation_paused") is False
+            and execution.get("requested") is True
+            and execution.get("configuration_ready") is True
+            and execution.get("workflow_result") == "success"
+        )
+        check(
+            "SCHEDULE-FULL-ITERATION",
+            schedule_ok,
+            ["run", "release.manifest"],
+            "schedule must record the fixed eight-hour gate and requested successful execution",
+        )
+    else:
+        not_applicable("SCHEDULE-FULL-ITERATION", f"parent event is {event!r}, not schedule")
+
+    if not execution_requested:
+        for identifier in (
+            "EXECUTION-RECEIPT",
+            "EXECUTION-PHASES",
+            "EXECUTION-OPEN-ORDERS",
+        ):
+            not_applicable(identifier, "explicit research-only manual iteration")
+    else:
+        receipt_values = (
+            receipt.get("receipts", [])
+            if receipt and isinstance(receipt.get("receipts"), list)
+            else []
+        )
+        receipt_items = [item for item in receipt_values if isinstance(item, dict)]
+        receipt_statuses = [str(item.get("status") or "") for item in receipt_items]
+        cancellation = as_object(receipt.get("pre_execution_cancellation")) if receipt else None
+        receipt_ok = bool(
+            receipt
+            and len(receipt_items) == len(receipt_values)
+            and receipt.get("status")
+            in {"COMPLETED", "COMPLETED_WITH_WARNINGS", "NO_ACTIONS"}
+            and cancellation
+            and cancellation.get("remaining_open_order_count") == 0
+            and all(status in {"FULL", "NO_FILL"} for status in receipt_statuses)
+            and all(
+                item.get("status") != "NO_FILL" or item.get("code") == "FOK_NOT_FILLED"
+                for item in receipt_items
+            )
+        )
+        check(
+            "EXECUTION-RECEIPT",
+            receipt_ok,
+            ["release.execution_receipt"],
+            f"receipt status={receipt.get('status') if receipt else None!r}, terminal statuses={receipt_statuses}",
+        )
+
+        phase_events = (
+            diagnostic_summary.get("phase_events")
+            if diagnostic_summary and isinstance(diagnostic_summary.get("phase_events"), list)
+            else []
+        )
+        phase_map = {
+            phase: [
+                item.get("exit_code")
+                for item in phase_events
+                if isinstance(item, dict) and item.get("phase") == phase
+            ]
+            for phase in (
+                "install",
+                "validate",
+                "cancel",
+                "preflight",
+                "plan",
+                "execute",
+                "verify",
+            )
+        }
+        required_phases = tuple(phase_map)
+        phases_ok = bool(
+            diagnostic_summary
+            and diagnostic_summary.get("secret_scan_passed") is True
+            and diagnostic_summary.get("failed_phase") is None
+            and all(phase_map[phase] == [0] for phase in required_phases)
+        )
+        phase_detail = {
+            phase: values[0] if len(values) == 1 else values
+            for phase, values in phase_map.items()
+        }
+        check(
+            "EXECUTION-PHASES",
+            phases_ok,
+            ["diagnostics.summary"],
+            f"required phase exit codes={phase_detail!r}",
+        )
+
+        order_values = (
+            verification.get("orders")
+            if verification and isinstance(verification.get("orders"), list)
+            else []
+        )
+        orders = [item for item in order_values if isinstance(item, dict)]
+        open_orders_ok = bool(
+            verification
+            and len(orders) == len(order_values)
+            and verification.get("open_order_count") == 0
+            and all(item.get("open") is False for item in orders)
+        )
+        check(
+            "EXECUTION-OPEN-ORDERS",
+            open_orders_ok,
+            ["release.execution_verification"],
+            f"open_order_count={verification.get('open_order_count') if verification else None!r}",
+        )
+
+    failed = [item["id"] for item in checks if item["status"] == "FAIL"]
+    return {
+        "schema_version": "1.0",
+        "parent_run_id": run_id,
+        "event": event,
+        "production_schedule": event == "schedule",
+        "execution_requested": execution_requested,
+        "stage_conclusions": stage_conclusions,
+        "accepted": not failed,
+        "failed_checks": failed,
+        "checks": checks,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run", type=Path, required=True)
+    parser.add_argument("--jobs", type=Path, required=True)
+    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument("--verification", type=Path, required=True)
+    parser.add_argument("--diagnostic-summary", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--require-pass", action="store_true")
+    args = parser.parse_args()
+    try:
+        run = load_json(args.run, "run")
+        if not isinstance(run, dict):
+            raise AcceptanceInputError("run must be an object")
+        document = build_document(
+            run,
+            normalize_jobs(load_json(args.jobs, "jobs")),
+            as_object(load_json(args.manifest, "manifest", optional=True)),
+            as_object(load_json(args.receipt, "receipt", optional=True)),
+            as_object(load_json(args.verification, "verification", optional=True)),
+            as_object(
+                load_json(args.diagnostic_summary, "diagnostic summary", optional=True)
+            ),
+        )
+        write_json(args.output, document)
+    except AcceptanceInputError as exc:
+        print(f"verify_forecast_edge_production_run: {exc}", file=sys.stderr)
+        return 2
+    return 1 if args.require_pass and not document["accepted"] else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

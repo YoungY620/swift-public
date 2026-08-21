@@ -36,8 +36,10 @@ class WorkflowContractTests(unittest.TestCase):
         return workflow[start:] if end == -1 else workflow[start:end]
 
     def test_parent_owns_schedule_and_calls_two_reusable_subworkflows(self) -> None:
-        self.assertIn('cron: "23 * * * *"', self.parent)
-        self.assertIn("FORECAST_EDGE_INTERVAL_HOURS || '8'", self.parent)
+        self.assertIn('cron: "23 2,10,18 * * *"', self.parent)
+        self.assertNotIn('cron: "23 * * * *"', self.parent)
+        self.assertNotIn("FORECAST_EDGE_INTERVAL_HOURS", self.parent)
+        self.assertNotIn("epoch_hour", self.parent)
         self.assertIn("uses: ./.github/workflows/forecast-edge-research.yml", self.parent)
         self.assertIn("uses: ./.github/workflows/execute-polymarket.yml", self.parent)
         self.assertIn("needs: [gate, research]", self.parent)
@@ -67,27 +69,28 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("存在交易意图且 EC2", combined)
 
     def test_parent_manifest_records_the_effective_schedule_gate(self) -> None:
-        self.assertIn("interval-hours=$interval", self.parent)
-        self.assertIn("anchor-utc-hour=$anchor", self.parent)
+        self.assertIn('echo "interval-hours=8"', self.parent)
+        self.assertIn('echo "anchor-utc-hour=2"', self.parent)
         self.assertIn("gate-event-name=$EVENT_NAME", self.parent)
         self.assertIn("schedule:{", self.parent)
         self.assertIn("AUTOMATION_PAUSED", self.parent)
         self.assertIn("interval_hours:($schedule_interval_hours|tonumber)", self.parent)
 
     def test_audit_is_triggered_only_after_the_parent_completes(self) -> None:
-        self.assertIn("workflow_run:", self.audit)
-        self.assertIn("Forecast Edge research and optional execution", self.audit)
-        self.assertIn("types:\n      - completed", self.audit)
-        self.assertNotIn("cron:", self.audit)
+        trigger = self.audit[: self.audit.index("\npermissions:\n")]
+        self.assertIn("workflow_run:", trigger)
+        self.assertIn("Forecast Edge research and optional execution", trigger)
+        self.assertIn("types:\n      - completed", trigger)
+        self.assertNotIn("schedule:", trigger)
+        self.assertNotIn("cron:", trigger)
 
-    def test_missing_audit_secrets_skip_agent_and_notification(self) -> None:
+    def test_every_completed_parent_run_enters_audit_selection(self) -> None:
         select = self.step(
             self.audit, "Select completed iterations that need agent review"
         )
-        self.assertIn("missing_configuration=()", select)
-        self.assertIn("Forecast Edge audit is not configured; skipping this run", select)
-        self.assertIn('echo "audit-applicable=false"', select)
-        self.assertIn("exit 0", select)
+        self.assertIn('echo "audit-applicable=true"', select)
+        self.assertNotIn('echo "audit-applicable=false"', select)
+        self.assertNotIn("secrets.", select)
 
     def test_parent_grants_children_artifact_and_checkout_permissions(self) -> None:
         research_call = self.parent[
@@ -525,19 +528,16 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("|| 'polymarket'", self.research)
         self.assertNotIn("vars.POLYMARKET_ACCOUNT", self.research)
 
-    def test_missing_private_configuration_skips_all_downstream_jobs(self) -> None:
+    def test_missing_private_configuration_fails_the_gate_visibly(self) -> None:
         gate = self.step(
             self.parent, "Validate schedule and private workflow configuration"
         )
         self.assertIn("missing_configuration=()", gate)
-        self.assertIn("Forecast Edge is not configured; skipping this run", gate)
-        self.assertIn('echo "should-run=false"', gate)
-        self.assertIn('echo "execution-requested=false"', gate)
-        self.assertIn('echo "execution-ready=false"', gate)
-        self.assertIn("exit 0", gate)
-        self.assertLess(
-            gate.index("missing_configuration=()"),
-            gate.index("FORECAST_EDGE_INTERVAL_HOURS must be an integer"),
+        self.assertIn("Forecast Edge production configuration is incomplete", gate)
+        self.assertIn("exit 1", gate)
+        self.assertNotIn('echo "should-run=false"', gate)
+        self.assertIn(
+            "Scheduled production iterations require live trading to be enabled", gate
         )
 
     def test_all_validation_attempts_use_multi_venue_validator(self) -> None:

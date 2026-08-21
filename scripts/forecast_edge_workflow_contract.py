@@ -64,14 +64,25 @@ def main() -> int:
         if f"      - {label}\n" in execution
     ]
     contract = {
-        "hourly_wakeup_with_interval_gate": (
-            'cron: "23 * * * *"' in parent
-            and "(epoch_hour - anchor) % interval == 0" in parent
-            and "FORECAST_EDGE_INTERVAL_HOURS" in parent
+        "direct_eight_hour_schedule": (
+            'cron: "23 2,10,18 * * *"' in parent
+            and 'cron: "23 * * * *"' not in parent
+            and "(epoch_hour - anchor) % interval == 0" not in parent
+            and "FORECAST_EDGE_INTERVAL_HOURS" not in parent
+            and 'echo "should-run=true"' in parent
         ),
         "parent_concurrency_safe": (
             "group: forecast-edge-parent-${{ github.repository }}" in parent
             and "cancel-in-progress: false" in parent
+        ),
+        "production_run_acceptance": (
+            "verify_forecast_edge_production_run.py" in audit
+            and "production-acceptance.json" in audit
+            and "production_acceptance:$production_acceptance[0]" in audit
+            and '.production_acceptance.accepted | type == "boolean"' in audit
+            and 'test("^execution(?: /|$)")' in audit
+            and "Enforce deterministic production acceptance" in audit
+            and ".accepted == true and (.failed_checks | length == 0)" in audit
         ),
         "execution_runs_when_requested": (
             "needs.gate.outputs.execution-ready == 'true'" in execution_call
@@ -181,10 +192,12 @@ def main() -> int:
             and "sanitize_research_diagnostics.py" in audit
             and "--secret-env KIMI_MODEL_API_KEY" in audit
         ),
-        "missing_audit_configuration_is_noop": (
-            "Forecast Edge audit is not configured; skipping this run" in audit
-            and 'echo "audit-applicable=false"' in audit
-            and "missing_configuration=()" in between(audit, "  select:\n", "\n  audit:\n")
+        "all_completed_parent_runs_are_audited": (
+            'echo "audit-applicable=true"' in between(
+                audit, "  select:\n", "\n  audit:\n"
+            )
+            and "Successful hourly wake-up was gated off" not in audit
+            and 'echo "audit-applicable=false"' not in audit
         ),
         "research_kimi_live_stream": (
             research.count("--output-format stream-json") >= 4
@@ -313,12 +326,11 @@ def main() -> int:
             == ["FORECAST_EDGE_MARKET_ACCOUNTS_JSON", "KIMI_CODE_API_KEY"]
             and audit_agent_secrets == ["KIMI_CODE_API_KEY"]
         ),
-        "missing_configuration_is_noop": (
+        "missing_configuration_fails_visible": (
             "missing_configuration=()" in parent
-            and "Forecast Edge is not configured; skipping this run" in parent
-            and 'echo "should-run=false"' in parent
-            and 'echo "execution-requested=false"' in parent
-            and 'echo "execution-ready=false"' in parent
+            and "Forecast Edge production configuration is incomplete" in parent
+            and 'echo "should-run=false"' not in parent
+            and "Scheduled production iterations require live trading to be enabled" in parent
             and "FORECAST_EDGE_MARKET_ACCOUNTS_JSON: ${{ secrets.FORECAST_EDGE_MARKET_ACCOUNTS_JSON }}"
             in parent
             and "MARKET_ACCOUNTS_JSON: ${{ secrets.FORECAST_EDGE_MARKET_ACCOUNTS_JSON }}"
