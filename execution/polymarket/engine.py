@@ -22,9 +22,11 @@ from .models import (
     decimal_value,
 )
 from .planner import build_execution_plan
+from .planner import POLYMARKET_MIN_MARKETABLE_BUY_AMOUNT
 from .sdk_adapter import (
     LivePolymarketAdapter,
     OrderNotFilledError,
+    OrderRejectedError,
     required_exchange_allowance,
 )
 
@@ -405,6 +407,56 @@ def _definitive_no_fill_receipt(
     }
 
 
+def _definitive_rejection_receipt(
+    *,
+    adapter: LivePolymarketAdapter,
+    order: PlannedOrder,
+    before_token: Decimal,
+    before_cash: Decimal,
+) -> dict[str, Any]:
+    """Prove a server-side order rejection did not change the account."""
+
+    after_token = adapter.conditional_balance(order.token_id)
+    after_cash = adapter.collateral_balance()
+    if abs(after_token - before_token) > SHARE_QUANTUM:
+        raise UncertainExecutionError(
+            "outcome-token balance changed after a definitive CLOB rejection"
+        )
+    if abs(after_cash - before_cash) > Decimal("0.01"):
+        raise UncertainExecutionError(
+            "collateral balance changed after a definitive CLOB rejection"
+        )
+    if adapter.open_orders():
+        raise UncertainExecutionError(
+            "account has an open order after a definitive CLOB rejection"
+        )
+    return {
+        "intent_index": order.intent_index,
+        "order_id": None,
+        "market_id": order.market_id,
+        "token_id": order.token_id,
+        "side": order.side,
+        "order_type": "FOK",
+        "execution_style": "protected_market",
+        "status": "REJECTED",
+        "code": "CLOB_REJECTED",
+        "message": "CLOB definitively rejected the protected FOK order",
+        "planned_quantity": decimal_string(order.quantity),
+        "filled_quantity": "0",
+        "planned_limit_price": decimal_string(order.limit_price),
+        "planned_cash_limit": decimal_string(order.worst_case_cash_effect),
+        "actual_vwap": "0",
+        "collateral_effect": "0",
+        "before_token_balance": decimal_string(before_token),
+        "after_token_balance": decimal_string(after_token),
+        "before_collateral_balance": decimal_string(before_cash),
+        "after_collateral_balance": decimal_string(after_cash),
+        "failed_trade_ids": [],
+        "transaction_hashes": [],
+        "trades": [],
+    }
+
+
 def execute_orders(
     *,
     adapter: LivePolymarketAdapter,
@@ -502,6 +554,14 @@ def execute_orders(
                     raise ExecutionError(
                         "SDK-rounded market quantity is below the live minimum order size"
                     )
+                if (
+                    current.side == "buy"
+                    and current.limit_gross_notional
+                    < POLYMARKET_MIN_MARKETABLE_BUY_AMOUNT
+                ):
+                    raise ExecutionError(
+                        "SDK-rounded marketable BUY amount is below the Polymarket CLOB $1 minimum"
+                    )
                 ledger.save_signed_order(
                     current.intent_index,
                     newly_signed,
@@ -531,6 +591,19 @@ def execute_orders(
                     receipts.append(receipt)
                     account_may_have_changed = False
                     continue
+                except OrderRejectedError as exc:
+                    receipt = _definitive_rejection_receipt(
+                        adapter=adapter,
+                        order=current,
+                        before_token=before_token,
+                        before_cash=before_cash,
+                    )
+                    ledger.mark_order_terminal(current.intent_index, receipt)
+                    receipts.append(receipt)
+                    account_may_have_changed = False
+                    raise ExecutionError(
+                        f"intent {current.intent_index} was definitively rejected by the CLOB"
+                    ) from exc
                 except Exception as exc:
                     raise UncertainExecutionError(
                         "CLOB submission did not return a definitive response"

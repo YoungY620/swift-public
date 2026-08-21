@@ -542,12 +542,23 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_all_validation_attempts_use_multi_venue_validator(self) -> None:
         self.assertEqual(self.research.count("scripts/validate_research_iteration.py"), 4)
-        self.assertEqual(
+        self.assertGreaterEqual(
             self.research.count('--current-reports-manifest "$CURRENT_REPORTS_MANIFEST"'),
             4,
         )
         self.assertNotIn("CURRENT_REPORT_PATH_FILE", self.research)
         self.assertNotIn("--polymarket-account-snapshot", self.research)
+
+    def test_research_diagnostics_include_safe_fallback_brief_context(self) -> None:
+        diagnostics = self.step(self.research, "Prepare secret-free research diagnostics")
+        self.assertIn("build_forecast_edge_fallback_context.py", diagnostics)
+        self.assertIn("fallback-brief-context.json", diagnostics)
+        self.assertIn('--account-snapshots-dir "$ACCOUNT_SNAPSHOTS_DIR"', diagnostics)
+        self.assertIn('--baseline-reports-list "$BASELINE_REPORTS_PATH"', diagnostics)
+        self.assertLess(
+            diagnostics.index("build_forecast_edge_fallback_context.py"),
+            diagnostics.index("sanitize_research_diagnostics.py"),
+        )
 
     def test_market_urls_are_venue_neutral_and_verified(self) -> None:
         verify = self.step(self.research, "Resolve and verify published market URLs")

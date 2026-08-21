@@ -215,7 +215,7 @@ Schema 使用 `additionalProperties: false`，并校验价格范围、正数金�
 2. 建议金额按保护限价最多可买的份额 `notional / limit_price`；
 3. 实时可用现金扣除最低现金储备、并为最大费用留足空间后最多可买的份额。
 
-执行器逐档模拟在保护价格内的订单簿成交，计算 VWAP。模拟 VWAP 与 `notional / quantity` 的绝对偏差超过唯一的 `POLYMARKET_MAX_PRICE_DEVIATION_BPS` 阈值时拒绝提交。名义金额偏差与该价格偏差在固定份额下是同一个比例，因此不再设置重复阈值。执行开始前先取消账户全部未成交挂单并复查为空；新订单使用带 `max_price`/`min_price` 的 `FOK` 市价单，只允许立即全部成交或整笔不成交，不允许余量停留在订单簿，也不自动追价补单。
+执行器逐档模拟在保护价格内的订单簿成交，计算 VWAP。模拟 VWAP 相对 `notional / quantity` 的不利偏差超过唯一的 `POLYMARKET_MAX_PRICE_DEVIATION_BPS` 阈值时拒绝提交；价格改善不会被误拒绝。名义金额偏差与该价格偏差在固定份额下是同一个比例，因此不再设置重复阈值。安全份额继续取建议金额与建议份额约束后的最小值；如果买单的签名金额低于 Polymarket CLOB 官方 1 pUSD 最低可成交 BUY 金额，则跳过该意图，不会扩大研究建议来凑单。执行开始前先取消账户全部未成交挂单并复查为空；新订单使用带 `max_price`/`min_price` 的 `FOK` 市价单，只允许立即全部成交或整笔不成交，不允许余量停留在订单簿，也不自动追价补单。
 
 ## 定时间隔 N
 
@@ -233,7 +233,7 @@ Schema 使用 `additionalProperties: false`，并校验价格范围、正数金�
 
 父图在 private repository 中默认于最终 Release 成功后创建一个新 Issue。将 Repository Variable `CREATE_TRADE_INTENT_ISSUE` 设为 `false` 可以关闭 Issue，仅保留本轮最终 Release；public repository 不创建包含交易数量的 Issue。
 
-父 workflow 不在研究或执行过程中发送飞书消息。post-run audit workflow 对每个真正进入 gate 的自动生产迭代只发送一张最终卡片：由只读 Kimi Code Agent 阅读已验证报告生成研究简报，并附父 run 各阶段结论、Judge 有效性、简报有效性、业务验收、严重检查项和熔断结果；执行失败或审计失败也必须通知，纯 gate-off 小时唤醒不通知。无熔断时卡片为绿色，实际触发或需要触发熔断时为红色；Warning 和 Error 详情分别放入折叠面板。Workflow 使用 App ID 与 App Secret 获取短期 tenant token，不保存该 token；发送请求带有基于 GitHub run 和 attempt 的幂等键。
+父 workflow 不在研究或执行过程中发送飞书消息。post-run audit workflow 对每个真正进入 gate 的自动生产迭代只发送一张最终卡片：由只读 Kimi Code Agent 阅读已验证报告生成研究简报，并附父 run 各阶段结论、Judge 有效性、简报有效性、业务验收、严重检查项和熔断结果；执行失败或审计失败也必须通知，纯 gate-off 小时唤醒不通知。无熔断时卡片为绿色，实际触发或需要触发熔断时为红色；Warning 和 Error 详情分别放入折叠面板。若当轮报告未生成，fallback 读取秘密扫描后的账户摘要、上一份验证报告基线和实际研究阶段；未知数量使用 `null` 并显示“未获得”，只有验证报告明确证明零结果时才显示 0。Workflow 使用 App ID 与 App Secret 获取短期 tenant token，不保存该 token；发送请求带有基于 GitHub run 和 attempt 的幂等键。
 
 如果仓库是 public，Issue 会公开交易方向、价格、金额、份额和账户线索，可能造成隐私、策略泄露或抢跑风险。默认建议只在 private repository 创建包含数量的 Issue；public repository 应使用主动降敏的公共简报格式。
 

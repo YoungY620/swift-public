@@ -176,6 +176,12 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertIn("source-inventory.json", prompt)
         self.assertIn("source-inventory.json", profile)
         self.assertIn("forecast_edge_feishu_brief.py\" inventory", self.workflow)
+        self.assertIn("fallback-brief-context.json", self.workflow)
+        self.assertIn('--context "$fallback_context_path"', self.workflow)
+        self.assertIn("current_position_count:null", self.workflow)
+        self.assertIn("researched_market_count:null", self.workflow)
+        self.assertIn("actionable_recommendation_count:null", self.workflow)
+        self.assertNotIn("current_position_count:0", self.workflow)
         feishu_start = self.workflow.index(
             "      - name: Run read-only Kimi Code Feishu briefing agent\n"
         )

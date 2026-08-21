@@ -25,6 +25,9 @@ class PlanningError(ValueError):
     """A hard risk or integrity violation that invalidates the whole batch."""
 
 
+POLYMARKET_MIN_MARKETABLE_BUY_AMOUNT = Decimal("1")
+
+
 @dataclass(frozen=True)
 class ExecutionPlan:
     orders: tuple[PlannedOrder, ...]
@@ -233,6 +236,20 @@ def _plan_one(
         )
     cash_effect = gross + fee if intent.side == "buy" else gross - fee
     limit_gross_notional = filled_quantity * limit_price
+    # Polymarket's CLOB rejects marketable BUY orders whose signed collateral
+    # amount is below $1.  This is a venue constraint, not a configurable
+    # portfolio minimum.  Never increase the research allocation to satisfy it:
+    # skip the order before any batch submission instead.
+    if (
+        intent.side == "buy"
+        and limit_gross_notional < POLYMARKET_MIN_MARKETABLE_BUY_AMOUNT
+    ):
+        return SkippedIntent(
+            index,
+            "below_marketable_buy_minimum_amount",
+            "protected marketable BUY amount is below the Polymarket CLOB $1 minimum",
+            intent,
+        )
     worst_case_fee = filled_quantity * maximum_fee_per_share
     worst_case_cash_effect = (
         limit_gross_notional + worst_case_fee

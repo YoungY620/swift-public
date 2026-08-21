@@ -182,14 +182,14 @@ def report_inventory(
             raise BriefValidationError("no report JSON files were supplied")
         try:
             parsed_date = datetime.fromisoformat(research_date).date().isoformat()
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
             raise BriefValidationError("fallback research date is invalid") from exc
         return {
             "research_date": parsed_date,
             "venues": [],
-            "current_position_count": 0,
-            "researched_market_count": 0,
-            "actionable_recommendation_count": 0,
+            "current_position_count": None,
+            "researched_market_count": None,
+            "actionable_recommendation_count": None,
         }
     venues: list[str] = []
     dates: set[str] = set()
@@ -302,33 +302,219 @@ def command_inventory(args: argparse.Namespace) -> None:
     write_json(args.output, report_inventory(args.reports_dir))
 
 
-def command_fallback(args: argparse.Namespace) -> None:
+def fallback_context(path: Path | None) -> dict[str, Any] | None:
+    if path is None or not path.is_file():
+        return None
+    context = load_json(path, "fallback briefing context")
+    if not isinstance(context, dict) or context.get("schema_version") != "1.0":
+        raise BriefValidationError("fallback briefing context is malformed")
+    for field in (
+        "venues",
+        "account_snapshots",
+        "latest_validated_baselines",
+        "current_validated_reports",
+    ):
+        if not isinstance(context.get(field), list):
+            raise BriefValidationError(f"fallback briefing context {field} is malformed")
+    if not isinstance(context.get("progress"), dict):
+        raise BriefValidationError("fallback briefing context progress is malformed")
+    return context
+
+
+def total_known(rows: list[Any], field: str) -> int | None:
+    if not rows or any(not isinstance(row, dict) for row in rows):
+        return None
+    values = [row.get(field) for row in rows]
+    if not values or any(isinstance(value, bool) or not isinstance(value, int) for value in values):
+        return None
+    if any(value < 0 for value in values):
+        return None
+    return sum(values)
+
+
+def fallback_inventory(
+    reports_dir: Path,
+    *,
+    research_date: str,
+    context: dict[str, Any] | None,
+) -> tuple[dict[str, Any], bool]:
+    paths = sorted(reports_dir.glob("report-*.json"))
+    if paths:
+        return (
+            report_inventory(
+                reports_dir,
+                allow_empty=True,
+                research_date=research_date,
+                validate_candidate_quality=False,
+            ),
+            True,
+        )
     inventory = report_inventory(
-        args.reports_dir,
+        reports_dir,
         allow_empty=True,
-        research_date=args.research_date,
+        research_date=research_date,
         validate_candidate_quality=False,
+    )
+    if context is None:
+        return inventory, False
+    venues = [
+        venue
+        for venue in context["venues"]
+        if isinstance(venue, str) and re.fullmatch(r"[a-z][a-z0-9-]*", venue)
+    ]
+    inventory["venues"] = sorted(set(venues))
+    current_reports = context["current_validated_reports"]
+    if current_reports:
+        inventory["current_position_count"] = total_known(
+            current_reports, "current_position_count"
+        )
+        inventory["researched_market_count"] = total_known(
+            current_reports, "researched_market_count"
+        )
+        inventory["actionable_recommendation_count"] = total_known(
+            current_reports, "actionable_recommendation_count"
+        )
+    else:
+        inventory["current_position_count"] = total_known(
+            context["account_snapshots"], "current_position_count"
+        )
+    return inventory, bool(current_reports)
+
+
+def display_count(value: Any, noun: str) -> str:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return f"**{value} {noun}**"
+    return f"**{noun}数量未获得**"
+
+
+def display_money(value: Any, currency: Any) -> str:
+    if isinstance(value, str) and value and isinstance(currency, str) and currency:
+        return f"可用抵押资金 **{value} {currency}**"
+    return "可用抵押资金 **未获得**"
+
+
+def account_snapshot_markdown(context: dict[str, Any] | None) -> str:
+    accounts = context.get("account_snapshots", []) if context is not None else []
+    rendered: list[str] = []
+    for row in accounts:
+        if not isinstance(row, dict):
+            continue
+        venue = row.get("venue")
+        if not isinstance(venue, str) or not venue:
+            continue
+        rendered.append(
+            f"{venue}：{display_money(row.get('available_cash'), row.get('currency'))}，"
+            f"账户当前持仓 {display_count(row.get('current_position_count'), '个')}"
+        )
+    if not rendered:
+        return "账户快照 **未获得或不可验证**"
+    return "；".join(rendered)
+
+
+def baseline_markdown(context: dict[str, Any] | None) -> str:
+    baselines = context.get("latest_validated_baselines", []) if context is not None else []
+    rendered: list[str] = []
+    for row in baselines:
+        if not isinstance(row, dict):
+            continue
+        venue = row.get("venue")
+        completed_at = row.get("completed_at")
+        if not isinstance(venue, str) or not isinstance(completed_at, str):
+            continue
+        date = completed_at[:10]
+        rendered.append(
+            f"{venue} {date}：{display_count(row.get('current_position_count'), '个当前持仓')}、"
+            f"{display_count(row.get('candidate_count'), '个新增候选')}、"
+            f"{display_count(row.get('actionable_recommendation_count'), '条可操作建议')}"
+        )
+    return "；".join(rendered) if rendered else "未取得上一份验证报告基线"
+
+
+def progress_markdown(context: dict[str, Any] | None) -> str:
+    if context is None:
+        return "研究诊断 context 未提供，无法确定本轮到达的具体研究步骤"
+    progress = context["progress"]
+    stage_labels = {
+        "SETUP_NOT_REACHED": "尚未完成工作流初始化",
+        "WORKFLOW_CONFIGURED": "工作流配置已完成",
+        "HISTORY_RESTORED": "历史报告已恢复",
+        "ACCOUNT_SNAPSHOT_CAPTURED": "账户快照已完成",
+        "RESEARCH_AGENT_RAN": "研究 Agent 已运行，但尚无验证报告",
+        "REPORT_VALIDATION_ATTEMPTED": "报告校验已运行，但尚未通过",
+        "REPORT_GENERATED_UNVALIDATED": "报告文件已生成，但未通过验证",
+        "REPORT_VALIDATED": "报告已经验证，但正常简报不可用",
+    }
+    stage = stage_labels.get(
+        progress.get("last_reached_stage"), "最近研究阶段无法识别"
+    )
+    counts = []
+    for label, field in (
+        ("已恢复历史报告", "restored_historical_report_count"),
+        ("账户快照", "account_snapshot_count"),
+        ("研究 Agent 尝试", "research_agent_attempt_count"),
+        ("报告校验尝试", "report_validation_attempt_count"),
+        ("已验证当轮报告", "validated_report_count"),
+    ):
+        value = progress.get(field)
+        counts.append(f"{label} {value if isinstance(value, int) else '未获得'}")
+    return f"最近到达 **{stage}**；" + "，".join(counts)
+
+
+def command_fallback(args: argparse.Namespace) -> None:
+    context = fallback_context(getattr(args, "context", None))
+    inventory, validated_report_inventory_available = fallback_inventory(
+        args.reports_dir,
+        research_date=args.research_date,
+        context=context,
     )
     reason = args.reason.read_text(encoding="utf-8").strip()[:500]
     venue_text = "、".join(inventory["venues"]) or "未完成报告"
+    current_count = inventory["current_position_count"]
+    researched_count = inventory["researched_market_count"]
+    actionable_count = inventory["actionable_recommendation_count"]
+    if validated_report_inventory_available:
+        candidate_count = (
+            researched_count - current_count
+            if isinstance(researched_count, int) and isinstance(current_count, int)
+            else None
+        )
+        portfolio_summary = account_snapshot_markdown(context)
+        research_summary = (
+            f"本轮已验证报告覆盖 {display_count(current_count, '个当前持仓')}、"
+            f"{display_count(candidate_count, '个新增候选')}"
+        )
+        baseline_summary = "本轮已验证报告仍可作为数量清单，市场专属结论未在 fallback 中二次生成"
+    else:
+        portfolio_summary = account_snapshot_markdown(context)
+        research_summary = (
+            "本轮经过验证的 report JSON **未取得**；账户持仓快照不等于研究覆盖，"
+            "当前持仓重研数量、新增候选数量和市场专属结论均为 **未获得/不可验证**"
+        )
+        baseline_summary = f"上一份验证报告基线：{baseline_markdown(context)}"
+
+    if actionable_count == 0:
+        action_summary = "经验证报告确认：本轮无可执行交易意图。"
+    elif isinstance(actionable_count, int):
+        action_summary = f"经验证报告含 **{actionable_count} 条可操作建议**。"
+    else:
+        action_summary = "本轮可执行交易意图数量 **未获得**；不能据此声称为零。"
     document = {
         "schema_version": "1.0",
         **inventory,
         "title": f"forecast-edge 扫描简报 {inventory['research_date']}",
         "markdown": (
             f"## forecast-edge 全量扫描｜{inventory['research_date']}（{venue_text}）\n\n"
-            "**组合概况**：⚠️ Warning：正常简报被拒绝，**无法安全复述资金数据**。\n\n"
-            f"**研究覆盖**：本轮报告覆盖 **{inventory['current_position_count']} 个当前持仓**、"
-            f"**{max(inventory['researched_market_count'] - inventory['current_position_count'], 0)} 个新增候选**。\n\n"
+            f"**组合概况**：⚠️ Warning：{portfolio_summary}。\n\n"
+            f"**研究覆盖**：{research_summary}。\n\n"
             "**本轮结论**：⚠️ **Warning：未取得可验证的市场专属研究结论**，请查看完整报告和下方异常详情。\n\n"
             "### 一、私人操作建议\n\n"
-            "Agent 简报生成失败，本卡未复述未经 Agent 核验的研究结论；请打开父流程 Release 查看完整报告。\n\n"
+            "Agent 简报生成失败，本卡不会补造研究理由或操作建议；"
+            "只有经过验证的报告才能作为交易建议来源。\n\n"
             "### 二、简报\n\n"
-            f"本轮报告覆盖 {inventory['current_position_count']} 个当前持仓、"
-            f"{inventory['researched_market_count']} 个研究市场。"
-            + ("本轮无可执行交易意图。" if inventory["actionable_recommendation_count"] == 0 else
-               f"报告含 {inventory['actionable_recommendation_count']} 条可操作建议。")
-            + f"\n\nWarning 详情：{reason or 'unknown'}"
+            f"**本轮已完成步骤**：{progress_markdown(context)}。\n\n"
+            f"**可用基线**：{baseline_summary}。\n\n"
+            f"**执行判断状态**：{action_summary}\n\n"
+            f"**Warning 详情**：{reason or 'unknown'}"
         ),
     }
     schema = load_json(args.schema, "brief schema")
@@ -352,7 +538,8 @@ def build_parser() -> argparse.ArgumentParser:
     fallback.add_argument("--reason", type=Path, required=True)
     fallback.add_argument("--schema", type=Path, required=True)
     fallback.add_argument("--reports-dir", type=Path, required=True)
-    fallback.add_argument("--research-date")
+    fallback.add_argument("--research-date", required=True)
+    fallback.add_argument("--context", type=Path)
     fallback.add_argument("--output", type=Path, required=True)
     return parser
 

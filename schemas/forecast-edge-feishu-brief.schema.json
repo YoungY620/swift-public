@@ -24,9 +24,9 @@
       "uniqueItems": true,
       "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"}
     },
-    "current_position_count": {"type": "integer", "minimum": 0},
-    "researched_market_count": {"type": "integer", "minimum": 0},
-    "actionable_recommendation_count": {"type": "integer", "minimum": 0},
+    "current_position_count": {"type": ["integer", "null"], "minimum": 0},
+    "researched_market_count": {"type": ["integer", "null"], "minimum": 0},
+    "actionable_recommendation_count": {"type": ["integer", "null"], "minimum": 0},
     "markdown": {"type": "string", "minLength": 100, "maxLength": 28000}
   }
 }

@@ -276,6 +276,7 @@ class ForecastEdgeFeishuBriefTests(unittest.TestCase):
                     "schema": SCHEMA_PATH,
                     "reports_dir": reports,
                     "research_date": "2026-08-21",
+                    "context": None,
                     "reason": reason,
                     "output": output,
                 },
@@ -283,9 +284,123 @@ class ForecastEdgeFeishuBriefTests(unittest.TestCase):
             brief_module.command_fallback(args)
             result = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(result["venues"], [])
-            self.assertEqual(result["researched_market_count"], 0)
-            self.assertIn("无可执行交易意图", result["markdown"])
+            self.assertIsNone(result["current_position_count"])
+            self.assertIsNone(result["researched_market_count"])
+            self.assertIsNone(result["actionable_recommendation_count"])
+            self.assertNotIn("0 个当前持仓", result["markdown"])
+            self.assertNotIn("无可执行交易意图", result["markdown"])
+            self.assertIn("不能据此声称为零", result["markdown"])
             self.assertIn("Warning", result["markdown"])
+
+    def test_fallback_uses_snapshot_and_baseline_without_claiming_research_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reports = root / "reports"
+            reports.mkdir()
+            reason = root / "reason.txt"
+            context = root / "fallback-context.json"
+            output = root / "brief.json"
+            reason.write_text("report validation failed", encoding="utf-8")
+            context.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "research_date": "2026-08-21",
+                        "venues": ["polymarket"],
+                        "account_snapshots": [
+                            {
+                                "venue": "polymarket",
+                                "currency": "pUSD",
+                                "available_cash": "134.72",
+                                "current_position_count": 14,
+                            }
+                        ],
+                        "latest_validated_baselines": [
+                            {
+                                "venue": "polymarket",
+                                "completed_at": "2026-08-20T03:00:00+00:00",
+                                "current_position_count": 13,
+                                "candidate_count": 10,
+                                "researched_market_count": 23,
+                                "actionable_recommendation_count": 4,
+                                "currency": "pUSD",
+                                "available_collateral": "120",
+                                "estimated_bankroll": "190",
+                            }
+                        ],
+                        "current_validated_reports": [],
+                        "progress": {
+                            "last_reached_stage": "REPORT_VALIDATION_ATTEMPTED",
+                            "restored_historical_report_count": 20,
+                            "account_snapshot_count": 1,
+                            "research_agent_attempt_count": 1,
+                            "report_validation_attempt_count": 1,
+                            "generated_report_count": 1,
+                            "validated_report_count": 0,
+                            "validated_trade_intent_count": None,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "schema": SCHEMA_PATH,
+                    "reports_dir": reports,
+                    "research_date": "2026-08-21",
+                    "context": context,
+                    "reason": reason,
+                    "output": output,
+                },
+            )()
+            brief_module.command_fallback(args)
+            result = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(result["venues"], ["polymarket"])
+            self.assertEqual(result["current_position_count"], 14)
+            self.assertIsNone(result["researched_market_count"])
+            self.assertIsNone(result["actionable_recommendation_count"])
+            self.assertIn("134.72 pUSD", result["markdown"])
+            self.assertIn("账户当前持仓 **14 个**", result["markdown"])
+            self.assertIn("上一份验证报告基线", result["markdown"])
+            self.assertIn("**13 个当前持仓**", result["markdown"])
+            self.assertIn("报告校验已运行，但尚未通过", result["markdown"])
+            self.assertNotIn("0 个当前持仓", result["markdown"])
+
+    def test_fallback_preserves_real_zero_from_a_validated_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reports = root / "reports"
+            reports.mkdir()
+            self.write_report(reports, actionable=False)
+            report_path = reports / "report-polymarket.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["current_positions"] = []
+            report["candidates"] = []
+            report["actions"] = []
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            reason = root / "reason.txt"
+            reason.write_text("brief agent unavailable", encoding="utf-8")
+            output = root / "brief.json"
+            args = type(
+                "Args",
+                (),
+                {
+                    "schema": SCHEMA_PATH,
+                    "reports_dir": reports,
+                    "research_date": "2026-08-21",
+                    "context": None,
+                    "reason": reason,
+                    "output": output,
+                },
+            )()
+            brief_module.command_fallback(args)
+            result = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(result["current_position_count"], 0)
+            self.assertEqual(result["researched_market_count"], 0)
+            self.assertEqual(result["actionable_recommendation_count"], 0)
+            self.assertIn("本轮无可执行交易意图", result["markdown"])
 
 
 if __name__ == "__main__":

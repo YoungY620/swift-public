@@ -121,6 +121,8 @@ def main() -> int:
             and "Upload research diagnostics for post-run Judge" in research
             and "forecast-edge-research-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}" in research
             and "kimi-sessions" in research
+            and "fallback-brief-context.json" in research
+            and "build_forecast_edge_fallback_context.py" in research
             and "wire.jsonl" in research
             and "output.log" in research
             and "sanitize_research_diagnostics.py" in research

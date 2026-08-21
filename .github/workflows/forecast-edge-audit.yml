@@ -939,12 +939,24 @@ jobs:
               printf '%s\n' 'Agent output unavailable or failed deterministic validation' \
                 > "$AUDIT_RUNTIME_DIR/feishu-brief-fallback-reason.txt"
             fi
+            fallback_context_args=()
+            fallback_context_path="$AUDIT_EVIDENCE_DIR/research-diagnostics/files/fallback-brief-context.json"
+            if jq -e '
+                .schema_version == "1.0" and
+                (.account_snapshots | type == "array") and
+                (.latest_validated_baselines | type == "array") and
+                (.current_validated_reports | type == "array") and
+                (.progress | type == "object")
+              ' "$fallback_context_path" >/dev/null 2>&1; then
+              fallback_context_args+=(--context "$fallback_context_path")
+            fi
             "$AUDIT_RUNTIME_DIR/python-venv/bin/python" \
               "$GITHUB_WORKSPACE/scripts/forecast_edge_feishu_brief.py" fallback \
               --reason "$AUDIT_RUNTIME_DIR/feishu-brief-fallback-reason.txt" \
               --schema "$FEISHU_BRIEF_SCHEMA_PATH" \
               --reports-dir "$AUDIT_REPORTS_DIR" \
               --research-date "$(jq -r '.created_at[0:10]' "$AUDIT_EVIDENCE_DIR/run.json")" \
+              "${fallback_context_args[@]}" \
               --output "$FEISHU_BRIEF_PATH"
           fi
 
@@ -1282,16 +1294,16 @@ jobs:
                 research_date:$research_date,
                 title:("forecast-edge 扫描简报 " + $research_date),
                 venues:[],
-                current_position_count:0,
-                researched_market_count:0,
-                actionable_recommendation_count:0,
+                current_position_count:null,
+                researched_market_count:null,
+                actionable_recommendation_count:null,
                 markdown:(
                   "## forecast-edge 全量扫描｜" + $research_date + "（Agent 简报不可用）\n\n" +
                   "**组合概况**：Agent 简报不可用，**无法安全复述资金数据**。\n\n" +
-                  "**研究覆盖**：本轮**没有取得可验证的研究覆盖清单**。\n\n" +
+                  "**研究覆盖**：本轮**没有取得可验证的研究覆盖清单**；数量为未知，不能写成 0。\n\n" +
                   "**本轮结论**：**未取得可验证的 Agent 研究结论**，请查看父流程 Release 和异常详情。\n\n" +
                   "### 一、私人操作建议\n\n本轮 Agent 简报 artifact 不可用，请从父流程 Release 查看完整研究报告。\n\n" +
-                  "### 二、简报\n\n本轮无可验证的 Agent 研究摘要；执行与审计失败详情见下方状态。"
+                  "### 二、简报\n\n本轮持仓数、候选数与交易意图数均未获得；执行到达阶段和具体失败点见下方状态。"
                 )
               }' > "$brief_dir/feishu-brief.json"
           fi

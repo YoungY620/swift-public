@@ -1328,6 +1328,28 @@ jobs:
             '{schema_version:$schema_version,repository:$repository,workflow_run_id:$run_id,workflow_run_attempt:$run_attempt,commit_sha:$commit_sha}' \
             > "$staging_root/diagnostic-metadata.json"
           chmod 600 "$staging_root/diagnostic-metadata.json"
+          fallback_context_args=(
+            --research-date "$(date -u +%Y-%m-%d)"
+            --enabled-venues "${ENABLED_PREDICTION_MARKETS:-}"
+            --output "$staging_root/fallback-brief-context.json"
+          )
+          if [[ -n "${ACCOUNT_SNAPSHOTS_DIR:-}" ]]; then
+            fallback_context_args+=(--account-snapshots-dir "$ACCOUNT_SNAPSHOTS_DIR")
+          fi
+          if [[ -n "${BASELINE_REPORTS_PATH:-}" ]]; then
+            fallback_context_args+=(--baseline-reports-list "$BASELINE_REPORTS_PATH")
+          fi
+          if [[ -n "${RUNTIME_DIR:-}" ]]; then
+            fallback_context_args+=(--runtime-dir "$RUNTIME_DIR")
+          fi
+          if [[ -n "${CURRENT_REPORTS_MANIFEST:-}" ]]; then
+            fallback_context_args+=(--current-reports-manifest "$CURRENT_REPORTS_MANIFEST")
+          fi
+          if [[ -n "${VALIDATION_SUMMARY_PATH:-}" ]]; then
+            fallback_context_args+=(--validation-summary "$VALIDATION_SUMMARY_PATH")
+          fi
+          python3 scripts/build_forecast_edge_fallback_context.py \
+            "${fallback_context_args[@]}"
           if [[ -n "${RUNTIME_DIR:-}" && -d "$RUNTIME_DIR" ]]; then
             for candidate in \
               kimi-attempt-*.stream.jsonl kimi-attempt-*.stderr \

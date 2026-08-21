@@ -32,6 +32,7 @@ from execution.polymarket.sdk_adapter import (
     AdapterError,
     LivePolymarketAdapter,
     OrderNotFilledError,
+    OrderRejectedError,
     STANDARD_EXCHANGE,
 )
 
@@ -175,6 +176,54 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(order.limit_price, Decimal("0.55"))
         self.assertEqual(order.quantity, Decimal("9.09"))
         self.assertLessEqual(order.limit_gross_notional, Decimal("5"))
+
+    def test_buy_below_polymarket_marketable_minimum_is_skipped(self) -> None:
+        plan = build_execution_plan(
+            intents=[intent(price="0.10", notional="1.05", quantity="10.5")],
+            markets={
+                TOKEN: market(
+                    asks=(("0.10", "9"),),
+                    fee_rate="0",
+                )
+            },
+            positions={},
+            available_cash=Decimal("100"),
+            limits=RiskLimits(
+                max_price_deviation_bps=0,
+                max_quantity_reduction_bps=2000,
+            ),
+        )
+        self.assertEqual(plan.orders, ())
+        self.assertEqual(
+            plan.skipped[0].code,
+            "below_marketable_buy_minimum_amount",
+        )
+
+    def test_buy_at_polymarket_marketable_minimum_is_allowed(self) -> None:
+        plan = build_execution_plan(
+            intents=[intent(price="0.10", notional="1", quantity="10")],
+            markets={TOKEN: market(asks=(("0.10", "10"),), fee_rate="0")},
+            positions={},
+            available_cash=Decimal("100"),
+            limits=RiskLimits(max_price_deviation_bps=0),
+        )
+        self.assertEqual(plan.orders[0].limit_gross_notional, Decimal("1.00"))
+
+    def test_small_sell_is_not_subject_to_buy_amount_minimum(self) -> None:
+        small_sell = intent(
+            side="sell",
+            price="0.10",
+            notional="0.9",
+            quantity="9",
+        )
+        plan = build_execution_plan(
+            intents=[small_sell],
+            markets={TOKEN: market(bids=(("0.10", "9"),), fee_rate="0")},
+            positions={TOKEN: Decimal("9")},
+            available_cash=Decimal("0"),
+            limits=RiskLimits(max_price_deviation_bps=0),
+        )
+        self.assertEqual(plan.orders[0].limit_gross_notional, Decimal("0.90"))
 
     def test_simulated_vwap_allows_price_improvement(self) -> None:
         limits = RiskLimits(
@@ -533,13 +582,13 @@ class PostOrderClassificationTests(unittest.TestCase):
             with self.assertRaises(OrderNotFilledError):
                 self.adapter(error).post_order(object())
 
-    def test_other_sdk_rejection_is_not_misclassified_as_no_fill(self) -> None:
+    def test_other_sdk_rejection_is_definitive_but_not_a_fok_no_fill(self) -> None:
         polymarket, errors, rejected = self.sdk_modules()
         with patch.dict(
             sys.modules,
             {"polymarket": polymarket, "polymarket.errors": errors},
         ):
-            with self.assertRaises(AdapterError) as raised:
+            with self.assertRaises(OrderRejectedError) as raised:
                 self.adapter(rejected("invalid signature")).post_order(object())
         self.assertNotIsInstance(raised.exception, OrderNotFilledError)
 
@@ -788,6 +837,50 @@ class ExecuteNoFillTests(unittest.TestCase):
                 planning={"source_intent_count": 1},
             )
         self.assertEqual(ledger.get(ledger.run_key)["state"], "UNCERTAIN")
+
+    def test_definitive_submission_rejection_is_failed_not_uncertain(self) -> None:
+        class RejectedAdapter(NoFillThenFillAdapter):
+            def post_order(self, _signed_order):
+                raise OrderRejectedError("CLOB rejected the protected order")
+
+        markets = {TOKEN: market(asks=(("0.50", "100"),), fee_rate="0")}
+        plan = build_execution_plan(
+            intents=[intent()],
+            markets=markets,
+            positions={},
+            available_cash=Decimal("100"),
+            limits=RiskLimits(
+                minimum_cash_reserve=Decimal("0"),
+                max_price_deviation_bps=0,
+            ),
+        )
+        ledger = SQLiteLedger(
+            path=Path(tempfile.mkdtemp()) / "ledger.sqlite3",
+            execution_id="execution-rejected",
+            lease_owner="runner-a",
+        )
+        claim = ledger.claim_run(
+            artifact_sha256="c" * 64,
+            planned_notional=Decimal("5"),
+            daily_notional_limit=Decimal("20"),
+        )
+        with self.assertRaisesRegex(ExecutionError, "definitively rejected"):
+            execute_orders(
+                adapter=RejectedAdapter(markets),  # type: ignore[arg-type]
+                orders=plan.orders,
+                limits=RiskLimits(
+                    minimum_cash_reserve=Decimal("0"),
+                    max_price_deviation_bps=0,
+                ),
+                ledger=ledger,
+                execution_id="execution-rejected",
+                execution_claim=claim,
+                planning={"source_intent_count": 1},
+            )
+        self.assertEqual(ledger.get(ledger.run_key)["state"], "FAILED")
+        order_record = ledger.get(ledger.order_key(1))
+        self.assertEqual(order_record["state"], "VERIFIED")
+        self.assertEqual(json.loads(order_record["receipt"])["status"], "REJECTED")
 
 
 class CancellationAdapterFixture:

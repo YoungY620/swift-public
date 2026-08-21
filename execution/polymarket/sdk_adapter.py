@@ -67,6 +67,18 @@ class OrderNotFilledError(AdapterError):
     """A protected FOK order was definitively killed without any fill."""
 
 
+class OrderRejectedError(AdapterError):
+    """The CLOB definitively rejected an order before accepting it."""
+
+
+def _is_request_rejected(exc: BaseException) -> bool:
+    try:
+        from polymarket.errors import RequestRejectedError
+    except ImportError:
+        return False
+    return isinstance(exc, RequestRejectedError)
+
+
 def _is_definitive_fok_no_fill(exc: BaseException) -> bool:
     """Recognize only the pinned SDK's explicit FOK kill response."""
 
@@ -633,6 +645,10 @@ class LivePolymarketAdapter:
             if _is_definitive_fok_no_fill(exc):
                 raise OrderNotFilledError(
                     "protected FOK order was killed without a fill"
+                ) from exc
+            if _is_request_rejected(exc):
+                raise OrderRejectedError(
+                    "CLOB definitively rejected the protected FOK order"
                 ) from exc
             raise AdapterError(f"CLOB order submission failed: {exc}") from exc
 
