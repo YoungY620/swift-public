@@ -226,6 +226,18 @@ def main() -> int:
             and "template=red" in between(audit, "  notify:\n")
             and "Send post-release notification to Feishu" not in parent
         ),
+        "notification_actual_trade_details": (
+            "forecast_edge_execution_brief.py" in audit
+            and "execution-brief.json" in audit
+            and "execution_detail=$(jq -r '.markdown'" in audit
+            and "printf '\\n%s\\n' \"$execution_detail\"" in audit
+            and "actual_vwap" in (
+                root / "scripts/forecast_edge_execution_brief.py"
+            ).read_text(encoding="utf-8")
+            and "实际交易逐项回执" in (
+                root / "scripts/forecast_edge_execution_brief.py"
+            ).read_text(encoding="utf-8")
+        ),
         "release_after_execution": (
             "needs: [gate, research, execution]" in release
             and "needs.gate.outputs.execution-ready == 'true'" in release

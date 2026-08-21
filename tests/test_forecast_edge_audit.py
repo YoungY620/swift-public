@@ -153,6 +153,12 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertNotIn("overall", color_logic)
         self.assertNotIn("parent_conclusion", color_logic)
         self.assertIn("**执行回执**", self.workflow)
+        self.assertNotIn('receipt_count="0"', self.workflow)
+        self.assertIn("forecast_edge_execution_brief.py", self.workflow)
+        self.assertIn("execution-brief.json", self.workflow)
+        self.assertIn("**实际交易逐项回执**", (
+            ROOT / "scripts" / "forecast_edge_execution_brief.py"
+        ).read_text(encoding="utf-8"))
         self.assertIn('tag:"collapsible_panel"', self.workflow)
         self.assertIn("expanded:false", self.workflow)
         self.assertIn("Warning 详情", self.workflow)

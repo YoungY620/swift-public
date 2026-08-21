@@ -1021,10 +1021,18 @@ jobs:
             install -m 600 "$FEISHU_BRIEF_TRACE_PATH" \
               "$FEISHU_BRIEF_ARTIFACT_DIR/feishu-brief-trace.json"
           fi
-          if jq -e 'type == "object"' \
-            "$AUDIT_EVIDENCE_DIR/release/execution-receipt.json" >/dev/null 2>&1; then
-            install -m 600 "$AUDIT_EVIDENCE_DIR/release/execution-receipt.json" \
+          execution_receipt_source="$AUDIT_EVIDENCE_DIR/release/execution-receipt.json"
+          if ! jq -e 'type == "object"' "$execution_receipt_source" >/dev/null 2>&1; then
+            execution_receipt_source="$AUDIT_EVIDENCE_DIR/diagnostics/receipt.json"
+          fi
+          if jq -e 'type == "object"' "$execution_receipt_source" >/dev/null 2>&1; then
+            install -m 600 "$execution_receipt_source" \
               "$FEISHU_BRIEF_ARTIFACT_DIR/execution-receipt.json"
+            "$AUDIT_RUNTIME_DIR/python-venv/bin/python" \
+              "$GITHUB_WORKSPACE/scripts/forecast_edge_execution_brief.py" \
+              --receipt "$execution_receipt_source" \
+              --reports-dir "$AUDIT_REPORTS_DIR" \
+              --output "$FEISHU_BRIEF_ARTIFACT_DIR/execution-brief.json"
           fi
           echo "brief_valid=$brief_valid" >> "$GITHUB_OUTPUT"
           echo "business_complete=$business_complete" >> "$GITHUB_OUTPUT"
@@ -1374,7 +1382,7 @@ jobs:
           execution_result=$(stage_result '^execution(?: /|$)')
           release_result=$(stage_result '^release(?: /|$)')
           receipt_status="unavailable"
-          receipt_count="0"
+          receipt_count="unavailable"
           canceled_order_count="unavailable"
           if [[ -s "$brief_dir/execution-receipt.json" ]]; then
             receipt_status=$(jq -r '.status // "unknown"' \
@@ -1384,6 +1392,14 @@ jobs:
             canceled_order_count=$(jq -r \
               '.pre_execution_cancellation.canceled_order_count // "unknown"' \
               "$brief_dir/execution-receipt.json")
+          fi
+          execution_detail=""
+          if jq -e '
+              .schema_version == "1.0" and
+              (.item_count | type == "number") and
+              (.markdown | type == "string" and length > 0)
+            ' "$brief_dir/execution-brief.json" >/dev/null 2>&1; then
+            execution_detail=$(jq -r '.markdown' "$brief_dir/execution-brief.json")
           fi
           overall=${AUDIT_OVERALL_STATUS:-INSUFFICIENT_EVIDENCE}
           confidence=${AUDIT_CONFIDENCE:-LOW}
@@ -1416,6 +1432,9 @@ jobs:
               "$gate_result" "$research_result" "$execution_result" "$release_result"
             printf '**执行回执**：状态 `%s` · 订单回执 `%s` · 事前取消旧挂单 `%s`\n' \
               "$receipt_status" "$receipt_count" "$canceled_order_count"
+            if [[ -n "$execution_detail" ]]; then
+              printf '\n%s\n' "$execution_detail"
+            fi
             printf '**Agent Judge**：job `%s` · 有效判断 `%s` · 结论 `%s` · 置信度 `%s`\n' \
               "$audit_job" "${AGENT_JUDGMENT_VALID:-false}" "$overall" "$confidence"
             printf '**严重检查项**：%s\n' "$finding_ids"
