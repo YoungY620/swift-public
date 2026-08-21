@@ -445,6 +445,40 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertIn("release.missing", normalized["missing_evidence"])
         audit_module.validate_response(normalized, self.rubric, self.evidence, self.schema)
 
+    def test_normalizer_restores_authoritative_rubric_severity_for_complete_checks(self) -> None:
+        response = self.response()
+        critical_index = next(
+            index
+            for index, item in enumerate(self.rubric["checks"])
+            if item["severity"] == "critical"
+        )
+        response["checks"][critical_index]["severity"] = "high"
+        normalized = audit_module.normalize_unsupported_judgments(
+            response, self.rubric, self.evidence
+        )
+        self.assertEqual(
+            normalized["checks"][critical_index]["severity"],
+            "critical",
+        )
+        audit_module.validate_response(normalized, self.rubric, self.evidence, self.schema)
+
+    def test_normalizer_does_not_mask_missing_or_reordered_checks(self) -> None:
+        response = self.response()
+        response["checks"][0], response["checks"][1] = (
+            response["checks"][1],
+            response["checks"][0],
+        )
+        normalized = audit_module.normalize_unsupported_judgments(
+            response, self.rubric, self.evidence
+        )
+        with self.assertRaisesRegex(
+            audit_module.AuditValidationError,
+            "each rubric check exactly once",
+        ):
+            audit_module.validate_response(
+                normalized, self.rubric, self.evidence, self.schema
+            )
+
     def test_normalizer_preserves_a_fail(self) -> None:
         response = self.response()
         response["overall_status"] = "FAIL"

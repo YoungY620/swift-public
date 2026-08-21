@@ -280,10 +280,11 @@ def normalize_unsupported_judgments(
     """Remove harmless shape drift and downgrade unsupported positive judgments.
 
     The Agent occasionally repeats missing evidence on the affected check even
-    though the schema keeps that inventory at the response root.  Preserve the
-    cited paths in the canonical root list instead of discarding an otherwise
-    complete multi-step Agent judgment.  Unknown fields other than this one are
-    intentionally left in place so schema validation still exposes them.
+    though the schema keeps that inventory at the response root, or restates a
+    rubric severity incorrectly while retaining the exact check ID sequence.
+    Preserve missing paths and restore the rubric-owned severity instead of
+    discarding an otherwise complete multi-step judgment. Unknown fields and
+    incomplete or reordered checks remain visible to schema validation.
     """
     checks = response.get("checks")
     rubric_checks = rubric.get("checks")
@@ -292,6 +293,17 @@ def normalize_unsupported_judgments(
     rubric_by_id = {
         str(item.get("id")): item for item in rubric_checks if isinstance(item, dict)
     }
+    expected_ids = [
+        str(item.get("id")) for item in rubric_checks if isinstance(item, dict)
+    ]
+    actual_ids = [str(item.get("id")) for item in checks if isinstance(item, dict)]
+    if actual_ids == expected_ids:
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            rubric_item = rubric_by_id.get(str(check.get("id")))
+            if rubric_item is not None:
+                check["severity"] = rubric_item.get("severity")
     missing = {
         str(item) for item in response.get("missing_evidence", []) if isinstance(item, str)
     }
