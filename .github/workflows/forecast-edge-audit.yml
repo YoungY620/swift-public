@@ -673,11 +673,15 @@ jobs:
           cp "$reports_dir"/report-*.md "$FEISHU_BRIEF_AGENT_DIR/reports/"
           install -m 600 "$FEISHU_BRIEF_PROMPT_PATH" "$FEISHU_BRIEF_AGENT_DIR/prompt.md"
           install -m 600 "$FEISHU_BRIEF_SCHEMA_PATH" "$FEISHU_BRIEF_AGENT_DIR/brief.schema.json"
+          "$AUDIT_RUNTIME_DIR/python-venv/bin/python" \
+            "$GITHUB_WORKSPACE/scripts/forecast_edge_feishu_brief.py" inventory \
+            --reports-dir "$FEISHU_BRIEF_AGENT_DIR/reports" \
+            --output "$FEISHU_BRIEF_AGENT_DIR/source-inventory.json"
           cd "$FEISHU_BRIEF_AGENT_DIR"
           set +e
           stdbuf -oL -eL kimi --agent-file "$FEISHU_BRIEF_AGENT_PROFILE_PATH" \
             --output-format stream-json \
-            -p "请遵循 prompt.md，使用只读工具和 explore subagent 检查全部报告，输出符合 brief.schema.json 的最终扫描简报 JSON。" \
+            -p "请遵循 prompt.md，使用只读工具和 explore subagent 检查全部报告；将 source-inventory.json 的权威字段原样写入结果，输出符合 brief.schema.json 的最终扫描简报 JSON。" \
             2> >(stdbuf -oL tee "$AUDIT_RUNTIME_DIR/feishu-brief.stderr" >&2) \
             | stdbuf -oL tee "$FEISHU_BRIEF_RAW_PATH"
           kimi_status=${PIPESTATUS[0]}

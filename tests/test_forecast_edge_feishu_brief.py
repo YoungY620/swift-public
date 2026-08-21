@@ -71,6 +71,30 @@ class ForecastEdgeFeishuBriefTests(unittest.TestCase):
                 },
             )
 
+    def test_inventory_command_writes_authoritative_agent_input(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reports = root / "reports"
+            reports.mkdir()
+            output = root / "source-inventory.json"
+            self.write_report(reports, actionable=True)
+            args = type(
+                "Args",
+                (),
+                {"reports_dir": reports, "output": output},
+            )()
+            brief_module.command_inventory(args)
+            self.assertEqual(
+                json.loads(output.read_text(encoding="utf-8")),
+                {
+                    "research_date": "2026-08-21",
+                    "venues": ["polymarket"],
+                    "current_position_count": 1,
+                    "researched_market_count": 2,
+                    "actionable_recommendation_count": 1,
+                },
+            )
+
     def test_zero_action_brief_must_explicitly_say_no_executable_intent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             reports = Path(tmp)

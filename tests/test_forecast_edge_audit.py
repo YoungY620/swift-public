@@ -130,6 +130,9 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertIn("一、私人操作建议", prompt)
         self.assertIn("二、简报", prompt)
         self.assertIn("无可执行交易意图", prompt)
+        self.assertIn("source-inventory.json", prompt)
+        self.assertIn("source-inventory.json", profile)
+        self.assertIn("forecast_edge_feishu_brief.py\" inventory", self.workflow)
 
     def test_automatic_audits_trip_a_tiered_production_breaker(self) -> None:
         self.assertIn("Trip production circuit breaker on serious findings", self.workflow)

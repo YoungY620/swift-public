@@ -144,6 +144,10 @@ def command_extract(args: argparse.Namespace) -> None:
     write_json(args.trace_output, trace)
 
 
+def command_inventory(args: argparse.Namespace) -> None:
+    write_json(args.output, report_inventory(args.reports_dir))
+
+
 def command_fallback(args: argparse.Namespace) -> None:
     inventory = report_inventory(
         args.reports_dir, allow_empty=True, research_date=args.research_date
@@ -180,6 +184,9 @@ def build_parser() -> argparse.ArgumentParser:
     extract.add_argument("--reports-dir", type=Path, required=True)
     extract.add_argument("--output", type=Path, required=True)
     extract.add_argument("--trace-output", type=Path, required=True)
+    inventory = subparsers.add_parser("inventory")
+    inventory.add_argument("--reports-dir", type=Path, required=True)
+    inventory.add_argument("--output", type=Path, required=True)
     fallback = subparsers.add_parser("fallback")
     fallback.add_argument("--reason", type=Path, required=True)
     fallback.add_argument("--schema", type=Path, required=True)
@@ -194,6 +201,8 @@ def main() -> int:
     try:
         if args.command == "extract":
             command_extract(args)
+        elif args.command == "inventory":
+            command_inventory(args)
         else:
             command_fallback(args)
     except BriefValidationError as exc:
