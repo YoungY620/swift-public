@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "rubric_version": "1.4",
+  "rubric_version": "1.5",
   "rubric_id": "forecast-edge-production-audit",
   "description": "Forecast Edge 父工作流完成后的研究、真实执行、发布和安全审计。缺少必要证据时不得判定通过。",
   "statuses": [
@@ -50,11 +50,11 @@
     {
       "id": "GATE-002",
       "severity": "high",
-      "title": "只有存在意图才执行",
+      "title": "生产轮次始终经过执行生命周期",
       "applies_when": "iteration research ran",
-      "expected": "执行 job 的源码条件同时要求 execution-ready=true 和 research.has-intents=true；没有意图时 execution 应跳过。",
-      "evidence_required": ["source_contract.execution_requires_intents", "jobs", "release.manifest.trade_intents"],
-      "pass_condition": "源码条件成立，且本轮 job 结论与 has_items 一致。"
+      "expected": "execution-ready=true 的完整轮次在研究成功后始终进入 EC2 execution，不以 has-intents 为 gate；零意图仍须完成校验、取消旧挂单、认证预检、空计划、NO_ACTIONS 回执、验证和诊断。",
+      "evidence_required": ["source_contract.execution_runs_when_requested", "source_contract.zero_intent_execution_lifecycle", "jobs", "release.manifest.trade_intents", "release.execution_receipt", "diagnostics.phase_events"],
+      "pass_condition": "两个源码合约均成立；production iteration 的 execution 成功。has_items=false 时回执 status=NO_ACTIONS、receipts=[]，并且 validate/cancel/preflight/plan/execute/verify 阶段及诊断证据完整。只有显式 research-only 或 execution-ready=false 才允许 execution skipped。"
     },
     {
       "id": "RESEARCH-001",
@@ -79,7 +79,7 @@
       "severity": "critical",
       "title": "研究与执行通过 Actions artifact 摘要交接",
       "applies_when": "gate released the iteration",
-      "expected": "研究仅在 GitHub-hosted runner 上运行，不接触 EC2；摘要绑定的研究 handoff artifact 由 execution 下载，执行诊断 artifact 只能在订单阶段结束后创建；父 workflow 仅在 execution success 或合法 skipped 后发布。",
+      "expected": "研究仅在 GitHub-hosted runner 上运行，不接触 EC2；摘要绑定的研究 handoff artifact 由 execution 下载，执行诊断 artifact 只能在订单阶段结束后创建；execution-ready=true 时父 workflow 仅在 execution success 后发布，只有显式不请求执行时才允许 skipped。",
       "evidence_required": ["source_contract.research_ec2_isolation", "source_contract.research_artifact_handoff", "source_contract.diagnostics_after_execution", "source_contract.release_after_execution", "jobs", "release.published_at"],
       "pass_condition": "research 无 EC2/SSH 路径且 artifact 摘要交接成立；执行诊断 artifact 晚于执行阶段，Release 发布时间不早于 execution job 完成时间；失败执行不存在最终 Release。"
     },
@@ -205,7 +205,7 @@
       "severity": "high",
       "title": "仅在子图完成后发布",
       "applies_when": "gate released the iteration",
-      "expected": "执行成功或因无意图合法跳过后才有最终 Release；执行失败时没有最终 Release。",
+      "expected": "execution-ready=true 时仅在 execution 成功后才有最终 Release；零意图也必须先完成 EC2 lifecycle 并产生 NO_ACTIONS。只有显式 research-only 或 execution-ready=false 才允许 execution skipped；执行失败时没有最终 Release。",
       "evidence_required": ["run", "jobs", "release"],
       "pass_condition": "Release 存在性及 published_at 与 job 结论/时间一致。"
     },

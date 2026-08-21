@@ -62,6 +62,8 @@ An explicit `--token-address` override exists only on the standalone `balance` d
 
 Use retries for transient failures. The data script uses Python's standard HTTP client first and, when installed, falls back to `curl` for CDN/TLS resets commonly encountered from Linux shells. When a required response remains unavailable, try an alternative public endpoint or the public market page and record what was attempted.
 
+For each current position, resolve market metadata before requesting its order book. Prefer the position's `market_slug` with `market`, then verify that the normalized market has `closed=false` and `accepting_orders=true`; only then call `book` with that position's `instrument_identifier`. Never pass an outcome token to `market`, and never pass a condition id or market slug to `book`. A closed market or a market that no longer accepts orders normally has no active CLOB book: record that state as a structured mechanical reason for `MAINTAIN` instead of treating the missing book as a command failure. Keep genuine network errors and malformed active-market responses as failures.
+
 Official references: [pUSD](https://docs.polymarket.com/concepts/pusd) and [contract metadata](https://docs.polymarket.com/resources/contracts).
 
 ## Market page URLs

@@ -106,7 +106,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -s "$RESEARCH_HANDOFF_DIR/trade-intents.jsonl"
+          test -f "$RESEARCH_HANDOFF_DIR/trade-intents.jsonl"
           test -s "$RESEARCH_HANDOFF_DIR/trade-intents.sha256"
           expected_checksum_line="$TRADE_INTENTS_SHA256  trade-intents.jsonl"
           if [[ "$(<"$RESEARCH_HANDOFF_DIR/trade-intents.sha256")" != "$expected_checksum_line" ]]; then
@@ -117,10 +117,6 @@ jobs:
           actual_digest=$(sha256sum "$LOCAL_INTENTS_PATH" | cut -d ' ' -f 1)
           if [[ "$actual_digest" != "$TRADE_INTENTS_SHA256" ]]; then
             echo "::error::Trade-intent artifact failed its research digest"
-            exit 1
-          fi
-          if [[ ! -s "$LOCAL_INTENTS_PATH" ]]; then
-            echo "::error::Execution subworkflow was called without actionable trade intents"
             exit 1
           fi
           execution_id=$(printf '%s' \

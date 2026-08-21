@@ -73,9 +73,21 @@ def main() -> int:
             "group: forecast-edge-parent-${{ github.repository }}" in parent
             and "cancel-in-progress: false" in parent
         ),
-        "execution_requires_intents": (
+        "execution_runs_when_requested": (
             "needs.gate.outputs.execution-ready == 'true'" in execution_call
-            and "needs.research.outputs.has-intents == 'true'" in execution_call
+            and "needs.research.result == 'success'" in execution_call
+            and "needs.research.outputs.has-intents" not in execution_call
+        ),
+        "zero_intent_execution_lifecycle": (
+            'test -f "$RESEARCH_HANDOFF_DIR/trade-intents.jsonl"' in execution
+            and 'test -s "$RESEARCH_HANDOFF_DIR/trade-intents.jsonl"' not in execution
+            and "without actionable trade intents" not in execution
+            and "validate-artifact" in execution_step
+            and "cancel-open-orders" in execution_step
+            and " preflight " in execution_step
+            and " plan " in execution_step
+            and " execute " in execution_step
+            and " verify " in execution_step
         ),
         "diagnostics_after_execution": (
             "actions/upload-artifact@v4" in diagnostics_step
@@ -174,7 +186,9 @@ def main() -> int:
         ),
         "release_after_execution": (
             "needs: [gate, research, execution]" in release
+            and "needs.gate.outputs.execution-ready == 'true'" in release
             and "needs.execution.result == 'success'" in release
+            and "needs.gate.outputs.execution-ready != 'true'" in release
             and "needs.execution.result == 'skipped'" in release
         ),
         "release_direct_report_inventory_safe": (

@@ -37,8 +37,12 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("uses: ./.github/workflows/forecast-edge-research.yml", self.parent)
         self.assertIn("uses: ./.github/workflows/execute-polymarket.yml", self.parent)
         self.assertIn("needs: [gate, research]", self.parent)
-        self.assertIn("needs.research.outputs.has-intents == 'true'", self.parent)
         self.assertIn("needs.gate.outputs.execution-ready == 'true'", self.parent)
+        execution_call = self.parent[
+            self.parent.index("  execution:\n") : self.parent.index("\n  release:\n")
+        ]
+        self.assertIn("needs.research.result == 'success'", execution_call)
+        self.assertNotIn("needs.research.outputs.has-intents", execution_call)
         self.assertIn("inputs['execute-live-trades']", self.parent)
         self.assertIn("inputs['research-only']", self.parent)
         self.assertNotIn("workflow_run:", self.parent)
@@ -218,6 +222,26 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn('if [[ "$HAS_INTENTS" == "true" ]]', release)
         self.assertIn('assets+=("$RELEASE_RUNTIME_DIR/trade-intents.jsonl")', release)
         self.assertIn('test ! -s "$RELEASE_RUNTIME_DIR/trade-intents.jsonl"', release)
+
+    def test_zero_intent_production_iteration_runs_complete_execution_lifecycle(self) -> None:
+        load = self.step(
+            self.execution, "Load and verify research trade-intent artifact locally"
+        )
+        self.assertIn('test -f "$RESEARCH_HANDOFF_DIR/trade-intents.jsonl"', load)
+        self.assertNotIn('test -s "$RESEARCH_HANDOFF_DIR/trade-intents.jsonl"', load)
+        self.assertNotIn("without actionable trade intents", load)
+        execute = self.step(
+            self.execution,
+            "Validate, cancel open orders, price, execute FOK market orders, and verify locally",
+        )
+        for command in ("validate", "cancel", "preflight", "plan", "execute", "verify"):
+            self.assertIn(f"run_phase {command}", execute)
+
+        release_job = self.parent[self.parent.index("  release:\n") :]
+        self.assertIn("needs.gate.outputs.execution-ready == 'true'", release_job)
+        self.assertIn("needs.execution.result == 'success'", release_job)
+        self.assertIn("needs.gate.outputs.execution-ready != 'true'", release_job)
+        self.assertIn("needs.execution.result == 'skipped'", release_job)
 
     def test_release_uses_file_comparison_for_signed_report_inventory(self) -> None:
         verify = self.step(
@@ -433,6 +457,11 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("至少 10 个", prompt)
         self.assertIn("不得直接沿用历史概率", prompt)
         self.assertIn("新增且只新增一个报告", prompt)
+        self.assertIn(
+            "previously_researched.py REPORTS_DIR --adapter ADAPTER --pretty", prompt
+        )
+        self.assertIn("绝不能把 `.py` 源文件当 JSON", prompt)
+        self.assertIn("仅当 `closed=false` 且 `accepting_orders=true`", prompt)
 
     def test_repair_prompt_distinguishes_history_from_current_report(self) -> None:
         prompt = REPAIR_PROMPT_PATH.read_text(encoding="utf-8")
