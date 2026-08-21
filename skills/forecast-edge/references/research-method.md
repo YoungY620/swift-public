@@ -4,6 +4,17 @@
 
 Estimate the probability that the market will settle `YES` under its exact resolution criteria. Every probability tree uses `P(market settles YES)` as its root, regardless of whether the researched trading outcome is `YES` or `NO`. Derive a `NO` model value as `1 - P(YES)`.
 
+## Current positions versus candidates
+
+Research current positions and candidates with the same evidentiary depth, but never give them the same narrative semantics.
+
+- A `current_positions` item is already held. Its comparison and action prose may say that this run re-evaluated the position, compare prior and current probability or price, cite a fresh order book, test a sell crossing, and explain ADD, TRIM, SELL, or MAINTAIN.
+- A `candidates` item is unheld research completed this run. Before writing any execution judgment, identify whether its event and concrete market appear in the archived `previously_researched.py` sets. Mark an unseen event `FIRST_RESEARCH`; mark an unseen child market of a researched event `EXISTING_EVENT_NEW_MARKET`; never call a previously researched concrete market a new candidate.
+
+For every candidate, write the research conclusion before the execution conclusion. The research conclusion must answer the exact market question, cite at least one fact or base rate unique to that market, connect the evidence to the recorded `P(YES)`, and name the dominant uncertainty. Then write the execution conclusion from that candidate's own executable price, raw edge, fee-adjusted edge, 10pp minimum, liquidity/minimum-size/cash/portfolio constraints, `entry_eligible`, and allocation. Read each evidence record individually; never satisfy missing prose by copying another market's rationale, summary, or conclusion.
+
+Phrases such as “基于最新订单簿重新计算”, “综合公开信息重新评估”, and “未触发可执行交叉或硬门槛，维持现状” may supplement an execution decision, but they are not research evidence and cannot be the core rationale for a candidate. Repeated mechanical text is acceptable only for genuinely closed, settled, non-accepting, or bookless markets with an explicit structured `market_status` and market-specific status evidence.
+
 ## Recursive procedure
 
 1. Copy the complete resolution criteria and identify ambiguous terms, dates, sources, cancellation clauses, and exceptional settlement conditions.

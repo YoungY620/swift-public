@@ -336,6 +336,33 @@
         "minimum_raw_edge": { "const": 0.1 },
         "fee_rate": { "type": "number", "minimum": 0 },
         "book_timestamp": { "type": "string", "minLength": 1 },
+        "market_status": {
+          "enum": [
+            "ACTIVE",
+            "CLOSED",
+            "SETTLED",
+            "NOT_ACCEPTING_ORDERS",
+            "NO_ACTIVE_ORDER_BOOK"
+          ]
+        },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "researchNovelty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "classification",
+        "event_previously_researched",
+        "market_previously_researched",
+        "reason"
+      ],
+      "properties": {
+        "classification": {
+          "enum": ["FIRST_RESEARCH", "EXISTING_EVENT_NEW_MARKET"]
+        },
+        "event_previously_researched": { "type": "boolean" },
+        "market_previously_researched": { "const": false },
         "reason": { "type": "string", "minLength": 1 }
       }
     },
@@ -448,7 +475,16 @@
       "unevaluatedProperties": false
     },
     "candidateAnalysis": {
-      "allOf": [{ "$ref": "#/$defs/baseAnalysis" }],
+      "allOf": [
+        { "$ref": "#/$defs/baseAnalysis" },
+        {
+          "type": "object",
+          "required": ["research_novelty"],
+          "properties": {
+            "research_novelty": { "$ref": "#/$defs/researchNovelty" }
+          }
+        }
+      ],
       "unevaluatedProperties": false
     },
     "action": {

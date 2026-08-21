@@ -64,6 +64,16 @@ For current positions and candidates, include:
 
 Candidates require the same evidence fields as current positions.
 
+Every candidate also requires `research_novelty`:
+
+- `FIRST_RESEARCH` means its `event_identifier`, `multi_market_identifier`, and report `market.id` are absent from the venue-local archived research set.
+- `EXISTING_EVENT_NEW_MARKET` means the parent event is present but both concrete market identifiers are absent.
+- `event_previously_researched` and `market_previously_researched` must agree with those historical sets. A candidate whose concrete market was already researched is invalid.
+
+Keep candidate research and execution prose auditable and separate. `model.conclusion`, probability evidence `summary`/`conclusion`, and the research portion of `signal.rationale` must contain market-specific facts, probability support, and uncertainty. `opportunity.reason` must cite that market's recorded `executable_price`, `raw_edge`, `net_edge`, `minimum_raw_edge`, eligibility, and allocation outcome. Similar execution structure is allowed when the values and constraints really match; copied research prose across different candidates is not. Generic order-book or “maintain” boilerplate causes validation failure and repair.
+
+For a closed, settled, non-accepting, or bookless market, record `opportunity.market_status` as `CLOSED`, `SETTLED`, `NOT_ACCEPTING_ORDERS`, or `NO_ACTIVE_ORDER_BOOK`. Repeated mechanical prose is allowed only when each affected analysis is `MAINTAIN`, ineligible, unfunded, and contains evidence that explicitly establishes that status.
+
 ## Current-position comparison
 
 Every current position includes `comparison`. Use `null` only when no previous report exists. Otherwise record previous and current probability, executable price, action, and concise reasons for change.

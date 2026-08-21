@@ -74,6 +74,8 @@ class ResearchIterationTests(unittest.TestCase):
                 if label == "trade-intent validation":
                     self.assertEqual(command.count("--report"), 2)
                     return '{"items": 0, "venues": {}}\n'
+                self.assertIn("--history-reports-list", command)
+                self.assertIn(str(args.baseline_reports), command)
                 return '{"valid": true}\n'
 
             with patch.object(iteration, "run_checked", side_effect=fake_run):

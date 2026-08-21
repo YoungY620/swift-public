@@ -378,6 +378,21 @@ class ForecastEdgeAuditTests(unittest.TestCase):
             [],
         )
 
+    def test_repairable_research_quality_failure_does_not_trip_trading(self) -> None:
+        response = self.response()
+        response["overall_status"] = "WARN"
+        response["checks"][0]["severity"] = "high"
+        response["checks"][0]["status"] = "WARN"
+        response["checks"][0]["reason"] = (
+            "候选理由重复，报告校验已要求 repair，未进入交易执行。"
+        )
+        self.assertEqual(
+            audit_module.classify_serious_findings(
+                response, self.evidence, agent_judgment_valid=True
+            ),
+            [],
+        )
+
     def test_notification_details_separate_nonblocking_warnings_and_errors(self) -> None:
         response = self.response()
         response["overall_status"] = "FAIL"

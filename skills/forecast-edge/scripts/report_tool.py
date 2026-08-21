@@ -46,6 +46,43 @@ EVIDENCE_FIELDS = {
     "credibility",
 }
 V3_EVIDENCE_FIELDS = EVIDENCE_FIELDS | {"id", "roles"}
+CANDIDATE_NOVELTY_CLASSES = {"FIRST_RESEARCH", "EXISTING_EVENT_NEW_MARKET"}
+MECHANICAL_MARKET_STATUSES = {
+    "CLOSED",
+    "SETTLED",
+    "NOT_ACCEPTING_ORDERS",
+    "NO_ACTIVE_ORDER_BOOK",
+}
+GENERIC_CANDIDATE_RESEARCH_PHRASES = (
+    "基于最新订单簿重新计算",
+    "基于订单簿重新计算",
+    "基于最新订单簿",
+    "重新计算当前持仓",
+    "未触发可执行交叉或硬门槛，维持现状",
+    "未触发可执行交叉",
+    "未满足硬门槛或组合约束时维持不变",
+    "未满足硬门槛",
+    "综合公开信息重新评估",
+    "本轮未识别到显著可执行优势",
+    "结合公开信息重新评估",
+    "维持现状",
+)
+MECHANICAL_EVIDENCE_TERMS = (
+    "已关闭",
+    "已结算",
+    "停止接单",
+    "不再接单",
+    "无 active order book",
+    "没有 active order book",
+    "no active order book",
+    "closed",
+    "settled",
+    "accepting_orders=false",
+)
+GENERIC_RESEARCH_CORPUS = (
+    "本轮首次研究显示当前模型概率公开证据综合信息重新评估最新订单簿"
+    "可执行价格原始优势费后优势硬门槛入场条件组合分配保持空仓维持现状"
+)
 
 
 class ReportError(ValueError):
@@ -125,6 +162,361 @@ def require_safe_market_url(value: Any, path: str) -> None:
         or parsed.password is not None
     ):
         raise ReportError(f"{path} must be an absolute credential-free HTTPS URL")
+
+
+def normalize_narrative(value: Any) -> str:
+    """Normalize prose for exact boilerplate and duplicate detection."""
+
+    return re.sub(r"[^0-9a-z\u3400-\u4dbf\u4e00-\u9fff]+", "", str(value).lower())
+
+
+def is_generic_candidate_research_text(value: Any) -> bool:
+    """Return true when candidate prose contains no research beyond banned templates."""
+
+    normalized = normalize_narrative(value)
+    if not normalized:
+        return True
+    matched = False
+    remainder = normalized
+    for phrase in GENERIC_CANDIDATE_RESEARCH_PHRASES:
+        token = normalize_narrative(phrase)
+        if token in remainder:
+            matched = True
+            remainder = remainder.replace(token, "")
+    if not matched:
+        return False
+    generic_fillers = (
+        "本轮",
+        "当前",
+        "因此",
+        "所以",
+        "候选",
+        "市场",
+        "研究",
+        "显示",
+        "执行",
+        "判断",
+        "保持空仓",
+        "维持空仓",
+        "维持现状",
+        "不产生买入",
+        "无买入",
+    )
+    for filler in generic_fillers:
+        remainder = remainder.replace(normalize_narrative(filler), "")
+    return len(re.sub(r"[0-9]", "", remainder)) < 8
+
+
+def _narrative_ngrams(value: Any, size: int = 4) -> set[str]:
+    normalized = normalize_narrative(value)
+    return {
+        normalized[index : index + size]
+        for index in range(max(len(normalized) - size + 1, 0))
+    }
+
+
+def candidate_signal_has_market_specific_support(analysis: dict[str, Any]) -> bool:
+    signal_ngrams = _narrative_ngrams(analysis["signal"]["rationale"])
+    generic_ngrams = _narrative_ngrams(GENERIC_RESEARCH_CORPUS)
+    support_parts = [
+        analysis.get("market", {}).get("question", ""),
+        analysis.get("model", {}).get("conclusion", ""),
+    ]
+    for item in analysis.get("evidence", []):
+        if isinstance(item, dict):
+            support_parts.extend(
+                item.get(field, "")
+                for field in ("source_name", "title", "summary", "conclusion", "factor_id")
+            )
+    support_ngrams = _narrative_ngrams(" ".join(str(part) for part in support_parts))
+    return bool((signal_ngrams & support_ngrams) - generic_ngrams)
+
+
+def market_has_mechanical_status_evidence(analysis: dict[str, Any]) -> bool:
+    opportunity = analysis.get("opportunity")
+    if not isinstance(opportunity, dict):
+        return False
+    status = opportunity.get("market_status")
+    if status not in MECHANICAL_MARKET_STATUSES:
+        return False
+    if analysis.get("signal", {}).get("action") != "MAINTAIN":
+        return False
+    if opportunity.get("entry_eligible") is not False:
+        return False
+    allocation = analysis.get("allocation")
+    if not isinstance(allocation, dict) or decimal_value(
+        allocation.get("allocated_cash"), "candidate mechanical allocated_cash"
+    ) != 0:
+        return False
+    evidence_text = " ".join(
+        str(item.get(field, ""))
+        for item in analysis.get("evidence", [])
+        if isinstance(item, dict)
+        for field in ("title", "summary", "conclusion", "factor_id")
+    ).lower()
+    return any(term.lower() in evidence_text for term in MECHANICAL_EVIDENCE_TERMS)
+
+
+def _decimal_strings(value: Any, *, percentage_points: bool) -> set[str]:
+    number = decimal_value(value, "narrative numeric field", minimum=Decimal("-1"))
+
+    def trim(rendered: str) -> str:
+        return rendered.rstrip("0").rstrip(".") if "." in rendered else rendered
+
+    raw = trim(format(number, "f")) or "0"
+    variants = {raw}
+    if raw.startswith("0."):
+        variants.add(raw[1:])
+    if percentage_points:
+        percent = number * Decimal(100)
+        for places in (0, 1, 2, 3):
+            rendered = trim(f"{percent:.{places}f}")
+            variants.update(
+                {
+                    f"{rendered}pp",
+                    f"+{rendered}pp",
+                    f"{rendered}个百分点",
+                    f"{rendered} 个百分点",
+                }
+            )
+    return variants
+
+
+def _mentions_numeric(value: Any, expected: Any, *, percentage_points: bool) -> bool:
+    text = str(value).lower().replace("％", "%")
+    compact = re.sub(r"\s+", "", text)
+    for variant in _decimal_strings(expected, percentage_points=percentage_points):
+        token = variant.lower().replace(" ", "")
+        if re.search(rf"(?<![0-9.]){re.escape(token)}(?![0-9])", compact):
+            return True
+    return False
+
+
+def validate_candidate_execution_reason(analysis: dict[str, Any], path: str) -> None:
+    """Bind candidate execution prose to its own deterministic numeric fields."""
+
+    opportunity = analysis["opportunity"]
+    reason = opportunity["reason"]
+    if market_has_mechanical_status_evidence(analysis):
+        return
+    numeric_requirements = (
+        ("executable_price", False),
+        ("raw_edge", True),
+        ("net_edge", True),
+        ("minimum_raw_edge", True),
+    )
+    for field, percentage_points in numeric_requirements:
+        if not _mentions_numeric(
+            reason, opportunity[field], percentage_points=percentage_points
+        ):
+            raise ReportError(
+                f"{path}.opportunity.reason must cite its own {field} value"
+            )
+    raw_edge = decimal_value(
+        opportunity["raw_edge"], f"{path}.opportunity.raw_edge", minimum=Decimal("-1")
+    )
+    minimum = decimal_value(
+        opportunity["minimum_raw_edge"],
+        f"{path}.opportunity.minimum_raw_edge",
+    )
+    if raw_edge <= minimum and opportunity["entry_eligible"] is not False:
+        raise ReportError(
+            f"{path}.opportunity.entry_eligible must be false unless raw edge is above 10pp"
+        )
+    allocated = decimal_value(
+        analysis["allocation"]["allocated_cash"], f"{path}.allocation.allocated_cash"
+    )
+    action = analysis["signal"]["action"]
+    if allocated > 0 and action != "BUY":
+        raise ReportError(f"{path} funded candidate must use BUY")
+    if allocated == 0 and action != "MAINTAIN":
+        raise ReportError(f"{path} unfunded candidate must use MAINTAIN")
+    if not opportunity["entry_eligible"]:
+        if raw_edge <= minimum:
+            explanation_pattern = r"未超过|不高于|低于|门槛|不足"
+        else:
+            explanation_pattern = r"费后|流动性|最小|现金|组合|约束|保留率|订单簿|不可执行"
+        if re.search(explanation_pattern, reason) is None:
+            raise ReportError(
+                f"{path}.opportunity.reason must explain why entry_eligible is false"
+            )
+    if opportunity["entry_eligible"] and allocated == 0 and not re.search(
+        r"组合|分配|现金|资金|流动性|最小|上限|储备|未获资金", reason
+    ):
+        raise ReportError(
+            f"{path}.opportunity.reason must explain why an eligible candidate received no allocation"
+        )
+    if allocated > 0 and re.search(r"买入|分配|下单|配置", reason) is None:
+        raise ReportError(
+            f"{path}.opportunity.reason must explain the funded BUY allocation"
+        )
+
+
+def validate_candidate_research_quality(candidates: list[Any]) -> None:
+    """Reject copied or execution-only prose in distinct candidate analyses."""
+
+    signal_owners: dict[str, tuple[str, bool, int]] = {}
+    model_owners: dict[str, tuple[str, bool, int]] = {}
+    evidence_owners: dict[tuple[str, str], tuple[str, bool, int]] = {}
+    for index, raw in enumerate(candidates):
+        path = f"report.candidates[{index}]"
+        analysis = require_object(raw, path)
+        mechanical = market_has_mechanical_status_evidence(analysis)
+        signal_text = analysis["signal"]["rationale"]
+        model_text = analysis["model"]["conclusion"]
+        if not mechanical:
+            for field_path, value in (
+                (f"{path}.signal.rationale", signal_text),
+                (f"{path}.model.conclusion", model_text),
+            ):
+                if is_generic_candidate_research_text(value):
+                    raise ReportError(
+                        f"{field_path} contains only generic execution boilerplate"
+                    )
+            if not candidate_signal_has_market_specific_support(analysis):
+                raise ReportError(
+                    f"{path}.signal.rationale must cite market-specific support from its own evidence"
+                )
+        for label, value, owners in (
+            ("signal.rationale", signal_text, signal_owners),
+            ("model.conclusion", model_text, model_owners),
+        ):
+            normalized = normalize_narrative(value)
+            owner = owners.get(normalized)
+            if owner is not None and owner[2] != index and not (mechanical and owner[1]):
+                raise ReportError(
+                    f"{path}.{label} duplicates market research prose from {owner[0]}"
+                )
+            owners.setdefault(normalized, (path, mechanical, index))
+        for evidence_index, evidence in enumerate(analysis["evidence"]):
+            evidence_path = f"{path}.evidence[{evidence_index}]"
+            for field in ("summary", "conclusion"):
+                value = evidence[field]
+                if not mechanical and is_generic_candidate_research_text(value):
+                    raise ReportError(
+                        f"{evidence_path}.{field} contains only generic execution boilerplate"
+                    )
+                key = (field, normalize_narrative(value))
+                owner = evidence_owners.get(key)
+                if owner is not None and owner[2] != index and not (mechanical and owner[1]):
+                    raise ReportError(
+                        f"{evidence_path}.{field} duplicates candidate evidence from {owner[0]}"
+                    )
+                evidence_owners.setdefault(key, (evidence_path, mechanical, index))
+        validate_candidate_execution_reason(analysis, path)
+
+
+def validate_candidate_novelty_shape(value: Any, path: str) -> None:
+    novelty = require_object(value, path)
+    require_fields(
+        novelty,
+        {
+            "classification",
+            "event_previously_researched",
+            "market_previously_researched",
+            "reason",
+        },
+        path,
+    )
+    if novelty["classification"] not in CANDIDATE_NOVELTY_CLASSES:
+        raise ReportError(
+            f"{path}.classification must be one of {sorted(CANDIDATE_NOVELTY_CLASSES)}"
+        )
+    for field in ("event_previously_researched", "market_previously_researched"):
+        if not isinstance(novelty[field], bool):
+            raise ReportError(f"{path}.{field} must be boolean")
+    require_chinese_text(novelty["reason"], f"{path}.reason")
+
+
+def _history_identifiers(
+    report_paths: list[Path], adapter: str
+) -> tuple[set[str], set[str], set[str]]:
+    event_identifiers: set[str] = set()
+    multi_market_identifiers: set[str] = set()
+    report_market_ids: set[str] = set()
+    for report_path in report_paths:
+        try:
+            document = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ReportError(f"could not read historical report {report_path}: {exc}") from exc
+        if not isinstance(document, dict):
+            raise ReportError(f"historical report {report_path} must be a JSON object")
+        run = document.get("run")
+        account = run.get("account") if isinstance(run, dict) else None
+        if not isinstance(account, dict) or account.get("adapter") != adapter:
+            continue
+        for section in ("current_positions", "candidates"):
+            entries = document.get(section, [])
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                market = entry.get("market") if isinstance(entry, dict) else None
+                if not isinstance(market, dict):
+                    continue
+                event_identifier = str(market.get("event_identifier") or "").strip()
+                multi_market_identifier = str(
+                    market.get("multi_market_identifier") or ""
+                ).strip()
+                report_market_id = str(market.get("id") or "").strip()
+                if event_identifier:
+                    event_identifiers.add(event_identifier)
+                if multi_market_identifier:
+                    multi_market_identifiers.add(multi_market_identifier)
+                if report_market_id:
+                    report_market_ids.add(report_market_id)
+    return event_identifiers, multi_market_identifiers, report_market_ids
+
+
+def validate_candidate_history(
+    report: dict[str, Any], history_report_paths: list[Path]
+) -> None:
+    """Verify candidate novelty against immutable venue-local historical reports."""
+
+    account = report["run"]["account"]
+    adapter = account.get("adapter")
+    if not isinstance(adapter, str):
+        raise ReportError("candidate history validation requires run.account.adapter")
+    historical_events, historical_markets, historical_report_ids = _history_identifiers(
+        history_report_paths, adapter
+    )
+    for index, analysis in enumerate(report["candidates"]):
+        path = f"report.candidates[{index}]"
+        if "research_novelty" not in analysis:
+            raise ReportError(f"{path}.research_novelty is required for a new report")
+        validate_candidate_novelty_shape(
+            analysis["research_novelty"], f"{path}.research_novelty"
+        )
+        market = analysis["market"]
+        event_identifier = str(market.get("event_identifier") or "").strip()
+        multi_market_identifier = str(
+            market.get("multi_market_identifier") or ""
+        ).strip()
+        report_market_id = str(market.get("id") or "").strip()
+        event_seen = event_identifier in historical_events
+        market_seen = (
+            multi_market_identifier in historical_markets
+            or report_market_id in historical_report_ids
+        )
+        novelty = analysis["research_novelty"]
+        if market_seen:
+            raise ReportError(
+                f"{path} is already in the previously-researched market set and cannot be a new candidate"
+            )
+        expected_classification = (
+            "EXISTING_EVENT_NEW_MARKET" if event_seen else "FIRST_RESEARCH"
+        )
+        if novelty["classification"] != expected_classification:
+            raise ReportError(
+                f"{path}.research_novelty.classification must be {expected_classification}"
+            )
+        if novelty["event_previously_researched"] is not event_seen:
+            raise ReportError(
+                f"{path}.research_novelty.event_previously_researched disagrees with history"
+            )
+        if novelty["market_previously_researched"] is not False:
+            raise ReportError(
+                f"{path}.research_novelty.market_previously_researched must be false"
+            )
 
 
 def validate_evidence(evidence: Any, path: str, *, current_position: bool) -> None:
@@ -397,6 +789,19 @@ def validate_v3_analysis(raw: Any, path: str, *, current_position: bool) -> None
     )
     require_decimal_equal(opportunity["minimum_raw_edge"], 0.1, f"{path}.opportunity.minimum_raw_edge")
     require_chinese_text(opportunity["reason"], f"{path}.opportunity.reason")
+    if not isinstance(opportunity["entry_eligible"], bool) or not isinstance(
+        opportunity["exit_eligible"], bool
+    ):
+        raise ReportError(f"{path}.opportunity eligibility fields must be boolean")
+    for field in ("executable_price", "fee_rate"):
+        decimal_value(opportunity[field], f"{path}.opportunity.{field}")
+    for field in ("net_edge", "raw_edge"):
+        decimal_value(
+            opportunity[field], f"{path}.opportunity.{field}", minimum=Decimal("-1")
+        )
+    market_status = opportunity.get("market_status")
+    if market_status is not None and market_status not in ({"ACTIVE"} | MECHANICAL_MARKET_STATUSES):
+        raise ReportError(f"{path}.opportunity.market_status is unsupported")
 
     allocation = require_object(analysis["allocation"], f"{path}.allocation")
     require_fields(
@@ -422,6 +827,10 @@ def validate_v3_analysis(raw: Any, path: str, *, current_position: bool) -> None
     require_chinese_text(allocation["reason"], f"{path}.allocation.reason")
     if current_position and "comparison" not in analysis:
         raise ReportError(f"{path}.comparison is required for current positions")
+    if not current_position and "research_novelty" in analysis:
+        validate_candidate_novelty_shape(
+            analysis["research_novelty"], f"{path}.research_novelty"
+        )
 
 
 def validate_v3_execution(
@@ -651,7 +1060,9 @@ def validate_analysis(raw: Any, path: str, *, current_position: bool, schema_ver
             raise ReportError(f"{path}.allocation cash_before - allocated_cash must equal cash_after")
 
 
-def validate_report(report: Any) -> dict[str, Any]:
+def validate_report(
+    report: Any, *, enforce_candidate_quality: bool = True
+) -> dict[str, Any]:
     root = require_object(report, "report")
     require_fields(
         root,
@@ -738,6 +1149,8 @@ def validate_report(report: Any) -> dict[str, Any]:
             current_position=False,
             schema_version=schema_version,
         )
+    if schema_version == "3.0" and enforce_candidate_quality:
+        validate_candidate_research_quality(candidates)
     if adapter is not None:
         identifier_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}")
         for index, analysis in enumerate(current + candidates):
@@ -1010,6 +1423,16 @@ def render_analysis(item: dict[str, Any], *, current_position: bool) -> list[str
         f"- 行动理由：{signal['rationale']}",
         f"- 结算标准（原文）：{market['resolution_criteria']}",
     ]
+    if not current_position and isinstance(item.get("research_novelty"), dict):
+        novelty = item["research_novelty"]
+        novelty_labels = {
+            "FIRST_RESEARCH": "新增候选（本轮首次研究）",
+            "EXISTING_EVENT_NEW_MARKET": "既有事件的新子市场",
+        }
+        lines.append(
+            f"- 研究新颖性：{novelty_labels.get(novelty.get('classification'), novelty.get('classification'))}；"
+            f"{novelty.get('reason', '')}"
+        )
     if current_position:
         lines.append(f"- 上轮对比：{render_comparison(item.get('comparison'))}")
     if "resolution_review" in item:
@@ -1116,9 +1539,13 @@ def render_report(report: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def read_report(path: Path) -> dict[str, Any]:
+def read_report(
+    path: Path, *, enforce_candidate_quality: bool = True
+) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as handle:
-        return validate_report(json.load(handle))
+        return validate_report(
+            json.load(handle), enforce_candidate_quality=enforce_candidate_quality
+        )
 
 
 def safe_component(value: str) -> str:
@@ -1130,9 +1557,12 @@ def safe_component(value: str) -> str:
 
 def archive_report(report_path: Path, output_root: Path, snapshots: list[Path]) -> Path:
     report = read_report(report_path)
+    adapter = report["run"]["account"].get("adapter")
+    if isinstance(adapter, str):
+        history_paths = sorted((output_root / "reports").glob("*/report.json"))
+        validate_candidate_history(report, history_paths)
     timestamp = safe_component(str(report["run"]["completed_at"]).replace(":", "-"))
     run_id = safe_component(str(report["run"]["id"]))
-    adapter = report["run"]["account"].get("adapter")
     adapter_component = f"_{safe_component(str(adapter))}" if adapter else ""
     destination = output_root / "reports" / f"{timestamp}{adapter_component}_{run_id}"
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1170,7 +1600,7 @@ def previous_reports(
         if not report_path.is_file():
             continue
         try:
-            report = read_report(report_path)
+            report = read_report(report_path, enforce_candidate_quality=False)
         except (OSError, json.JSONDecodeError, ReportError):
             continue
         account = report["run"]["account"]
@@ -1196,6 +1626,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     validate = subparsers.add_parser("validate", help="Validate report JSON")
     validate.add_argument("report")
+    validate.add_argument(
+        "--history-reports-list",
+        help="Newline-delimited historical report paths used to verify candidate novelty",
+    )
     render = subparsers.add_parser("render", help="Render report JSON as Markdown")
     render.add_argument("report")
     render.add_argument("output", help="Output Markdown path, or - for stdout")
@@ -1215,7 +1649,22 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "validate":
             report = read_report(Path(args.report))
-            result: Any = {"valid": True, "run_id": report["run"]["id"]}
+            history_validated = False
+            if args.history_reports_list:
+                history_paths = [
+                    Path(line.strip())
+                    for line in Path(args.history_reports_list)
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                    if line.strip()
+                ]
+                validate_candidate_history(report, history_paths)
+                history_validated = True
+            result: Any = {
+                "valid": True,
+                "run_id": report["run"]["id"],
+                "candidate_history_validated": history_validated,
+            }
         elif args.command == "render":
             report = read_report(Path(args.report))
             markdown = render_report(report)

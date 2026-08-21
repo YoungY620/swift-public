@@ -52,6 +52,7 @@ class PreviouslyResearchedTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(payload["reports_scanned"], 2)
             self.assertEqual(payload["researched_market_ids"], ["111", "222", "333"])
+            self.assertEqual(payload["researched_report_market_ids"], ["111", "222", "333"])
             self.assertEqual(payload["researched_event_identifiers"], [])
             self.assertNotIn("researched_event_slugs", payload)
 
@@ -98,6 +99,7 @@ class PreviouslyResearchedTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(payload["reports_scanned"], 1)
             self.assertEqual(payload["researched_market_identifiers"], ["kalshi-market"])
+            self.assertEqual(payload["researched_report_market_ids"], ["local-id"])
             self.assertEqual(payload["researched_event_identifiers"], ["kalshi-event"])
 
     def test_empty_archive_returns_empty_sets(self) -> None:

@@ -23,6 +23,7 @@ def collect_researched(reports_dir: Path, adapter: str | None = None) -> dict[st
     if not reports_dir.is_dir():
         raise ResearchHistoryError(f"reports directory not found: {reports_dir}")
     market_ids: set[str] = set()
+    report_market_ids: set[str] = set()
     event_identifiers: set[str] = set()
     scanned = 0
     for path in sorted(reports_dir.glob("*/report.json")):
@@ -53,6 +54,9 @@ def collect_researched(reports_dir: Path, adapter: str | None = None) -> dict[st
                 ).strip()
                 if market_identifier:
                     market_ids.add(market_identifier)
+                report_market_id = str(market.get("id") or "").strip()
+                if report_market_id:
+                    report_market_ids.add(report_market_id)
                 event_identifier = str(market.get("event_identifier") or "").strip()
                 if event_identifier:
                     event_identifiers.add(event_identifier)
@@ -65,6 +69,7 @@ def collect_researched(reports_dir: Path, adapter: str | None = None) -> dict[st
         "adapter": adapter,
         "researched_event_count": len(event_identifiers),
         "researched_market_identifiers": sorted(market_ids, key=sort_key),
+        "researched_report_market_ids": sorted(report_market_ids, key=sort_key),
         "researched_event_identifiers": sorted(event_identifiers),
         # Compatibility alias for the pre-adapter market-id field name.
         "researched_market_ids": sorted(market_ids, key=sort_key),

@@ -147,6 +147,12 @@
   ],
   "candidates": [
     {
+      "research_novelty": {
+        "classification": "FIRST_RESEARCH",
+        "event_previously_researched": false,
+        "market_previously_researched": false,
+        "reason": "该事件和具体市场标识均未出现在历史研究集合中。"
+      },
       "market": {
         "id": "candidate-1",
         "question": "Will another sample event resolve Yes?",
@@ -212,7 +218,7 @@
       },
       "signal": {
         "action": "BUY",
-        "rationale": "计入手续费、滑点、储备资金和半 Kelly 仓位后，仍保留可执行优势。"
+        "rationale": "相关事件的历史基础发生率支持模型 YES 概率 0.7；当前可执行价格 0.5、费后净优势 20pp，且组合已分配资金，因此买入。"
       },
       "opportunity": {
         "entry_eligible": true,
@@ -224,7 +230,8 @@
         "minimum_raw_edge": 0.1,
         "fee_rate": 0,
         "book_timestamp": "2026-07-19T00:20:00Z",
-        "reason": "完整建议订单在扣除执行成本后仍保留明显概率优势。"
+        "market_status": "ACTIVE",
+        "reason": "当前可执行价格为 0.5，raw edge 为 20pp，费后净优势为 20pp，严格高于 10pp 硬门槛；本轮组合分配 25 现金，因此执行买入。"
       },
       "allocation": {
         "priority": 1,

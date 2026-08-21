@@ -23,6 +23,22 @@ def load_report() -> dict:
     return json.loads(FIXTURE.read_text(encoding="utf-8"))
 
 
+def adapter_report() -> dict:
+    report = load_report()
+    report["run"]["account"] = {
+        "input": "fixture-account",
+        "adapter": "polymarket",
+        "identifier": "fixture-account",
+    }
+    for index, analysis in enumerate(
+        report["current_positions"] + report["candidates"], start=1
+    ):
+        analysis["market"]["event_identifier"] = f"event-{index}"
+        analysis["market"]["multi_market_identifier"] = f"condition-{index}"
+        analysis["market"]["instrument_identifier"] = f"token-{index}"
+    return report
+
+
 class ReportToolTests(unittest.TestCase):
     def test_valid_v3_report_renders_actions_and_evidence(self) -> None:
         report = report_tool.validate_report(load_report())
@@ -119,6 +135,143 @@ class ReportToolTests(unittest.TestCase):
         with self.assertRaisesRegex(report_tool.ReportError, "differs"):
             report_tool.validate_report(report)
 
+    def test_distinct_candidates_cannot_copy_signal_rationale(self) -> None:
+        report = load_report()
+        duplicate = copy.deepcopy(report["candidates"][0])
+        duplicate["market"]["id"] = "candidate-2"
+        duplicate["market"]["question"] = "Will a third sample event resolve Yes?"
+        duplicate["market"]["url"] = "https://polymarket.com/event/third-sample"
+        report["candidates"].append(duplicate)
+        with self.assertRaisesRegex(report_tool.ReportError, "signal.rationale duplicates"):
+            report_tool.validate_report(report)
+
+    def test_candidate_cannot_use_order_book_recalculation_as_only_reason(self) -> None:
+        report = load_report()
+        report["candidates"][0]["signal"]["rationale"] = (
+            "基于最新订单簿重新计算；未触发可执行交叉或硬门槛，维持现状。"
+        )
+        with self.assertRaisesRegex(report_tool.ReportError, "generic execution boilerplate"):
+            report_tool.validate_report(report)
+
+    def test_distinct_candidates_cannot_copy_evidence_conclusion(self) -> None:
+        candidates = [copy.deepcopy(load_report()["candidates"][0]) for _ in range(2)]
+        candidates[1]["signal"]["rationale"] = "第三个事件的官方进度支持当前概率，且执行数值满足入场要求。"
+        candidates[1]["model"]["conclusion"] = "第三个事件的专属公开记录支持当前概率判断。"
+        candidates[1]["evidence"][0]["summary"] = "第三个事件的官方记录给出了独有的进度数据。"
+        with self.assertRaisesRegex(report_tool.ReportError, "conclusion duplicates"):
+            report_tool.validate_candidate_research_quality(candidates)
+
+    def test_current_position_may_use_reassessment_language(self) -> None:
+        report = load_report()
+        report["current_positions"][0]["signal"]["rationale"] = (
+            "本轮重新评估并基于最新订单簿重新计算，当前持仓继续维持现状。"
+        )
+        self.assertTrue(report_tool.validate_report(report))
+
+    def test_closed_candidates_may_share_explicit_mechanical_reason(self) -> None:
+        candidates = [copy.deepcopy(load_report()["candidates"][0]) for _ in range(2)]
+        for candidate in candidates:
+            candidate["signal"] = {
+                "action": "MAINTAIN",
+                "rationale": "市场已关闭且没有 active order book，因此维持空仓。",
+            }
+            candidate["opportunity"].update(
+                {
+                    "entry_eligible": False,
+                    "market_status": "CLOSED",
+                    "reason": "市场已关闭且没有 active order book，因此无法执行。",
+                }
+            )
+            candidate["allocation"].update(
+                {"priority": None, "allocated_cash": 0, "cash_after": 80}
+            )
+            candidate["evidence"][0]["summary"] = "市场元数据显示该市场已关闭。"
+            candidate["evidence"][0]["conclusion"] = (
+                "closed=true，且没有 active order book，不能提交订单。"
+            )
+        report_tool.validate_candidate_research_quality(candidates)
+
+    def test_similar_execution_reason_must_use_each_candidates_numbers(self) -> None:
+        candidates = [copy.deepcopy(load_report()["candidates"][0]) for _ in range(2)]
+        candidates[1]["signal"]["rationale"] = "另一事件的专属证据支持当前概率，并满足买入要求。"
+        candidates[1]["model"]["conclusion"] = "另一事件的独立政策证据支持当前概率。"
+        candidates[1]["evidence"][0]["summary"] = "另一事件公布了独立的政策进度。"
+        candidates[1]["evidence"][0]["conclusion"] = "该进度支持另一事件的因子权重。"
+        report_tool.validate_candidate_research_quality(candidates)
+        candidates[1]["opportunity"]["executable_price"] = 0.55
+        with self.assertRaisesRegex(report_tool.ReportError, "executable_price"):
+            report_tool.validate_candidate_research_quality(candidates)
+
+    def test_history_marks_genuinely_new_event_as_first_research(self) -> None:
+        report = adapter_report()
+        report_tool.validate_candidate_history(report, [])
+
+    def test_existing_event_new_market_cannot_be_called_first_research(self) -> None:
+        report = adapter_report()
+        candidate = report["candidates"][0]
+        candidate["market"]["event_identifier"] = "known-event"
+        with tempfile.TemporaryDirectory() as temporary:
+            history_path = Path(temporary) / "report.json"
+            history_path.write_text(
+                json.dumps(
+                    {
+                        "run": {"account": {"adapter": "polymarket"}},
+                        "current_positions": [],
+                        "candidates": [
+                            {
+                                "market": {
+                                    "id": "old-child",
+                                    "event_identifier": "known-event",
+                                    "multi_market_identifier": "old-condition",
+                                }
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                report_tool.ReportError, "EXISTING_EVENT_NEW_MARKET"
+            ):
+                report_tool.validate_candidate_history(report, [history_path])
+            candidate["research_novelty"].update(
+                {
+                    "classification": "EXISTING_EVENT_NEW_MARKET",
+                    "event_previously_researched": True,
+                }
+            )
+            report_tool.validate_candidate_history(report, [history_path])
+
+    def test_previously_researched_concrete_market_is_not_a_new_candidate(self) -> None:
+        report = adapter_report()
+        candidate = report["candidates"][0]
+        with tempfile.TemporaryDirectory() as temporary:
+            history_path = Path(temporary) / "report.json"
+            history_path.write_text(
+                json.dumps(
+                    {
+                        "run": {"account": {"adapter": "polymarket"}},
+                        "current_positions": [],
+                        "candidates": [
+                            {
+                                "market": {
+                                    "id": "different-report-id",
+                                    "event_identifier": "old-event",
+                                    "multi_market_identifier": candidate["market"][
+                                        "multi_market_identifier"
+                                    ],
+                                }
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                report_tool.ReportError, "previously-researched market set"
+            ):
+                report_tool.validate_candidate_history(report, [history_path])
+
     def test_execution_fill_values_are_recomputed(self) -> None:
         report = load_report()
         report["actions"][1]["execution"]["vwap"] = 0.51
@@ -179,6 +332,38 @@ class ReportToolTests(unittest.TestCase):
                 report_tool.archive_report(FIXTURE, output_root, [])
             previous = report_tool.previous_reports(output_root, 2)
             self.assertEqual(previous[0]["run_id"], "sample-run")
+
+    def test_adapter_archive_checks_candidate_history_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "candidate-report.json"
+            report = adapter_report()
+            source.write_text(json.dumps(report), encoding="utf-8")
+            history_dir = root / "archive" / "reports" / "old"
+            history_dir.mkdir(parents=True)
+            candidate = report["candidates"][0]
+            (history_dir / "report.json").write_text(
+                json.dumps(
+                    {
+                        "run": {"account": {"adapter": "polymarket"}},
+                        "current_positions": [],
+                        "candidates": [
+                            {
+                                "market": {
+                                    "id": "old-id",
+                                    "event_identifier": "old-event",
+                                    "multi_market_identifier": candidate["market"][
+                                        "multi_market_identifier"
+                                    ],
+                                }
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(report_tool.ReportError, "previously-researched"):
+                report_tool.archive_report(source, root / "archive", [])
 
 
 if __name__ == "__main__":

@@ -131,7 +131,14 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
 
     for row in report_rows:
         output = run_checked(
-            [sys.executable, str(args.report_tool), "validate", row["path"]],
+            [
+                sys.executable,
+                str(args.report_tool),
+                "validate",
+                row["path"],
+                "--history-reports-list",
+                str(args.baseline_reports),
+            ],
             f"private report validation for {row['adapter']}",
         )
         try:

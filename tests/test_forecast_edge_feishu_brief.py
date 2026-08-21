@@ -27,7 +27,24 @@ class ForecastEdgeFeishuBriefTests(unittest.TestCase):
                 "completed_at": "2026-08-21T03:26:33+00:00",
             },
             "current_positions": [{"signal": {"action": "MAINTAIN"}}],
-            "candidates": [{"signal": {"action": action}}],
+            "candidates": [
+                {
+                    "research_novelty": {"classification": "FIRST_RESEARCH"},
+                    "signal": {
+                        "action": action,
+                        "rationale": "该事件的官方进度数据支持当前概率，执行判断采用报告数值。",
+                    },
+                    "model": {
+                        "conclusion": "该事件独有的官方进度与历史基准率支持当前概率。"
+                    },
+                    "evidence": [
+                        {
+                            "summary": "官方记录公布了该事件最新的专属进度数据。",
+                            "conclusion": "这一进度提高了该事件按期发生的概率。",
+                        }
+                    ],
+                }
+            ],
             "actions": [
                 {"action": "MAINTAIN", "execution": None},
                 {"action": action, "execution": {} if actionable else None},
@@ -54,6 +71,7 @@ class ForecastEdgeFeishuBriefTests(unittest.TestCase):
                 "**研究覆盖**：重新评估 **1 个当前持仓**并深度研究 **1 个新增候选**。\n\n"
                 "**本轮结论**：**维持现状**，等待更清晰的机会。\n\n"
                 "### 一、私人操作建议\n\n持有 YES｜示例市场，维持当前仓位。\n\n"
+                "新增候选（本轮首次研究）（1）\n\n候选 YES｜另一示例市场。\n\n"
                 f"### 二、简报\n\n{no_action}\n\n"
                 "[盘口链接](https://polymarket.com/event/example)"
             ),
@@ -112,6 +130,41 @@ class ForecastEdgeFeishuBriefTests(unittest.TestCase):
                 brief_module.BriefValidationError, "no intent is executable"
             ):
                 brief_module.validate_brief(response, schema, inventory)
+
+    def test_generic_candidate_rationale_refuses_normal_briefing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            reports = Path(tmp)
+            self.write_report(reports)
+            report_path = reports / "report-polymarket.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["candidates"][0]["signal"]["rationale"] = (
+                "基于最新订单簿重新计算；未触发可执行交叉或硬门槛，维持现状。"
+            )
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(
+                brief_module.BriefValidationError, "generic signal rationale"
+            ):
+                brief_module.report_inventory(reports)
+
+    def test_existing_event_child_requires_distinct_brief_heading(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            reports = Path(tmp)
+            self.write_report(reports)
+            report_path = reports / "report-polymarket.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["candidates"][0]["research_novelty"]["classification"] = (
+                "EXISTING_EVENT_NEW_MARKET"
+            )
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            response = self.response()
+            with self.assertRaisesRegex(
+                brief_module.BriefValidationError, "既有事件的新子市场"
+            ):
+                brief_module.validate_candidate_novelty_headings(response, reports)
+            response["markdown"] = str(response["markdown"]).replace(
+                "新增候选（本轮首次研究）", "既有事件的新子市场"
+            )
+            brief_module.validate_candidate_novelty_headings(response, reports)
 
     def test_portfolio_summary_is_formatted_prose_not_a_list(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -215,6 +268,7 @@ class ForecastEdgeFeishuBriefTests(unittest.TestCase):
             self.assertEqual(result["venues"], [])
             self.assertEqual(result["researched_market_count"], 0)
             self.assertIn("无可执行交易意图", result["markdown"])
+            self.assertIn("Warning", result["markdown"])
 
 
 if __name__ == "__main__":

@@ -703,10 +703,14 @@ jobs:
           cp "$reports_dir"/report-*.md "$FEISHU_BRIEF_AGENT_DIR/reports/"
           install -m 600 "$FEISHU_BRIEF_PROMPT_PATH" "$FEISHU_BRIEF_AGENT_DIR/prompt.md"
           install -m 600 "$FEISHU_BRIEF_SCHEMA_PATH" "$FEISHU_BRIEF_AGENT_DIR/brief.schema.json"
-          "$AUDIT_RUNTIME_DIR/python-venv/bin/python" \
-            "$GITHUB_WORKSPACE/scripts/forecast_edge_feishu_brief.py" inventory \
-            --reports-dir "$FEISHU_BRIEF_AGENT_DIR/reports" \
-            --output "$FEISHU_BRIEF_AGENT_DIR/source-inventory.json"
+          if ! "$AUDIT_RUNTIME_DIR/python-venv/bin/python" \
+              "$GITHUB_WORKSPACE/scripts/forecast_edge_feishu_brief.py" inventory \
+              --reports-dir "$FEISHU_BRIEF_AGENT_DIR/reports" \
+              --output "$FEISHU_BRIEF_AGENT_DIR/source-inventory.json" \
+              2> "$AUDIT_RUNTIME_DIR/feishu-brief-quality.errors"; then
+            echo "::warning::Upstream report is not safe for a normal Feishu research brief"
+            exit 1
+          fi
           cd "$FEISHU_BRIEF_AGENT_DIR"
           set +e
           stdbuf -oL -eL kimi --agent-file "$FEISHU_BRIEF_AGENT_PROFILE_PATH" \
@@ -743,8 +747,13 @@ jobs:
                 -s "$FEISHU_BRIEF_PATH" && -s "$FEISHU_BRIEF_TRACE_PATH" ]]; then
             brief_valid=true
           else
-            printf '%s\n' 'Agent output unavailable or failed deterministic validation' \
-              > "$AUDIT_RUNTIME_DIR/feishu-brief-fallback-reason.txt"
+            if [[ -s "$AUDIT_RUNTIME_DIR/feishu-brief-quality.errors" ]]; then
+              tail -c 500 "$AUDIT_RUNTIME_DIR/feishu-brief-quality.errors" \
+                | tr '\r\n' ' ' > "$AUDIT_RUNTIME_DIR/feishu-brief-fallback-reason.txt"
+            else
+              printf '%s\n' 'Agent output unavailable or failed deterministic validation' \
+                > "$AUDIT_RUNTIME_DIR/feishu-brief-fallback-reason.txt"
+            fi
             "$AUDIT_RUNTIME_DIR/python-venv/bin/python" \
               "$GITHUB_WORKSPACE/scripts/forecast_edge_feishu_brief.py" fallback \
               --reason "$AUDIT_RUNTIME_DIR/feishu-brief-fallback-reason.txt" \
