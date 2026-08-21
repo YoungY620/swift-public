@@ -216,6 +216,23 @@ class ReportToolTests(unittest.TestCase):
             )
             self.assertEqual(historical["run"]["id"], "sample-run")
 
+    def test_historical_identity_validation_allows_legacy_null_book_fields(self) -> None:
+        report = load_report()
+        report["current_positions"][0]["opportunity"]["executable_price"] = None
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "report.json"
+            path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(report_tool.ReportError, "must be numeric"):
+                report_tool.read_report(path)
+            historical = report_tool.read_historical_report(path)
+            self.assertEqual(historical["run"]["id"], "sample-run")
+
+    def test_historical_identity_validation_still_requires_routing_ids(self) -> None:
+        report = adapter_report()
+        del report["candidates"][0]["market"]["multi_market_identifier"]
+        with self.assertRaisesRegex(report_tool.ReportError, "multi_market_identifier"):
+            report_tool.validate_historical_report(report)
+
     def test_closed_candidates_may_share_explicit_mechanical_reason(self) -> None:
         candidates = [copy.deepcopy(load_report()["candidates"][0]) for _ in range(2)]
         for candidate in candidates:

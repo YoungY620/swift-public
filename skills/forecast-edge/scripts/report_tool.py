@@ -1605,6 +1605,71 @@ def read_report(
         )
 
 
+def validate_historical_report(report: Any) -> dict[str, Any]:
+    """Validate only immutable identity fields needed to restore research history.
+
+    Historical reports were valid under the code that archived them. Reapplying
+    later business-quality and executable-book requirements would make an
+    immutable archive unreadable as those rules evolve. Archive digests and
+    Release lineage are verified by the workflow before this function runs;
+    this check keeps the JSON and identifier shape safe for history indexing.
+    """
+
+    root = require_object(report, "report")
+    require_fields(
+        root,
+        {"schema_version", "run", "current_positions", "candidates"},
+        "report",
+    )
+    schema_version = str(root["schema_version"])
+    if schema_version not in {"1.0", "2.0", "2.1", "2.2", "3.0"}:
+        raise ReportError("report.schema_version is unsupported")
+    run = require_object(root["run"], "report.run")
+    require_fields(run, {"id", "account"}, "report.run")
+    if not str(run["id"]).strip():
+        raise ReportError("report.run.id must not be empty")
+    account = require_object(run["account"], "report.run.account")
+    adapter = account.get("adapter")
+    if adapter is not None and (
+        not isinstance(adapter, str)
+        or re.fullmatch(r"[a-z][a-z0-9-]{0,31}", adapter) is None
+    ):
+        raise ReportError("report.run.account.adapter is invalid")
+
+    analyses = list(require_list(root["current_positions"], "report.current_positions"))
+    analyses.extend(require_list(root["candidates"], "report.candidates"))
+    for index, raw in enumerate(analyses):
+        path = f"report.analysis[{index}]"
+        analysis = require_object(raw, path)
+        market = require_object(analysis.get("market"), f"{path}.market")
+        require_fields(market, {"id"}, f"{path}.market")
+        if not str(market["id"]).strip():
+            raise ReportError(f"{path}.market.id must not be empty")
+        if adapter is not None:
+            require_fields(
+                market,
+                {
+                    "event_identifier",
+                    "multi_market_identifier",
+                    "instrument_identifier",
+                },
+                f"{path}.market",
+            )
+            for field in (
+                "event_identifier",
+                "multi_market_identifier",
+                "instrument_identifier",
+            ):
+                if not str(market[field]).strip():
+                    raise ReportError(f"{path}.market.{field} must not be empty")
+    return root
+
+
+def read_historical_report(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as handle:
+        return validate_historical_report(json.load(handle))
+
+
 def safe_component(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-.")
     if not cleaned:
@@ -1658,7 +1723,7 @@ def previous_reports(
         if not report_path.is_file():
             continue
         try:
-            report = read_report(report_path, enforce_candidate_quality=False)
+            report = read_historical_report(report_path)
         except (OSError, json.JSONDecodeError, ReportError):
             continue
         account = report["run"]["account"]
@@ -1695,7 +1760,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument(
         "--historical-read-only",
         action="store_true",
-        help="Read an immutable legacy report without applying newly introduced candidate-quality gates",
+        help="Validate immutable report identity fields without applying later business-quality rules",
     )
     render = subparsers.add_parser("render", help="Render report JSON as Markdown")
     render.add_argument("report")
@@ -1715,9 +1780,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "validate":
-            report = read_report(
-                Path(args.report),
-                enforce_candidate_quality=not args.historical_read_only,
+            report = (
+                read_historical_report(Path(args.report))
+                if args.historical_read_only
+                else read_report(Path(args.report))
             )
             history_validated = False
             if args.history_reports_list or args.history_index:
