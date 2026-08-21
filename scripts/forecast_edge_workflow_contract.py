@@ -231,6 +231,7 @@ def main() -> int:
         "notification_actual_trade_details": (
             "forecast_edge_execution_brief.py" in audit
             and "execution-brief.json" in audit
+            and "--failure-log" in audit
             and "execution_detail=$(jq -r '.markdown'" in audit
             and "printf '\\n%s\\n' \"$execution_detail\"" in audit
             and "actual_vwap" in (

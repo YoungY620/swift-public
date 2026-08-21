@@ -163,6 +163,7 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertNotIn('receipt_count="0"', self.workflow)
         self.assertIn("forecast_edge_execution_brief.py", self.workflow)
         self.assertIn("execution-brief.json", self.workflow)
+        self.assertIn("--failure-log", self.workflow)
         self.assertIn("**实际交易逐项回执**", (
             ROOT / "scripts" / "forecast_edge_execution_brief.py"
         ).read_text(encoding="utf-8"))

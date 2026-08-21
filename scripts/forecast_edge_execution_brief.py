@@ -15,6 +15,11 @@ from typing import Any
 POLYMARKET_URL = re.compile(
     r"https://(?:www\.)?polymarket\.com/event/[A-Za-z0-9._~%-]+(?:\?tid=[0-9]+)?/?"
 )
+MARKETABLE_MINIMUM_RE = re.compile(
+    r"invalid amount for a marketable (BUY|SELL) order "
+    r"\(\$([0-9]+(?:\.[0-9]+)?)\), min size: ([0-9]+(?:\.[0-9]+)?)",
+    re.IGNORECASE,
+)
 STATUS_LABELS = {
     "FULL": ("✅", "已成交"),
     "NO_FILL": ("⚪", "FOK 未成交"),
@@ -127,6 +132,30 @@ def receipt_by_intent(receipt: dict[str, Any]) -> dict[int, dict[str, Any]]:
         if isinstance(index, int) and index > 0 and index not in result:
             result[index] = item
     return result
+
+
+def recognized_failure(path: Path | None) -> dict[str, str] | None:
+    """Extract only allowlisted, secret-free exchange failure fields."""
+    if path is None:
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = MARKETABLE_MINIMUM_RE.search(text)
+    if match is None:
+        return None
+    side, amount, minimum = match.groups()
+    return {
+        "code": "MARKETABLE_ORDER_BELOW_MINIMUM",
+        "side": side.lower(),
+        "amount": amount,
+        "minimum": minimum,
+        "message": (
+            f"交易所拒绝 marketable {side.upper()}：提交金额 {amount} pUSD，"
+            f"低于最小 {minimum} pUSD。"
+        ),
+    }
 
 
 def item_from_outcome(
@@ -252,7 +281,11 @@ def render_item(item: dict[str, Any]) -> str:
     return line
 
 
-def build_document(receipt: dict[str, Any], reports_dir: Path) -> dict[str, Any]:
+def build_document(
+    receipt: dict[str, Any],
+    reports_dir: Path,
+    failure_log: Path | None = None,
+) -> dict[str, Any]:
     if receipt.get("schema_version") != "1.0":
         raise ExecutionBriefError("execution receipt has an unsupported schema version")
     planning = receipt.get("planning")
@@ -273,12 +306,24 @@ def build_document(receipt: dict[str, Any], reports_dir: Path) -> dict[str, Any]
     counts = {status: 0 for status in STATUS_LABELS}
     for item in items:
         counts[str(item["status"])] += 1
-    markdown = "**实际交易逐项回执**\n" + "\n".join(render_item(item) for item in items)
+    failure = recognized_failure(failure_log)
+    sections = ["**实际交易逐项回执**"]
+    if failure is not None:
+        failure_message = failure["message"]
+        if receipt.get("status") == "UNCERTAIN":
+            failure_message += (
+                "执行批次随后以 UNCERTAIN 中止，"
+                f"{counts['NOT_RECORDED']} 笔计划订单没有终态回执。"
+            )
+        sections.append(f"**执行失败点**：{failure_message}")
+    sections.extend(render_item(item) for item in items)
+    markdown = "\n".join(sections)
     return {
         "schema_version": "1.0",
         "execution_status": clean_text(receipt.get("status"), limit=80) or "UNKNOWN",
         "item_count": len(items),
         "status_counts": counts,
+        "recognized_failure": failure,
         "items": items,
         "markdown": markdown,
     }
@@ -288,13 +333,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument("--reports-dir", type=Path, required=True)
+    parser.add_argument("--failure-log", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
         receipt = load_json(args.receipt, "execution receipt")
         if not isinstance(receipt, dict):
             raise ExecutionBriefError("execution receipt is not an object")
-        write_json(args.output, build_document(receipt, args.reports_dir))
+        write_json(
+            args.output,
+            build_document(receipt, args.reports_dir, args.failure_log),
+        )
     except ExecutionBriefError as exc:
         print(f"forecast_edge_execution_brief: {exc}", file=sys.stderr)
         return 2

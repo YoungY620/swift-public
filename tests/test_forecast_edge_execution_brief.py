@@ -113,6 +113,38 @@ class ForecastEdgeExecutionBriefTests(unittest.TestCase):
             self.assertIn("below\_marketable\_buy\_minimum\_amount", markdown)
             self.assertNotIn("token-1", markdown)
 
+    def test_surfaces_allowlisted_exchange_failure_without_copying_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reports = root / "reports"
+            reports.mkdir()
+            self.write_report(reports)
+            failure_log = root / "execute-command.log"
+            failure_log.write_text(
+                "private material must not be copied\n"
+                "RequestRejectedError: invalid amount for a marketable BUY order "
+                "($0.9), min size: 1\n",
+                encoding="utf-8",
+            )
+            receipt = {
+                "schema_version": "1.0",
+                "status": "UNCERTAIN",
+                "planning": {
+                    "intent_outcomes": [self.outcome(1), self.outcome(2)]
+                },
+                "receipts": [],
+            }
+
+            document = brief.build_document(receipt, reports, failure_log)
+
+            self.assertEqual(
+                document["recognized_failure"]["code"],
+                "MARKETABLE_ORDER_BELOW_MINIMUM",
+            )
+            self.assertIn("提交金额 0.9 pUSD，低于最小 1 pUSD", document["markdown"])
+            self.assertIn("2 笔计划订单没有终态回执", document["markdown"])
+            self.assertNotIn("private material", document["markdown"])
+
     def test_refuses_report_outcome_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

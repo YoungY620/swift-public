@@ -1028,11 +1028,18 @@ jobs:
           if jq -e 'type == "object"' "$execution_receipt_source" >/dev/null 2>&1; then
             install -m 600 "$execution_receipt_source" \
               "$FEISHU_BRIEF_ARTIFACT_DIR/execution-receipt.json"
+            execution_brief_args=(
+              --receipt "$execution_receipt_source"
+              --reports-dir "$AUDIT_REPORTS_DIR"
+              --output "$FEISHU_BRIEF_ARTIFACT_DIR/execution-brief.json"
+            )
+            execution_failure_log="$AUDIT_EVIDENCE_DIR/diagnostics/files/execution-diagnostics/execute-command.log"
+            if [[ -s "$execution_failure_log" ]]; then
+              execution_brief_args+=(--failure-log "$execution_failure_log")
+            fi
             "$AUDIT_RUNTIME_DIR/python-venv/bin/python" \
               "$GITHUB_WORKSPACE/scripts/forecast_edge_execution_brief.py" \
-              --receipt "$execution_receipt_source" \
-              --reports-dir "$AUDIT_REPORTS_DIR" \
-              --output "$FEISHU_BRIEF_ARTIFACT_DIR/execution-brief.json"
+              "${execution_brief_args[@]}"
           fi
           echo "brief_valid=$brief_valid" >> "$GITHUB_OUTPUT"
           echo "business_complete=$business_complete" >> "$GITHUB_OUTPUT"
