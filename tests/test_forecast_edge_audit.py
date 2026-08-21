@@ -75,6 +75,16 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertEqual(len(ids), len(set(ids)))
         self.assertGreaterEqual(len(ids), 15)
 
+    def test_candidate_research_quality_is_agent_judged_without_breaker_authority(self) -> None:
+        check = next(
+            item for item in self.rubric["checks"] if item["id"] == "RESEARCH-002"
+        )
+        self.assertEqual(check["severity"], "high")
+        self.assertIn("signal.rationale", check["expected"])
+        self.assertIn("research_novelty", check["expected"])
+        self.assertIn("release.reports", check["evidence_required"])
+        self.assertNotIn("RESEARCH-002", audit_module.AGENT_BREAKER_CHECK_IDS)
+
     def test_workflow_runs_after_parent_and_gates_off_empty_hourly_wakeups(self) -> None:
         self.assertIn("workflow_run:", self.workflow)
         self.assertIn("Forecast Edge research and optional execution", self.workflow)

@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "rubric_version": "1.8",
+  "rubric_version": "1.9",
   "rubric_id": "forecast-edge-production-audit",
   "description": "Forecast Edge 父工作流完成后的研究、真实执行、发布和安全审计。缺少必要证据时不得判定通过。",
   "statuses": [
@@ -64,6 +64,15 @@
       "expected": "research job 成功且研究 manifest/validation 进入最终 Release；初次生成若未通过、后续 repair 恢复，必须作为可恢复 Warning 详细说明，不能伪装成一次通过。",
       "evidence_required": ["jobs", "research_diagnostics", "release.research_manifest", "release.validation_summary"],
       "pass_condition": "research job success，研究 manifest 和 validation summary 存在且能通过基本一致性检查。初次生成直接通过才可 PASS；任一 repair 后恢复应判 WARN，并在 reason 中写明失败阶段、校验原因、恢复尝试和最终影响；全部 repair 失败才 FAIL。"
+    },
+    {
+      "id": "RESEARCH-002",
+      "severity": "high",
+      "title": "新增候选研究理由市场专属且与执行判断分离",
+      "applies_when": "final research reports exist",
+      "expected": "Judge 逐份读取最终 report JSON；candidates 的 signal.rationale、model.conclusion 和主要 evidence summary/conclusion 不得在不同市场间复制，不得只有订单簿或维持现状套话。每个候选必须说明市场专属事实、概率依据和关键不确定性；opportunity.reason 单独用本市场的价格、raw/net edge、10pp 门槛、eligibility 和 allocation 解释执行结论。research_novelty 必须与历史 event/multi-market/market id 一致。",
+      "evidence_required": ["release.reports", "release.validation_summary", "research_diagnostics"],
+      "pass_condition": "最终报告中每个候选都至少有一条仅属于该市场的研究依据，不同候选的主要研究文案不完全相同；执行理由与字段数值一致；首次研究/旧事件新子市场分类与历史集合一致。中间修复后最终通过可 WARN；这类研究质量问题不触发交易安全熔断。"
     },
     {
       "id": "HANDOFF-001",
