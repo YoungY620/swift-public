@@ -1,0 +1,267 @@
+name: Kimi Code single-run compatibility canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      kimi-model-name:
+        description: One Kimi Code model route to test without retries
+        required: false
+        default: kimi-for-coding
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: kimi-code-canary-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      KIMI_CODE_VERSION: "0.37.2"
+      KIMI_MODEL_NAME: ${{ inputs['kimi-model-name'] || 'kimi-for-coding' }}
+      KIMI_MODEL_PROVIDER_TYPE: kimi
+      KIMI_MODEL_BASE_URL: https://api.kimi.com/coding/v1
+      KIMI_DISABLE_TELEMETRY: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare isolated canary
+        env:
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$KIMI_MODEL_API_KEY" ]]; then
+            echo "::error::Required Actions secret KIMI_CODE_API_KEY is not configured"
+            exit 1
+          fi
+          if [[ ! "$KIMI_MODEL_NAME" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::Kimi model name contains unsupported characters"
+            exit 1
+          fi
+          for required_tool in curl jq npm python3 setsid stat stdbuf tee; do
+            if ! command -v "$required_tool" >/dev/null; then
+              echo "::error::Canary runner is missing required tool: $required_tool"
+              exit 1
+            fi
+          done
+          runtime_dir="$RUNNER_TEMP/kimi-code-canary-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          install -d -m 700 "$runtime_dir" "$runtime_dir/diagnostics"
+          nonce="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          jq -nc --arg nonce "$nonce" '{
+            nonce:$nonce,
+            evidence_name:"read-tool-contract",
+            evidence_value:"verified"
+          }' > "$runtime_dir/canary-evidence.json"
+          install -m 600 automation/agents/kimi-code-canary.md "$runtime_dir/agent.md"
+          jq -nc \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg commit_sha "$GITHUB_SHA" \
+            --arg runner_os "$RUNNER_OS" \
+            --arg runner_arch "$RUNNER_ARCH" \
+            --arg provider_type "$KIMI_MODEL_PROVIDER_TYPE" \
+            --arg provider_host "api.kimi.com" \
+            --arg requested_model "$KIMI_MODEL_NAME" \
+            '{
+              schema_version:"1.0",
+              repository:$repository,
+              workflow_run_id:$run_id,
+              workflow_run_attempt:$run_attempt,
+              commit_sha:$commit_sha,
+              runner:{os:$runner_os,arch:$runner_arch},
+              provider:{type:$provider_type,host:$provider_host},
+              requested_model:$requested_model,
+              inference_attempt_limit:1,
+              trading_enabled:false
+            }' > "$runtime_dir/diagnostics/diagnostic-metadata.json"
+          {
+            echo "CANARY_RUNTIME_DIR=$runtime_dir"
+            echo "CANARY_STREAM_PATH=$runtime_dir/agent.stream.jsonl"
+            echo "CANARY_STDERR_PATH=$runtime_dir/agent.stderr"
+            echo "CANARY_PROVIDER_PROBE_PATH=$runtime_dir/provider-probe.json"
+            echo "CANARY_SUMMARY_PATH=$runtime_dir/diagnostics/canary-summary.json"
+            echo "KIMI_CODE_HOME=$runtime_dir/kimi-code-home"
+          } >> "$GITHUB_ENV"
+
+      - name: Probe provider once without inference
+        id: provider
+        env:
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          header_path="$RUNNER_TEMP/kimi-code-canary-provider-headers-$GITHUB_RUN_ID"
+          body_path="$RUNNER_TEMP/kimi-code-canary-provider-body-$GITHUB_RUN_ID"
+          : > "$header_path"
+          : > "$body_path"
+          set +e
+          http_status=$(
+            curl --silent --show-error --max-time 30 \
+              --dump-header "$header_path" \
+              --output "$body_path" \
+              --write-out '%{http_code}' \
+              --header "Authorization: Bearer $KIMI_MODEL_API_KEY" \
+              "$KIMI_MODEL_BASE_URL/models"
+          )
+          curl_status=$?
+          set -e
+          if [[ ! "$http_status" =~ ^[0-9]{3}$ ]]; then
+            http_status=0
+          fi
+          python3 - "$header_path" "$body_path" "$http_status" \
+            "$curl_status" "$KIMI_MODEL_BASE_URL" "$CANARY_PROVIDER_PROBE_PATH" <<'PY'
+          import json, sys
+          from pathlib import Path
+          from urllib.parse import urlparse
+
+          headers = {}
+          for line in Path(sys.argv[1]).read_text(errors="replace").splitlines():
+              if ":" not in line:
+                  continue
+              name, value = line.split(":", 1)
+              headers[name.strip().lower()] = value.strip()
+          try:
+              body = json.loads(Path(sys.argv[2]).read_text())
+          except Exception:
+              body = {}
+          model_ids = [
+              item.get("id") for item in body.get("data", [])
+              if isinstance(item, dict) and isinstance(item.get("id"), str)
+          ] if isinstance(body, dict) else []
+          rate_headers = {
+              key: value for key, value in headers.items()
+              if key.startswith("x-ratelimit-") or key == "retry-after"
+          }
+          result = {
+              "schema_version": "1.0",
+              "base_url_host": urlparse(sys.argv[5]).hostname,
+              "http_status": int(sys.argv[3]),
+              "curl_exit_status": int(sys.argv[4]),
+              "request_id": headers.get("x-request-id") or headers.get("request-id"),
+              "rate_limit_headers": rate_headers,
+              "model_ids": model_ids,
+          }
+          Path(sys.argv[6]).write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          PY
+          if jq -e --arg model "$KIMI_MODEL_NAME" \
+            '.http_status == 200 and (.model_ids | index($model) != null)' \
+            "$CANARY_PROVIDER_PROBE_PATH" >/dev/null; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::error::Provider authentication or requested model discovery failed"
+          fi
+
+      - name: Set up Node.js
+        if: ${{ steps.provider.outputs.ready == 'true' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install pinned Kimi Code CLI
+        if: ${{ steps.provider.outputs.ready == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global "@moonshot-ai/kimi-code@$KIMI_CODE_VERSION"
+          kimi --version | tee "$CANARY_RUNTIME_DIR/kimi-version.txt"
+
+      - name: Run exactly one read-only Kimi Code Agent
+        id: agent
+        if: ${{ steps.provider.outputs.ready == 'true' }}
+        env:
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+        shell: bash
+        run: |
+          set +e
+          cd "$CANARY_RUNTIME_DIR"
+          "$GITHUB_WORKSPACE/scripts/run_kimi_code_with_idle_timeout.sh" \
+            --idle-seconds 300 \
+            --poll-seconds 5 \
+            --stdout-log "$CANARY_STREAM_PATH" \
+            --stderr-log "$CANARY_STDERR_PATH" \
+            --activity-root "$KIMI_CODE_HOME/sessions" \
+            -- kimi --agent-file "$CANARY_RUNTIME_DIR/agent.md" \
+              --output-format stream-json \
+              -p "Read canary-evidence.json exactly once and return the required compact JSON."
+          agent_status=$?
+          set -e
+          echo "exit-status=$agent_status" >> "$GITHUB_OUTPUT"
+          echo "Kimi Code Agent completed with status $agent_status; no retry will be attempted"
+
+      - name: Build and display secret-free canary summary
+        id: summary
+        if: ${{ always() && env.CANARY_RUNTIME_DIR != '' }}
+        env:
+          KIMI_MODEL_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+          AGENT_EXIT_STATUS: ${{ steps.agent.outputs.exit-status || '125' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cli_version=not-installed
+          if [[ -s "$CANARY_RUNTIME_DIR/kimi-version.txt" ]]; then
+            cli_version=$(<"$CANARY_RUNTIME_DIR/kimi-version.txt")
+          fi
+          set +e
+          python3 scripts/summarize_kimi_canary.py \
+            --stream "$CANARY_STREAM_PATH" \
+            --stderr "$CANARY_STDERR_PATH" \
+            --provider-probe "$CANARY_PROVIDER_PROBE_PATH" \
+            --evidence "$CANARY_RUNTIME_DIR/canary-evidence.json" \
+            --sessions "$KIMI_CODE_HOME/sessions" \
+            --requested-model "$KIMI_MODEL_NAME" \
+            --cli-version "$cli_version" \
+            --exit-status "$AGENT_EXIT_STATUS" \
+            --output "$CANARY_SUMMARY_PATH"
+          summary_status=$?
+          set -e
+          install -m 600 "$CANARY_STREAM_PATH" "$CANARY_RUNTIME_DIR/diagnostics/agent.stream.jsonl" 2>/dev/null || true
+          install -m 600 "$CANARY_STDERR_PATH" "$CANARY_RUNTIME_DIR/diagnostics/agent.stderr" 2>/dev/null || true
+          install -m 600 "$CANARY_PROVIDER_PROBE_PATH" "$CANARY_RUNTIME_DIR/diagnostics/provider-probe.json"
+          install -m 600 "$CANARY_RUNTIME_DIR/kimi-version.txt" "$CANARY_RUNTIME_DIR/diagnostics/kimi-version.txt" 2>/dev/null || true
+          if [[ -d "$KIMI_CODE_HOME/sessions" ]]; then
+            cp -R "$KIMI_CODE_HOME/sessions" "$CANARY_RUNTIME_DIR/diagnostics/kimi-code-sessions"
+          fi
+          python3 scripts/sanitize_research_diagnostics.py \
+            --root "$CANARY_RUNTIME_DIR/diagnostics" \
+            --report "$CANARY_RUNTIME_DIR/diagnostics/redaction-report.json" \
+            --secret-env KIMI_MODEL_API_KEY
+          jq '{passed,checks,requested_model,provider,kimi_code}' "$CANARY_SUMMARY_PATH"
+          {
+            echo '### Kimi Code single-run canary'
+            echo
+            echo '```json'
+            jq '{passed,checks,requested_model,provider,kimi_code}' "$CANARY_SUMMARY_PATH"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "status=$summary_status" >> "$GITHUB_OUTPUT"
+
+      - name: Upload complete sanitized canary diagnostics
+        if: ${{ always() && env.CANARY_RUNTIME_DIR != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: kimi-code-canary-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.CANARY_RUNTIME_DIR }}/diagnostics
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce canary result without retry
+        if: ${{ always() }}
+        env:
+          SUMMARY_STATUS: ${{ steps.summary.outputs.status || '125' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$SUMMARY_STATUS" != "0" ]]; then
+            echo "::error::Single-run Kimi Code canary did not satisfy all compatibility checks"
+            exit 1
+          fi
+          echo "Single-run Kimi Code canary passed; no retry was used"
