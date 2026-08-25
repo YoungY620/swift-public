@@ -51,7 +51,15 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("needs.research.outputs.has-intents", execution_call)
         self.assertIn("inputs['execute-live-trades']", self.parent)
         self.assertIn("inputs['research-only']", self.parent)
+        self.assertIn("inputs['kimi-model-name']", self.parent)
+        self.assertIn("FORECAST_EDGE_KIMI_MODEL_NAME", self.parent)
+        self.assertIn("kimi-model-name: ${{ needs.gate.outputs.kimi-model-name }}", self.parent)
         self.assertNotIn("workflow_run:", self.parent)
+
+    def test_research_model_is_runtime_configurable(self) -> None:
+        self.assertIn("kimi-model-name:", self.research)
+        self.assertIn("KIMI_MODEL_NAME: ${{ inputs['kimi-model-name'] || 'kimi-for-coding' }}", self.research)
+        self.assertIn('available_models=$(jq -r \'[.data[]?.id] | join(\",\")\'', self.research)
 
     def test_manual_research_only_bypasses_pause_without_execution(self) -> None:
         self.assertIn("research-only:", self.parent)

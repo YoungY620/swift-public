@@ -2,6 +2,12 @@ name: Forecast Edge private research
 
 on:
   workflow_call:
+    inputs:
+      kimi-model-name:
+        description: Kimi Code model id selected by the parent workflow
+        required: false
+        type: string
+        default: kimi-for-coding
     secrets:
       KIMI_CODE_API_KEY:
         required: false
@@ -39,7 +45,7 @@ jobs:
       ALLOW_PUBLIC_TRADE_INTENTS: ${{ vars.ALLOW_PUBLIC_TRADE_INTENTS || 'false' }}
       ALLOW_PUBLIC_RESEARCH_RELEASES: ${{ vars.ALLOW_PUBLIC_RESEARCH_RELEASES || 'false' }}
       KIMI_CODE_VERSION: "0.37.2"
-      KIMI_MODEL_NAME: kimi-for-coding
+      KIMI_MODEL_NAME: ${{ inputs['kimi-model-name'] || 'kimi-for-coding' }}
       KIMI_MODEL_PROVIDER_TYPE: kimi
       KIMI_MODEL_BASE_URL: https://api.kimi.com/coding/v1
       KIMI_DISABLE_TELEMETRY: "1"
@@ -181,7 +187,8 @@ jobs:
           if ! jq -e --arg model "$KIMI_MODEL_NAME" \
             '.data | type == "array" and any(.[]; .id == $model)' \
             <<< "$models" >/dev/null; then
-            echo "::error::Configured Kimi model is unavailable from the configured provider"
+            available_models=$(jq -r '[.data[]?.id] | join(",")' <<< "$models")
+            echo "::error::Configured Kimi model is unavailable from the configured provider (requested=$KIMI_MODEL_NAME; available=${available_models:-none})"
             exit 1
           fi
           echo "Kimi provider exposes the configured model route; the Agent invocation remains the authoritative quota check"

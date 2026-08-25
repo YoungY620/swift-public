@@ -17,6 +17,11 @@ on:
         required: false
         default: false
         type: boolean
+      kimi-model-name:
+        description: Kimi Code model id for this run; empty uses the repository default
+        required: false
+        default: ""
+        type: string
 
 permissions: {}
 
@@ -36,6 +41,7 @@ jobs:
       anchor-utc-hour: ${{ steps.gate.outputs.anchor-utc-hour }}
       gate-event-name: ${{ steps.gate.outputs.gate-event-name }}
       automation-paused: ${{ steps.gate.outputs.automation-paused }}
+      kimi-model-name: ${{ steps.gate.outputs.kimi-model-name }}
     steps:
       - name: Validate schedule and private workflow configuration
         id: gate
@@ -43,6 +49,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           MANUAL_EXECUTION: ${{ inputs['execute-live-trades'] || false }}
           RESEARCH_ONLY: ${{ inputs['research-only'] || false }}
+          REQUESTED_KIMI_MODEL_NAME: ${{ inputs['kimi-model-name'] || vars.FORECAST_EDGE_KIMI_MODEL_NAME || 'kimi-for-coding' }}
           LIVE_TRADING_ENABLED: ${{ vars.POLYMARKET_LIVE_TRADING_ENABLED || 'false' }}
           AUTOMATION_PAUSED: ${{ vars.FORECAST_EDGE_AUTOMATION_PAUSED || 'false' }}
           FORECAST_EDGE_MARKET_ADAPTERS: ${{ vars.FORECAST_EDGE_MARKET_ADAPTERS }}
@@ -67,6 +74,11 @@ jobs:
           if (( ${#missing_configuration[@]} > 0 )); then
             printf '::error::Forecast Edge production configuration is incomplete (missing: %s)\n' \
               "${missing_configuration[*]}"
+            exit 1
+          fi
+
+          if [[ ! "$REQUESTED_KIMI_MODEL_NAME" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::Kimi model name contains unsupported characters"
             exit 1
           fi
 
@@ -99,6 +111,7 @@ jobs:
             echo "anchor-utc-hour=2"
             echo "gate-event-name=$EVENT_NAME"
             echo "automation-paused=$AUTOMATION_PAUSED"
+            echo "kimi-model-name=$REQUESTED_KIMI_MODEL_NAME"
           } >> "$GITHUB_OUTPUT"
 
   research:
@@ -111,6 +124,8 @@ jobs:
     secrets:
       KIMI_CODE_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
       FORECAST_EDGE_MARKET_ACCOUNTS_JSON: ${{ secrets.FORECAST_EDGE_MARKET_ACCOUNTS_JSON }}
+    with:
+      kimi-model-name: ${{ needs.gate.outputs.kimi-model-name }}
 
   execution:
     needs: [gate, research]

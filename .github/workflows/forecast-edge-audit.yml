@@ -78,7 +78,7 @@ jobs:
       EXPECTED_PARENT_WORKFLOW: Forecast Edge research and optional execution
       CIRCUIT_BREAKER_ENABLED: ${{ github.event_name == 'workflow_run' || inputs['trip-circuit-breaker'] == true }}
       KIMI_CODE_VERSION: "0.37.2"
-      KIMI_MODEL_NAME: kimi-for-coding
+      KIMI_MODEL_NAME: ${{ vars.FORECAST_EDGE_KIMI_MODEL_NAME || 'kimi-for-coding' }}
       KIMI_MODEL_PROVIDER_TYPE: kimi
       KIMI_MODEL_BASE_URL: https://api.kimi.com/coding/v1
       KIMI_DISABLE_TELEMETRY: "1"
