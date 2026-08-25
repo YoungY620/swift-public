@@ -26,6 +26,7 @@ class KimiCodeCanaryWorkflowTests(unittest.TestCase):
         self.assertNotIn("POLYMARKET", workflow)
         self.assertNotIn("--retry", workflow)
         self.assertIn("--output-format stream-json", workflow)
+        self.assertIn("permissions:\n      contents: read", workflow)
         self.assertIn("sanitize_research_diagnostics.py", workflow)
         self.assertIn("--secret-env KIMI_MODEL_API_KEY", workflow)
 
