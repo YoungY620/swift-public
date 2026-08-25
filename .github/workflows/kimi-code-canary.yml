@@ -29,7 +29,7 @@ jobs:
       KIMI_DISABLE_TELEMETRY: "1"
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -164,7 +164,7 @@ jobs:
 
       - name: Set up Node.js
         if: ${{ steps.provider.outputs.ready == 'true' }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
 
@@ -248,7 +248,7 @@ jobs:
 
       - name: Upload complete sanitized canary diagnostics
         if: ${{ always() && env.CANARY_RUNTIME_DIR != '' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kimi-code-canary-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.CANARY_RUNTIME_DIR }}/diagnostics

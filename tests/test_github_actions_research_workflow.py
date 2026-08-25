@@ -61,6 +61,25 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("KIMI_MODEL_NAME: ${{ inputs['kimi-model-name'] || 'kimi-for-coding' }}", self.research)
         self.assertIn('available_models=$(jq -r \'[.data[]?.id] | join(\",\")\'', self.research)
 
+    def test_official_actions_use_node24_generations(self) -> None:
+        workflows = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+        )
+        expected_versions = {
+            "checkout": "v7",
+            "setup-node": "v7",
+            "upload-artifact": "v7",
+            "download-artifact": "v8",
+            "cache": "v6",
+        }
+        for action, version in expected_versions.items():
+            references = re.findall(
+                rf"uses:\s*actions/{re.escape(action)}@(v\d+)", workflows
+            )
+            self.assertTrue(references, f"actions/{action} is not referenced")
+            self.assertEqual(set(references), {version})
+
     def test_manual_research_only_bypasses_pause_without_execution(self) -> None:
         self.assertIn("research-only:", self.parent)
         self.assertIn(
@@ -121,9 +140,9 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertNotIn("gh release create", child)
             self.assertNotIn("gh issue create", child)
         self.assertNotIn("actions/download-artifact", self.research)
-        self.assertIn("actions/download-artifact@v4", self.execution)
-        self.assertIn("actions/upload-artifact@v4", self.research)
-        self.assertIn("actions/upload-artifact@v4", self.execution)
+        self.assertIn("actions/download-artifact@v8", self.execution)
+        self.assertIn("actions/upload-artifact@v7", self.research)
+        self.assertIn("actions/upload-artifact@v7", self.execution)
         self.assertNotIn("cron:", self.research)
 
     def test_research_uses_github_hosted_linux(self) -> None:
@@ -390,13 +409,13 @@ class WorkflowContractTests(unittest.TestCase):
     def test_research_handoff_and_diagnostics_use_private_fork_artifacts(self) -> None:
         combined = self.parent + self.research + self.execution
         self.assertNotIn("actions/download-artifact", self.research)
-        self.assertGreaterEqual(self.research.count("actions/upload-artifact@v4"), 2)
+        self.assertGreaterEqual(self.research.count("actions/upload-artifact@v7"), 2)
         self.assertIn("Upload research diagnostics for post-run Judge", self.research)
         self.assertIn("wire.jsonl", self.research)
         self.assertIn("output.log", self.research)
         self.assertIn("retention-days: 90", self.research)
-        self.assertIn("actions/download-artifact@v4", self.execution)
-        self.assertIn("actions/upload-artifact@v4", self.execution)
+        self.assertIn("actions/download-artifact@v8", self.execution)
+        self.assertIn("actions/upload-artifact@v7", self.execution)
         self.assertIn("Upload private-fork execution diagnostics for post-run Judge", self.execution)
         self.assertIn("forecast-edge-research-handoff-", combined)
 

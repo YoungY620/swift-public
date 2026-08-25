@@ -101,7 +101,7 @@ def main() -> int:
             and " verify " in execution_step
         ),
         "diagnostics_after_execution": (
-            "actions/upload-artifact@v4" in diagnostics_step
+            "actions/upload-artifact@v7" in diagnostics_step
             and "actions: write" in execution_call
             and "actions: write" in execution
             and execution.index("Validate, cancel open orders, price, execute FOK market orders, and verify locally")
@@ -120,12 +120,12 @@ def main() -> int:
         "research_artifact_handoff": (
             "Build secret-free research artifact handoff" in research
             and "forecast-edge-research-handoff-${{ github.run_id }}-${{ github.run_attempt }}" in research
-            and "actions/upload-artifact@v4" in research
+            and "actions/upload-artifact@v7" in research
             and "Download research handoff artifact" in execution
-            and "actions/download-artifact@v4" in execution
+            and "actions/download-artifact@v8" in execution
             and "trade-intents.sha256" in execution
             and "Download completed research handoff artifact" in parent
-            and "actions/download-artifact@v4" in parent
+            and "actions/download-artifact@v8" in parent
         ),
         "research_diagnostics": (
             "Prepare secret-free research diagnostics" in research

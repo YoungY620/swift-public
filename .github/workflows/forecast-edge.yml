@@ -169,7 +169,7 @@ jobs:
       AUTOMATION_PAUSED: ${{ needs.gate.outputs.automation-paused }}
     steps:
       - name: Check out release templates
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -187,14 +187,14 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Download completed research handoff artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: forecast-edge-research-handoff-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/forecast-edge-release-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Download completed execution artifact
         if: ${{ needs.execution.result == 'success' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: polymarket-execution-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/forecast-edge-release-${{ github.run_id }}-${{ github.run_attempt }}

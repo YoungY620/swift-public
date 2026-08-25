@@ -55,7 +55,7 @@ jobs:
       MARKET_ADAPTER_GUIDE: ${{ github.workspace }}/skills/forecast-edge/references/market-adapters.md
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -194,12 +194,12 @@ jobs:
           echo "Kimi provider exposes the configured model route; the Agent invocation remains the authoritative quota check"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
 
       - name: Restore npm download cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.npm
           key: ${{ runner.os }}-npm-kimi-code-${{ env.KIMI_CODE_VERSION }}
@@ -1306,7 +1306,7 @@ jobs:
           echo "trade-intents-sha256=$trade_intents_digest" >> "$GITHUB_OUTPUT"
 
       - name: Upload research handoff for downstream jobs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: forecast-edge-research-handoff-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/forecast-edge-${{ github.run_id }}-${{ github.run_attempt }}/research-artifact
@@ -1402,7 +1402,7 @@ jobs:
 
       - name: Upload research diagnostics for post-run Judge
         if: ${{ always() && steps.research-diagnostics.outputs.ready == 'true' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: forecast-edge-research-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/forecast-edge-research-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}

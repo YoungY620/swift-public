@@ -93,7 +93,7 @@ jobs:
 
     steps:
       - name: Check out trusted audit code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -143,12 +143,12 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
 
       - name: Restore npm download cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.npm
           key: ${{ runner.os }}-npm-kimi-code-audit-${{ env.KIMI_CODE_VERSION }}
@@ -1025,7 +1025,7 @@ jobs:
           echo "business_complete=$business_complete" >> "$GITHUB_OUTPUT"
 
       - name: Upload Agentic Feishu briefing result or explicit fallback
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: forecast-edge-feishu-brief-${{ env.PARENT_RUN_ID }}-${{ github.run_attempt }}
           path: ${{ env.FEISHU_BRIEF_ARTIFACT_DIR }}
@@ -1102,7 +1102,7 @@ jobs:
 
       - name: Upload private Agent audit diagnostics
         if: ${{ always() && steps.audit-diagnostics.outputs.ready == 'true' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: forecast-edge-audit-diagnostics-${{ env.PARENT_RUN_ID }}-${{ github.run_attempt }}
           path: ${{ env.AUDIT_DIAGNOSTICS_ARTIFACT_DIR }}
