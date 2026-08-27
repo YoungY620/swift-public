@@ -188,12 +188,16 @@ def sanitized_ledger_snapshot(path: Path, execution_id: str, errors: list[str]) 
                 for name in (
                     "artifact_sha256",
                     "state",
+                    "reconciliation_only",
                     "planned_notional",
                     "created_at",
                     "updated_at",
                     "lease_until",
                 )
             }
+            result["run"]["execution_plan"] = parse_embedded_json(
+                document.get("execution_plan")
+            )
             result["run"]["summary"] = parse_embedded_json(document.get("summary"))
             continue
         if not str(key).startswith("ORDER#"):
@@ -211,6 +215,7 @@ def sanitized_ledger_snapshot(path: Path, execution_id: str, errors: list[str]) 
                 "signed_order_digest": document.get("signed_order_digest"),
                 "before_token_balance": document.get("before_token_balance"),
                 "before_collateral_balance": document.get("before_collateral_balance"),
+                "submitted_at": document.get("submitted_at"),
                 "updated_at": document.get("updated_at"),
                 "plan": parse_embedded_json(document.get("plan")),
                 "post_response": (
@@ -221,6 +226,9 @@ def sanitized_ledger_snapshot(path: Path, execution_id: str, errors: list[str]) 
                     }
                     if response is not None
                     else None
+                ),
+                "reconciliation_observation": parse_embedded_json(
+                    document.get("reconciliation_observation")
                 ),
                 "receipt": parse_embedded_json(document.get("receipt")),
             }

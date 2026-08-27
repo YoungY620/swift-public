@@ -2,7 +2,7 @@
 
 ## 父 workflow 与私有研究子图
 
-`.github/workflows/forecast-edge.yml` 是仓库内唯一的定时/手动入口。GitHub Cron 固定在 UTC 02:23、10:23、18:23 触发，即每 8 小时一轮；每个 `schedule` 事件都代表完整生产 iteration，不再创建按小时唤醒后故意跳过的运行。父图调用 `.github/workflows/forecast-edge-research.yml` 和 `.github/workflows/execute-polymarket.yml` 两个 reusable workflow。
+`.github/workflows/forecast-edge.yml` 是仓库内唯一的定时/手动入口。GitHub Cron 固定在 UTC 02:23、10:23、18:23 触发，即每 8 小时一轮；每个 `schedule` 事件都代表完整生产 iteration，不再创建按小时唤醒后故意跳过的运行。父图按 `gate → research → execution → release → audit → notify / breaker` 编排，并直接调用 research、execution、audit 三个 reusable workflow。
 
 研究子图会：
 
@@ -14,7 +14,11 @@
 
 JSONL 的每一行都必须包含 `(venue, multi_market_identifier, instrument_identifier)` 路由元组。该元组保留 adapter 返回的 venue 原生标识，研究核心不解释或改写平台标识。
 
-研究子图不创建 Release/Issue、不发送飞书；它上传两类 private-fork Actions artifact：保留 7 天的摘要绑定 handoff，以及保留 90 天的研究诊断。诊断包含 Kimi Code stream/stderr、主 Agent 与 sub-agent `wire.jsonl`、后台 task `output.log`、校验日志，以及只含持仓数、可用抵押资金、历史报告基线和已到达阶段的脱敏飞书 fallback context；不包含账户地址或持仓明细。上传前扫描并拒绝 API key、私钥、密码、token 和认证头。执行子图从 handoff artifact 下载交易意图，在 EC2 本地执行，随后上传无凭据、无签名原文的执行结果与诊断 artifact，供父图发布和 post-run Agent Judge 追踪。只有执行子图成功结束，或手工运行被明确指定为 `research-only`，父图才下载 artifact 并统一创建最终 Release、Issue；执行失败时不发布。自动审计对每个已完成的父 iteration 发送一条最终飞书状态，成功、失败和熔断都不能静默跳过。报告缺失时，飞书 fallback 以当轮账户快照和上一份验证报告作为明确标注的基线；无法验证的持仓研究数、候选数或意图数显示“未获得”，不得伪装成 0。
+研究子图不创建 Release/Issue、不发送飞书；它上传两类 private-fork Actions artifact：保留 7 天的摘要绑定 handoff，以及保留 90 天的研究诊断。诊断包含 Kimi Code stream/stderr、主 Agent 与 sub-agent `wire.jsonl`、后台 task `output.log`、校验日志，以及只含持仓数、可用抵押资金、历史报告基线和已到达阶段的脱敏飞书 fallback context；不包含账户地址或持仓明细。上传前扫描并拒绝 API key、私钥、密码、token 和认证头。
+
+handoff 中的 `trade-intents.jsonl` 只用于同一 workflow 内部受控传输，不属于正式发布。执行子图从 handoff 下载意图，在 EC2 本地执行，随后上传无凭据、无签名原文的执行结果与诊断 artifact，供父图发布和发布后 Agent Judge 追踪。只有执行子图成功结束，或手工运行被明确指定为 `research-only`，父图才创建最终 Release、Issue；执行失败时正常 Release 跳过。
+
+无论 research、execution 或 release 成败，父图都以 `always()` 调用审计子图；审计使用完整成果或失败诊断判断异常，最终 job 先执行必要的熔断，再发送一条包含熔断结果的飞书状态。通知步骤使用 `always()`，所以熔断失败本身也不能阻止本轮通知。审计不阻止本轮已经完成的发布。报告缺失时，飞书 fallback 以当轮账户快照和上一份验证报告作为明确标注的基线；无法验证的持仓研究数、候选数或意图数显示“未获得”，不得伪装成 0。
 
 诊断包同时写入 EC2 的 `/home/ubuntu/poly-edge-live/diagnostics/<run-id>-<attempt>/`，并包含安装、校验、撤单、预检、规划、提交、核验的受限日志、逐阶段事件、原始计划/回执/核验和脱敏账本摘要。打包器会精确扫描 EC2 secret file 中的每个秘密值，并拒绝私钥、密码、token、cookie、认证头、原始 ECDSA 签名和符号链接；扫描失败时不上传、不发布。诊断 artifact 只在订单阶段结束后创建，保留 90 天，且仅存在于 private fork。
 

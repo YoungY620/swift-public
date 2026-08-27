@@ -1,64 +1,45 @@
-name: Forecast Edge post-run agent audit
+name: Forecast Edge release audit and notification
 
 on:
-  workflow_run:
-    workflows:
-      - Forecast Edge research and optional execution
-    types:
-      - completed
-  workflow_dispatch:
+  workflow_call:
     inputs:
       parent-run-id:
-        description: Completed Forecast Edge parent workflow run id to audit
+        description: Forecast Edge parent workflow run id to audit
         required: true
         type: string
-      trip-circuit-breaker:
-        description: Allow this manual historical replay to disable production on a serious finding
-        required: false
-        default: false
-        type: boolean
+    secrets:
+      KIMI_CODE_API_KEY:
+        required: true
+      FORECAST_EDGE_BREAKER_TOKEN:
+        required: true
+      FEISHU_APP_ID:
+        required: true
+      FEISHU_APP_SECRET:
+        required: true
+      FEISHU_CHAT_ID:
+        required: true
+    outputs:
+      overall-status:
+        value: ${{ jobs.audit.outputs.overall_status }}
+      confidence:
+        value: ${{ jobs.audit.outputs.confidence }}
+      serious-findings:
+        value: ${{ jobs.audit.outputs.serious_findings }}
+      trip-required:
+        value: ${{ jobs.audit.outputs.trip_required }}
+      breaker-succeeded:
+        value: ${{ jobs.notify.outputs.breaker_succeeded }}
 
 permissions:
   actions: read
   contents: read
 
 concurrency:
-  group: forecast-edge-audit-${{ github.event.workflow_run.id || inputs['parent-run-id'] }}
+  group: forecast-edge-audit-${{ inputs['parent-run-id'] }}
   cancel-in-progress: false
 
 jobs:
-  select:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      actions: read
-      contents: read
-    outputs:
-      audit-applicable: ${{ steps.select.outputs.audit-applicable }}
-    env:
-      PARENT_RUN_ID: ${{ github.event.workflow_run.id || inputs['parent-run-id'] }}
-      EXPECTED_PARENT_WORKFLOW: Forecast Edge research and optional execution
-    steps:
-      - name: Select completed iterations that need agent review
-        id: select
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! "$PARENT_RUN_ID" =~ ^[0-9]+$ ]]; then
-            echo "::error::parent-run-id must be a GitHub Actions run id"
-            exit 1
-          fi
-          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PARENT_RUN_ID")
-          jq -e \
-            --arg expected "$EXPECTED_PARENT_WORKFLOW" \
-            '.name == $expected and .status == "completed"' <<< "$run" >/dev/null
-          echo "audit-applicable=true" >> "$GITHUB_OUTPUT"
-
   audit:
-    needs: select
-    if: ${{ needs.select.outputs.audit-applicable == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 70
     outputs:
@@ -66,7 +47,6 @@ jobs:
       confidence: ${{ steps.classify.outputs.confidence }}
       serious_findings: ${{ steps.classify.outputs.serious_findings }}
       trip_required: ${{ steps.classify.outputs.trip_required }}
-      breaker_succeeded: ${{ steps.breaker.outputs.breaker_succeeded }}
       agent_judgment_valid: ${{ steps.audit-result.outputs.agent-judgment-valid }}
       feishu_brief_valid: ${{ steps.feishu-brief.outputs.brief_valid }}
       business_complete: ${{ steps.feishu-brief.outputs.business_complete }}
@@ -74,9 +54,9 @@ jobs:
       actions: write
       contents: read
     env:
-      PARENT_RUN_ID: ${{ github.event.workflow_run.id || inputs['parent-run-id'] }}
+      PARENT_RUN_ID: ${{ inputs['parent-run-id'] }}
       EXPECTED_PARENT_WORKFLOW: Forecast Edge research and optional execution
-      CIRCUIT_BREAKER_ENABLED: ${{ github.event_name == 'workflow_run' || inputs['trip-circuit-breaker'] == true }}
+      CIRCUIT_BREAKER_ENABLED: "true"
       KIMI_CODE_VERSION: "0.37.2"
       KIMI_MODEL_NAME: ${{ vars.FORECAST_EDGE_KIMI_MODEL_NAME || 'kimi-for-coding' }}
       KIMI_MODEL_PROVIDER_TYPE: kimi
@@ -178,7 +158,7 @@ jobs:
             | jq -s '[.[].jobs[]]' > "$AUDIT_EVIDENCE_DIR/jobs.raw.json"
           jq -e \
             --arg expected "$EXPECTED_PARENT_WORKFLOW" \
-            '.name == $expected and .status == "completed"' \
+            '.name == $expected and (.status == "in_progress" or .status == "completed")' \
             "$AUDIT_EVIDENCE_DIR/run.raw.json" >/dev/null
           jq '{
             id:(.id|tostring),
@@ -522,7 +502,7 @@ jobs:
           if [[ "$trade_intents_digest" =~ ^[a-f0-9]{64}$ && \
                 -n "$actual_execution_id" ]]; then
             expected_execution_id=$(printf '%s' \
-              "$GITHUB_REPOSITORY:$PARENT_RUN_ID:$(jq -r '.run_attempt' "$AUDIT_EVIDENCE_DIR/run.json"):$trade_intents_digest" \
+              "$GITHUB_REPOSITORY:$PARENT_RUN_ID:$trade_intents_digest" \
               | sha256sum | cut -d ' ' -f 1)
             identity_matches=false
             if [[ "$actual_execution_id" == "$expected_execution_id" ]]; then
@@ -530,7 +510,7 @@ jobs:
             fi
             jq -n \
               --arg algorithm sha256 \
-              --arg payload_format 'repository:workflow_run_id:workflow_run_attempt:trade_intents_sha256' \
+              --arg payload_format 'repository:workflow_run_id:trade_intents_sha256' \
               --arg expected_execution_id "$expected_execution_id" \
               --arg actual_execution_id "$actual_execution_id" \
               --argjson matches "$identity_matches" \
@@ -539,7 +519,7 @@ jobs:
           else
             jq -n \
               --arg algorithm sha256 \
-              --arg payload_format 'repository:workflow_run_id:workflow_run_attempt:trade_intents_sha256' \
+              --arg payload_format 'repository:workflow_run_id:trade_intents_sha256' \
               '{available:false,algorithm:$algorithm,payload_format:$payload_format,expected_execution_id:null,actual_execution_id:null,matches:null}' \
               > "$execution_identity_path"
           fi
@@ -1114,7 +1094,7 @@ jobs:
         run: |
           set -euo pipefail
           {
-            printf '# Forecast Edge post-run audit\n\n'
+            printf '# Forecast Edge release audit\n\n'
             printf -- '- Parent run: [%s](%s)\n' \
               "$PARENT_RUN_ID" "$(jq -r '.run.html_url' "$AUDIT_EVIDENCE_PATH")"
             printf -- '- Overall status: `%s`\n' "$(jq -r '.overall_status' "$AUDIT_RESULT_PATH")"
@@ -1145,46 +1125,6 @@ jobs:
               jq -r '.missing_evidence[] | "- " + (gsub("[\\r\\n]"; " "))' "$AUDIT_RESULT_PATH"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Trip production circuit breaker on serious findings
-        id: breaker
-        if: ${{ always() && steps.classify.outputs.trip_required == 'true' }}
-        env:
-          GH_TOKEN: ${{ secrets.FORECAST_EDGE_BREAKER_TOKEN }}
-          SERIOUS_FINDINGS: ${{ steps.classify.outputs.serious_findings }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "breaker_succeeded=false" >> "$GITHUB_OUTPUT"
-          breaker_failed=false
-          if ! gh variable set POLYMARKET_LIVE_TRADING_ENABLED \
-            --repo "$GITHUB_REPOSITORY" --body false; then
-            echo "::error::Could not disarm the persistent live-trading variable"
-            breaker_failed=true
-          fi
-          if ! gh variable set FORECAST_EDGE_AUTOMATION_PAUSED \
-            --repo "$GITHUB_REPOSITORY" --body true; then
-            echo "::error::Could not set the persistent automation pause variable"
-            breaker_failed=true
-          fi
-          if ! gh api --method PUT \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/forecast-edge.yml/disable"; then
-            echo "::error::Could not disable the Forecast Edge parent workflow"
-            breaker_failed=true
-          fi
-          finding_ids=$(jq -r 'join(", ")' <<< "$SERIOUS_FINDINGS")
-          {
-            printf '\n## Production circuit breaker\n\n'
-            printf -- '- Triggered: `true`\n'
-            printf -- '- Serious checks: `%s`\n' "$finding_ids"
-            printf -- '- Live trading requested off: `true`\n'
-            printf -- '- Parent workflow disable requested: `true`\n'
-            printf -- '- Recovery requires explicit workflow enablement and live-trading re-arm.\n'
-          } >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$breaker_failed" == "true" ]]; then
-            exit 1
-          fi
-          echo "breaker_succeeded=true" >> "$GITHUB_OUTPUT"
 
       - name: Enforce critical audit outcome
         shell: bash
@@ -1238,30 +1178,70 @@ jobs:
           fi
 
   notify:
-    needs: [select, audit]
-    if: >-
-      always() &&
-      needs.select.outputs.audit-applicable == 'true'
+    needs: audit
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      actions: read
+      actions: write
       contents: read
+    outputs:
+      breaker_succeeded: ${{ steps.breaker.outputs.breaker_succeeded }}
     env:
-      PARENT_RUN_ID: ${{ github.event.workflow_run.id || inputs['parent-run-id'] }}
+      PARENT_RUN_ID: ${{ inputs['parent-run-id'] }}
       AUDIT_JOB_RESULT: ${{ needs.audit.result }}
       AUDIT_OVERALL_STATUS: ${{ needs.audit.outputs.overall_status }}
       AUDIT_CONFIDENCE: ${{ needs.audit.outputs.confidence }}
       SERIOUS_FINDINGS: ${{ needs.audit.outputs.serious_findings }}
       TRIP_REQUIRED: ${{ needs.audit.outputs.trip_required }}
-      BREAKER_SUCCEEDED: ${{ needs.audit.outputs.breaker_succeeded }}
       AGENT_JUDGMENT_VALID: ${{ needs.audit.outputs.agent_judgment_valid }}
       FEISHU_BRIEF_VALID: ${{ needs.audit.outputs.feishu_brief_valid }}
       BUSINESS_COMPLETE: ${{ needs.audit.outputs.business_complete }}
     steps:
+      - name: Trip production circuit breaker on serious findings
+        id: breaker
+        if: ${{ env.TRIP_REQUIRED == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.FORECAST_EDGE_BREAKER_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "breaker_succeeded=false" >> "$GITHUB_OUTPUT"
+          breaker_failed=false
+          if ! gh variable set POLYMARKET_LIVE_TRADING_ENABLED \
+            --repo "$GITHUB_REPOSITORY" --body false; then
+            echo "::error::Could not disarm the persistent live-trading variable"
+            breaker_failed=true
+          fi
+          if ! gh variable set FORECAST_EDGE_AUTOMATION_PAUSED \
+            --repo "$GITHUB_REPOSITORY" --body true; then
+            echo "::error::Could not set the persistent automation pause variable"
+            breaker_failed=true
+          fi
+          if ! gh api --method PUT \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/forecast-edge.yml/disable"; then
+            echo "::error::Could not disable the Forecast Edge parent workflow"
+            breaker_failed=true
+          fi
+          finding_ids=$(jq -r 'join(", ")' <<< "$SERIOUS_FINDINGS")
+          {
+            printf '\n## Production circuit breaker\n\n'
+            printf -- '- Triggered: `true`\n'
+            printf -- '- Serious checks: `%s`\n' "$finding_ids"
+            printf -- '- Live trading requested off: `true`\n'
+            printf -- '- Parent workflow disable requested: `true`\n'
+            printf -- '- Recovery requires explicit workflow enablement and live-trading re-arm.\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$breaker_failed" == "true" ]]; then
+            exit 1
+          fi
+          echo "breaker_succeeded=true" >> "$GITHUB_OUTPUT"
+
       - name: Send final production iteration status to Feishu
+        if: ${{ always() }}
         env:
           GH_TOKEN: ${{ github.token }}
+          BREAKER_SUCCEEDED: ${{ steps.breaker.outputs.breaker_succeeded }}
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
           FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}
@@ -1374,7 +1354,9 @@ jobs:
                 end
             ' "$jobs_path"
           }
-          parent_conclusion=$(jq -r '.conclusion // "unknown"' "$run_path")
+          parent_state=$(jq -r \
+            'if .status == "completed" then (.conclusion // "unknown") else .status end' \
+            "$run_path")
           parent_url=$(jq -r '.html_url' "$run_path")
           gate_result=$(stage_result '^gate(?: /|$)')
           research_result=$(stage_result '^research(?: /|$)')
@@ -1426,7 +1408,7 @@ jobs:
           message_path="$RUNNER_TEMP/forecast-edge-final-status.md"
           {
             printf '### 三、执行与审计状态\n\n'
-            printf '**父流程**：[%s](%s) · `%s`\n' "$PARENT_RUN_ID" "$parent_url" "$parent_conclusion"
+            printf '**父流程**：[%s](%s) · `%s`\n' "$PARENT_RUN_ID" "$parent_url" "$parent_state"
             printf '**阶段**：gate `%s` · research `%s` · execution `%s` · release `%s`\n' \
               "$gate_result" "$research_result" "$execution_result" "$release_result"
             printf '**执行回执**：状态 `%s` · 订单回执 `%s` · 事前取消旧挂单 `%s`\n' \

@@ -520,7 +520,6 @@ def classify_serious_findings(
             after_cash = _decimal(item.get("after_collateral_balance"))
             valid_no_fill = (
                 item.get("code") == "FOK_NOT_FILLED"
-                and not item.get("order_id")
                 and item.get("order_type") == "FOK"
                 and item.get("execution_style") == "protected_market"
                 and side in {"buy", "sell"}

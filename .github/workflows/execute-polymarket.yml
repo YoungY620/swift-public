@@ -120,7 +120,7 @@ jobs:
             exit 1
           fi
           execution_id=$(printf '%s' \
-            "$GITHUB_REPOSITORY:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT:$actual_digest" \
+            "$GITHUB_REPOSITORY:$GITHUB_RUN_ID:$actual_digest" \
             | sha256sum | cut -d ' ' -f 1)
           echo "EXECUTION_ID=$execution_id" >> "$GITHUB_ENV"
 
@@ -235,7 +235,7 @@ jobs:
             --execution-id "$EXECUTION_ID" \
             --artifact-sha256 "$TRADE_INTENTS_SHA256" \
             --ledger-path "$LEDGER_PATH" \
-            --lease-owner "github-$EXECUTION_ID" \
+            --lease-owner "github-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
             --daily-notional-limit "$MAX_DAILY_NOTIONAL" \
             --settlement-timeout-seconds "$SETTLEMENT_TIMEOUT_SECONDS"
           run_phase verify \
@@ -294,7 +294,7 @@ jobs:
               "$destination/execution-diagnostic-manifest.json"
           done
 
-      - name: Upload private-fork execution diagnostics for post-run Judge
+      - name: Upload private-fork execution diagnostics for post-release Judge
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:

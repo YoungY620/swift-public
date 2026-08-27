@@ -86,17 +86,11 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertIn("release.reports", check["evidence_required"])
         self.assertNotIn("RESEARCH-002", audit_module.AGENT_BREAKER_CHECK_IDS)
 
-    def test_workflow_audits_every_completed_parent_run(self) -> None:
-        self.assertIn("workflow_run:", self.workflow)
-        self.assertIn("Forecast Edge research and optional execution", self.workflow)
-        self.assertIn("Select completed iterations that need agent review", self.workflow)
-        select = self.workflow[
-            self.workflow.index("  select:\n") : self.workflow.index("\n  audit:\n")
-        ]
-        self.assertIn('echo "audit-applicable=true"', select)
-        self.assertNotIn('echo "audit-applicable=false"', select)
-        self.assertNotIn("Successful hourly wake-up was gated off", select)
-        self.assertIn("needs.select.outputs.audit-applicable == 'true'", self.workflow)
+    def test_workflow_is_a_reusable_post_release_agent_audit(self) -> None:
+        self.assertIn("workflow_call:", self.workflow)
+        self.assertNotIn("workflow_run:", self.workflow)
+        self.assertIn("PARENT_RUN_ID: ${{ inputs['parent-run-id'] }}", self.workflow)
+        self.assertNotIn("Select completed iterations that need agent review", self.workflow)
         self.assertIn("Run read-only Kimi Code Judge agent", self.workflow)
         self.assertIn('--agent-file "$AUDIT_AGENT_PROFILE_PATH"', self.workflow)
         self.assertIn("kimi --agent-file", self.workflow)
@@ -137,8 +131,15 @@ class ForecastEdgeAuditTests(unittest.TestCase):
             "github.event_name == 'workflow_run'", notify.split("runs-on:", 1)[0]
         )
         self.assertIn(
-            "github.event.workflow_run.id || inputs['parent-run-id']", notify
+            "PARENT_RUN_ID: ${{ inputs['parent-run-id'] }}", notify
         )
+        self.assertIn("Trip production circuit breaker on serious findings", notify)
+        self.assertLess(
+            notify.index("Trip production circuit breaker on serious findings"),
+            notify.index("Send final production iteration status to Feishu"),
+        )
+        send = notify[notify.index("Send final production iteration status to Feishu") :]
+        self.assertIn("if: ${{ always() }}", send.split("env:", 1)[0])
         self.assertIn("Enforce complete Agent Judge and briefing deliverables", self.workflow)
         self.assertIn("business_complete: ${{ steps.feishu-brief.outputs.business_complete }}", self.workflow)
 
@@ -228,8 +229,9 @@ class ForecastEdgeAuditTests(unittest.TestCase):
         self.assertIn("actions/workflows/forecast-edge.yml/disable", self.workflow)
         self.assertIn("POLYMARKET_LIVE_TRADING_ENABLED", self.workflow)
         self.assertIn("actions: write", self.workflow)
-        self.assertIn("github.event_name == 'workflow_run'", self.workflow)
-        self.assertIn("inputs['trip-circuit-breaker'] == true", self.workflow)
+        self.assertIn('CIRCUIT_BREAKER_ENABLED: "true"', self.workflow)
+        self.assertIn("workflow_call:", self.workflow)
+        self.assertNotIn("workflow_run:", self.workflow)
         self.assertIn("--agent-judgment-valid", self.workflow)
         self.assertIn("EXEC-UNCERTAIN", MODULE_PATH.read_text(encoding="utf-8"))
         self.assertNotIn('and .status == "INSUFFICIENT_EVIDENCE"', self.workflow)
@@ -285,10 +287,7 @@ class ForecastEdgeAuditTests(unittest.TestCase):
             contract["execution_id_derivation"],
             {
                 "algorithm": "sha256",
-                "payload_format": (
-                    "repository:workflow_run_id:workflow_run_attempt:"
-                    "trade_intents_sha256"
-                ),
+                "payload_format": "repository:workflow_run_id:trade_intents_sha256",
                 "source_verified": True,
             },
         )

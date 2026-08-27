@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import tempfile
@@ -11,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from execution.polymarket.artifact import ArtifactError, load_and_validate_jsonl
-from execution.polymarket.cli import _planning_summary
+from execution.polymarket.cli import _planning_summary, command_execute
 from execution.polymarket.engine import (
     ExecutionError,
     UncertainExecutionError,
@@ -19,7 +20,11 @@ from execution.polymarket.engine import (
     execute_orders,
     verify_receipts,
 )
-from execution.polymarket.ledger import LedgerError, SQLiteLedger
+from execution.polymarket.ledger import (
+    ExecutionLedger,
+    LedgerError,
+    UnresolvedExecutionsError,
+)
 from execution.polymarket.models import (
     BookLevel,
     FeeSchedule,
@@ -369,9 +374,9 @@ class SignedOrderFixture:
     signature: str
 
 
-class SQLiteLedgerTests(unittest.TestCase):
-    def ledger(self, path: Path, execution_id: str, owner: str = "runner-a") -> SQLiteLedger:
-        return SQLiteLedger(path=path, execution_id=execution_id, lease_owner=owner)
+class ExecutionLedgerTests(unittest.TestCase):
+    def ledger(self, path: Path, execution_id: str, owner: str = "runner-a") -> ExecutionLedger:
+        return ExecutionLedger(path=path, execution_id=execution_id, lease_owner=owner)
 
     def test_local_ledger_persists_order_and_completed_replay(self) -> None:
         path = Path(tempfile.mkdtemp()) / "ledger.sqlite3"
@@ -416,6 +421,7 @@ class SQLiteLedgerTests(unittest.TestCase):
             planned_notional=Decimal("6"),
             daily_notional_limit=Decimal("10"),
         )
+        first.complete({"status": "COMPLETED"})
         second = self.ledger(path, "execution-2")
         with self.assertRaisesRegex(LedgerError, "daily notional"):
             second.claim_run(
@@ -423,6 +429,119 @@ class SQLiteLedgerTests(unittest.TestCase):
                 planned_notional=Decimal("5"),
                 daily_notional_limit=Decimal("10"),
             )
+
+    def test_new_batch_is_blocked_by_an_uncertain_prior_execution(self) -> None:
+        path = Path(tempfile.mkdtemp()) / "ledger.sqlite3"
+        first = self.ledger(path, "execution-uncertain")
+        first.claim_run(
+            artifact_sha256="a" * 64,
+            planned_notional=Decimal("1"),
+            daily_notional_limit=Decimal("10"),
+        )
+        first.fail({"status": "UNCERTAIN"}, uncertain=True)
+
+        second = self.ledger(path, "execution-new")
+        with self.assertRaisesRegex(LedgerError, "unresolved prior execution"):
+            second.claim_run(
+                artifact_sha256="b" * 64,
+                planned_notional=Decimal("1"),
+                daily_notional_limit=Decimal("10"),
+            )
+
+    def test_new_batch_is_blocked_by_an_abandoned_prior_lease(self) -> None:
+        path = Path(tempfile.mkdtemp()) / "ledger.sqlite3"
+        first = self.ledger(path, "execution-abandoned")
+        first.claim_run(
+            artifact_sha256="a" * 64,
+            planned_notional=Decimal("1"),
+            daily_notional_limit=Decimal("10"),
+        )
+        run = first.get(first.run_key)
+        assert run is not None
+        run["lease_until"] = 0
+        first.connection.execute(
+            "UPDATE ledger_entries SET document = ? WHERE pk = ?",
+            (json.dumps(run), first.run_key),
+        )
+
+        second = self.ledger(path, "execution-new")
+        with self.assertRaisesRegex(LedgerError, "execution-abandoned"):
+            second.claim_run(
+                artifact_sha256="b" * 64,
+                planned_notional=Decimal("1"),
+                daily_notional_limit=Decimal("10"),
+            )
+
+    def test_new_batch_can_follow_a_safely_failed_prior_execution(self) -> None:
+        path = Path(tempfile.mkdtemp()) / "ledger.sqlite3"
+        first = self.ledger(path, "execution-failed")
+        first.claim_run(
+            artifact_sha256="a" * 64,
+            planned_notional=Decimal("1"),
+            daily_notional_limit=Decimal("10"),
+        )
+        first.fail({"status": "FAILED"}, uncertain=False)
+
+        second = self.ledger(path, "execution-new")
+        self.assertEqual(
+            second.claim_run(
+                artifact_sha256="b" * 64,
+                planned_notional=Decimal("1"),
+                daily_notional_limit=Decimal("10"),
+            ),
+            "new",
+        )
+
+    def test_blocked_batch_writes_an_uncertain_diagnostic_receipt(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        ledger_path = root / "ledger.sqlite3"
+        first = self.ledger(ledger_path, "execution-uncertain")
+        first.claim_run(
+            artifact_sha256="a" * 64,
+            planned_notional=Decimal("1"),
+            daily_notional_limit=Decimal("10"),
+        )
+        first.fail({"status": "UNCERTAIN"}, uncertain=True)
+
+        plan_path = root / "plan.json"
+        cancellations_path = root / "cancellations.json"
+        output_path = root / "receipt.json"
+        plan_path.write_text(
+            json.dumps(
+                {
+                    "execution_id": "execution-new",
+                    "artifact_sha256": "b" * 64,
+                    "created_at": "2026-08-27T00:00:00Z",
+                    "expires_at": "2099-08-27T00:00:00Z",
+                    "limits": RiskLimits().to_dict(),
+                    "orders": [],
+                    "skipped": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        cancellations_path.write_text(
+            json.dumps({"remaining_open_order_count": 0}), encoding="utf-8"
+        )
+        args = argparse.Namespace(
+            plan=plan_path,
+            cancellations=cancellations_path,
+            output=output_path,
+            execution_id="execution-new",
+            artifact_sha256="b" * 64,
+            ledger_path=ledger_path,
+            lease_owner="runner-b",
+            daily_notional_limit="10",
+            settlement_timeout_seconds=0,
+        )
+        with self.assertRaises(UnresolvedExecutionsError):
+            command_execute(args)
+        receipt = json.loads(output_path.read_text(encoding="utf-8"))
+        self.assertEqual(receipt["status"], "UNCERTAIN")
+        self.assertEqual(receipt["claim"], "blocked")
+        self.assertEqual(
+            receipt["blocked_execution_ids"], ["execution-uncertain"]
+        )
 
     def test_local_ledger_rejects_another_unexpired_lease_owner(self) -> None:
         path = Path(tempfile.mkdtemp()) / "ledger.sqlite3"
@@ -439,6 +558,84 @@ class SQLiteLedgerTests(unittest.TestCase):
                 planned_notional=Decimal("1"),
                 daily_notional_limit=Decimal("10"),
             )
+
+    def test_durable_plan_round_trip_and_digest_validation(self) -> None:
+        path = Path(tempfile.mkdtemp()) / "ledger.sqlite3"
+        ledger = self.ledger(path, "execution-plan")
+        plan = {"schema_version": "1.0", "orders": [], "limits": {}}
+        ledger.claim_run(
+            artifact_sha256="c" * 64,
+            planned_notional=Decimal("0"),
+            daily_notional_limit=Decimal("10"),
+            execution_plan=plan,
+        )
+        self.assertEqual(ledger.load_execution_plan(), plan)
+
+        run = ledger.get(ledger.run_key)
+        assert run is not None
+        run["execution_plan_digest"] = "0" * 64
+        ledger.connection.execute(
+            "UPDATE ledger_entries SET document = ? WHERE pk = ?",
+            (json.dumps(run), ledger.run_key),
+        )
+        with self.assertRaisesRegex(LedgerError, "failed its digest"):
+            ledger.load_execution_plan()
+
+    def test_existing_run_without_durable_plan_fails_closed(self) -> None:
+        path = Path(tempfile.mkdtemp()) / "ledger.sqlite3"
+        ledger = self.ledger(path, "execution-legacy")
+        ledger.claim_run(
+            artifact_sha256="d" * 64,
+            planned_notional=Decimal("1"),
+            daily_notional_limit=Decimal("10"),
+        )
+        with self.assertRaisesRegex(LedgerError, "no durable execution plan"):
+            ledger.claim_run(
+                artifact_sha256="d" * 64,
+                planned_notional=Decimal("1"),
+                daily_notional_limit=Decimal("10"),
+                execution_plan={"orders": []},
+            )
+
+    def test_reconciliation_only_mode_survives_an_interrupted_claim(self) -> None:
+        path = Path(tempfile.mkdtemp()) / "ledger.sqlite3"
+        first = self.ledger(path, "execution-uncertain")
+        first.claim_run(
+            artifact_sha256="e" * 64,
+            planned_notional=Decimal("1"),
+            daily_notional_limit=Decimal("10"),
+            execution_plan={"orders": []},
+        )
+        first.fail({"status": "UNCERTAIN"}, uncertain=True)
+
+        second = self.ledger(path, "execution-uncertain", owner="runner-b")
+        self.assertEqual(
+            second.claim_run(
+                artifact_sha256="e" * 64,
+                planned_notional=Decimal("1"),
+                daily_notional_limit=Decimal("10"),
+                execution_plan={"orders": []},
+            ),
+            "reconcile",
+        )
+        # Simulate a crash immediately after claiming the read-only lease.
+        run = second.get(second.run_key)
+        assert run is not None
+        run["lease_until"] = 0
+        second.connection.execute(
+            "UPDATE ledger_entries SET document = ? WHERE pk = ?",
+            (json.dumps(run), second.run_key),
+        )
+        third = self.ledger(path, "execution-uncertain", owner="runner-c")
+        self.assertEqual(
+            third.claim_run(
+                artifact_sha256="e" * 64,
+                planned_notional=Decimal("1"),
+                daily_notional_limit=Decimal("10"),
+                execution_plan={"orders": []},
+            ),
+            "reconcile",
+        )
 
 
 class MarketOrderClientFixture:
@@ -711,11 +908,407 @@ class NoFillThenFillAdapter:
         self.timeout_seconds = timeout_seconds
         return ()
 
-    def account_trades(self, trade_ids):
+    def account_trades(self, trade_ids=(), **_kwargs):
         return tuple(self.trades[trade_id] for trade_id in trade_ids)
 
 
+class DelayedTradeEvidenceAdapter(NoFillThenFillAdapter):
+    """Accepted order and balances arrive before the account trade record."""
+
+    def __init__(self, markets: dict[str, MarketSnapshot]) -> None:
+        super().__init__(markets)
+        self.trade_queries = 0
+
+    def post_order(self, _signed_order):
+        self.post_count += 1
+        order_id = f"order-{self.post_count}"
+        trade_id = f"trade-{self.post_count}"
+        self.tokens[self.current_token] += self.current_quantity
+        self.cash -= self.current_quantity * self.current_price
+        self.trades[trade_id] = {
+            "id": trade_id,
+            "status": "CONFIRMED",
+            "token_id": self.current_token,
+            "side": "buy",
+            "size": str(self.current_quantity),
+            "price": str(self.current_price),
+            "taker_order_id": order_id,
+            "maker_orders": [],
+            "transaction_hash": "0x" + "a" * 64,
+        }
+        return AcceptedOrderFixture(True, order_id, ())
+
+    def order(self, order_id: str):
+        return {"id": order_id, "status": "MATCHED", "associate_trades": ()}
+
+    def account_trades(self, trade_ids=(), **_kwargs):
+        self.trade_queries += 1
+        if self.trade_queries == 1:
+            return ()
+        return tuple(self.trades.values())
+
+
+class CanceledBeforeFillEvidenceAdapter(NoFillThenFillAdapter):
+    """The terminal order endpoint leads the trade and balance endpoints."""
+
+    def __init__(self, markets: dict[str, MarketSnapshot]) -> None:
+        super().__init__(markets)
+        self.trade_queries = 0
+        self.fill_visible = False
+
+    def post_order(self, _signed_order):
+        self.post_count += 1
+        order_id = f"order-{self.post_count}"
+        trade_id = f"trade-{self.post_count}"
+        self.trades[trade_id] = {
+            "id": trade_id,
+            "status": "CONFIRMED",
+            "token_id": self.current_token,
+            "side": "buy",
+            "size": str(self.current_quantity),
+            "price": str(self.current_price),
+            "taker_order_id": order_id,
+            "maker_orders": [],
+            "transaction_hash": "0x" + "c" * 64,
+        }
+        return AcceptedOrderFixture(True, order_id, ())
+
+    def order(self, order_id: str):
+        return {"id": order_id, "status": "CANCELED", "associate_trades": ()}
+
+    def account_trades(self, trade_ids=(), **_kwargs):
+        self.trade_queries += 1
+        if self.trade_queries == 1:
+            return ()
+        if not self.fill_visible:
+            self.tokens[self.current_token] += self.current_quantity
+            self.cash -= self.current_quantity * self.current_price
+            self.fill_visible = True
+        return tuple(self.trades.values())
+
+
+class IncompleteFailedTradeEvidenceAdapter(NoFillThenFillAdapter):
+    """One failed trade is visible while another associated trade is missing."""
+
+    def post_order(self, _signed_order):
+        self.post_count += 1
+        order_id = f"order-{self.post_count}"
+        self.trades["trade-failed"] = {
+            "id": "trade-failed",
+            "status": "FAILED",
+            "token_id": self.current_token,
+            "side": "buy",
+            "size": str(self.current_quantity),
+            "price": str(self.current_price),
+            "taker_order_id": order_id,
+            "maker_orders": [],
+        }
+        return AcceptedOrderFixture(
+            True, order_id, ("trade-failed", "trade-not-visible")
+        )
+
+    def order(self, order_id: str):
+        return {
+            "id": order_id,
+            "status": "CANCELED",
+            "associate_trades": ("trade-failed", "trade-not-visible"),
+        }
+
+    def account_trades(self, trade_ids=(), **_kwargs):
+        return tuple(
+            self.trades[trade_id]
+            for trade_id in trade_ids
+            if trade_id in self.trades
+        )
+
+
+class AcceptedNoFillThenFillAdapter(NoFillThenFillAdapter):
+    """The CLOB accepts the first FOK and later proves it was not filled."""
+
+    def post_order(self, _signed_order):
+        self.post_count += 1
+        order_id = f"order-{self.post_count}"
+        if self.post_count == 1:
+            return AcceptedOrderFixture(True, order_id, ())
+        trade_id = f"trade-{self.post_count}"
+        self.tokens[self.current_token] += self.current_quantity
+        self.cash -= self.current_quantity * self.current_price
+        self.trades[trade_id] = {
+            "id": trade_id,
+            "status": "CONFIRMED",
+            "token_id": self.current_token,
+            "side": "buy",
+            "size": str(self.current_quantity),
+            "price": str(self.current_price),
+            "taker_order_id": order_id,
+            "maker_orders": [],
+        }
+        return AcceptedOrderFixture(True, order_id, (trade_id,))
+
+    def order(self, order_id: str):
+        if order_id == "order-1":
+            return {"id": order_id, "status": "CANCELED", "associate_trades": ()}
+        return super().order(order_id)
+
+
 class ExecuteNoFillTests(unittest.TestCase):
+    @staticmethod
+    def buy_plan(markets: dict[str, MarketSnapshot]):
+        return build_execution_plan(
+            intents=[intent()],
+            markets=markets,
+            positions={},
+            available_cash=Decimal("100"),
+            limits=RiskLimits(
+                minimum_cash_reserve=Decimal("0"),
+                max_price_deviation_bps=0,
+            ),
+        )
+
+    def test_empty_batch_completes_the_ledger_as_no_actions(self) -> None:
+        ledger = ExecutionLedger(
+            path=Path(tempfile.mkdtemp()) / "ledger.sqlite3",
+            execution_id="execution-no-actions",
+            lease_owner="runner-a",
+        )
+        claim = ledger.claim_run(
+            artifact_sha256="0" * 64,
+            planned_notional=Decimal("0"),
+            daily_notional_limit=Decimal("20"),
+        )
+        summary = execute_orders(
+            adapter=NoFillThenFillAdapter({}),  # type: ignore[arg-type]
+            orders=(),
+            limits=RiskLimits(),
+            ledger=ledger,
+            execution_id="execution-no-actions",
+            execution_claim=claim,
+            planning={"source_intent_count": 0},
+            pre_execution_cancellation={"remaining_open_order_count": 0},
+        )
+        self.assertEqual(summary["status"], "NO_ACTIONS")
+        self.assertEqual(ledger.get(ledger.run_key)["state"], "COMPLETED")
+
+    def test_delayed_trade_record_is_reconciled_without_duplicate_post(self) -> None:
+        markets = {TOKEN: market(asks=(("0.50", "100"),), fee_rate="0")}
+        plan = self.buy_plan(markets)
+        ledger = ExecutionLedger(
+            path=Path(tempfile.mkdtemp()) / "ledger.sqlite3",
+            execution_id="execution-delayed-trade",
+            lease_owner="runner-a",
+        )
+        claim = ledger.claim_run(
+            artifact_sha256="e" * 64,
+            planned_notional=Decimal("5"),
+            daily_notional_limit=Decimal("20"),
+        )
+        adapter = DelayedTradeEvidenceAdapter(markets)
+        with patch("execution.polymarket.engine.time.sleep"):
+            summary = execute_orders(
+                adapter=adapter,  # type: ignore[arg-type]
+                orders=plan.orders,
+                limits=RiskLimits(minimum_cash_reserve=Decimal("0"), max_price_deviation_bps=0),
+                ledger=ledger,
+                execution_id="execution-delayed-trade",
+                execution_claim=claim,
+                planning={"source_intent_count": 1},
+                pre_execution_cancellation={"remaining_open_order_count": 0},
+                settlement_timeout_seconds=5,
+            )
+        self.assertEqual(summary["status"], "COMPLETED")
+        self.assertEqual(summary["receipts"][0]["status"], "FULL")
+        self.assertGreaterEqual(adapter.trade_queries, 2)
+        self.assertEqual(adapter.post_count, 1)
+        observation = json.loads(
+            ledger.get(ledger.order_key(1))["reconciliation_observation"]
+        )
+        self.assertEqual(observation["order_id"], "order-1")
+        self.assertEqual(observation["matching_trades"][0]["id"], "trade-1")
+
+    def test_terminal_no_fill_waits_for_lagging_fill_evidence(self) -> None:
+        markets = {TOKEN: market(asks=(("0.50", "100"),), fee_rate="0")}
+        plan = self.buy_plan(markets)
+        ledger = ExecutionLedger(
+            path=Path(tempfile.mkdtemp()) / "ledger.sqlite3",
+            execution_id="execution-canceled-before-fill",
+            lease_owner="runner-a",
+        )
+        claim = ledger.claim_run(
+            artifact_sha256="9" * 64,
+            planned_notional=Decimal("5"),
+            daily_notional_limit=Decimal("20"),
+        )
+        adapter = CanceledBeforeFillEvidenceAdapter(markets)
+        with patch("execution.polymarket.engine.time.sleep"):
+            summary = execute_orders(
+                adapter=adapter,  # type: ignore[arg-type]
+                orders=plan.orders,
+                limits=RiskLimits(
+                    minimum_cash_reserve=Decimal("0"),
+                    max_price_deviation_bps=0,
+                ),
+                ledger=ledger,
+                execution_id="execution-canceled-before-fill",
+                execution_claim=claim,
+                planning={"source_intent_count": 1},
+                pre_execution_cancellation={"remaining_open_order_count": 0},
+                settlement_timeout_seconds=5,
+            )
+        self.assertEqual(summary["receipts"][0]["status"], "FULL")
+        self.assertEqual(summary["receipts"][0]["order_id"], "order-1")
+        self.assertGreaterEqual(adapter.trade_queries, 2)
+
+    def test_incomplete_failed_trade_evidence_remains_uncertain(self) -> None:
+        markets = {TOKEN: market(asks=(("0.50", "100"),), fee_rate="0")}
+        plan = self.buy_plan(markets)
+        ledger = ExecutionLedger(
+            path=Path(tempfile.mkdtemp()) / "ledger.sqlite3",
+            execution_id="execution-incomplete-failed-trades",
+            lease_owner="runner-a",
+        )
+        claim = ledger.claim_run(
+            artifact_sha256="7" * 64,
+            planned_notional=Decimal("5"),
+            daily_notional_limit=Decimal("20"),
+        )
+        with self.assertRaisesRegex(UncertainExecutionError, "not visible yet"):
+            execute_orders(
+                adapter=IncompleteFailedTradeEvidenceAdapter(markets),  # type: ignore[arg-type]
+                orders=plan.orders,
+                limits=RiskLimits(
+                    minimum_cash_reserve=Decimal("0"),
+                    max_price_deviation_bps=0,
+                ),
+                ledger=ledger,
+                execution_id="execution-incomplete-failed-trades",
+                execution_claim=claim,
+                planning={"source_intent_count": 1},
+                pre_execution_cancellation={"remaining_open_order_count": 0},
+                settlement_timeout_seconds=0,
+            )
+        self.assertEqual(ledger.get(ledger.run_key)["state"], "UNCERTAIN")
+
+
+    def test_submitted_recovery_reconciles_without_posting_again(self) -> None:
+        markets = {TOKEN: market(asks=(("0.50", "100"),), fee_rate="0")}
+        plan = self.buy_plan(markets)
+        execution_id = "execution-submitted-recovery"
+        ledger = ExecutionLedger(
+            path=Path(tempfile.mkdtemp()) / "ledger.sqlite3",
+            execution_id=execution_id,
+            lease_owner="runner-a",
+        )
+        claim = ledger.claim_run(
+            artifact_sha256="f" * 64,
+            planned_notional=Decimal("5"),
+            daily_notional_limit=Decimal("20"),
+        )
+        signed = SignedOrderFixture(salt=1, signature="0xsigned")
+        ledger.save_signed_order(
+            1,
+            signed,
+            plan.orders[0].to_dict(),
+            before_token_balance=Decimal("0"),
+            before_collateral_balance=Decimal("100"),
+        )
+        ledger.mark_submitted(1, {"ok": True, "order_id": "order-1", "trade_ids": []})
+        ledger.fail({"status": "UNCERTAIN"}, uncertain=True)
+        ledger = ExecutionLedger(
+            path=ledger.path,
+            execution_id=execution_id,
+            lease_owner="runner-b",
+        )
+        claim = ledger.claim_run(
+            artifact_sha256="f" * 64,
+            planned_notional=Decimal("5"),
+            daily_notional_limit=Decimal("20"),
+        )
+        self.assertEqual(claim, "reconcile")
+        adapter = DelayedTradeEvidenceAdapter(markets)
+        adapter.current_token = TOKEN
+        adapter.current_quantity = Decimal("10")
+        adapter.current_price = Decimal("0.50")
+        adapter.tokens[TOKEN] = Decimal("10")
+        adapter.cash = Decimal("95")
+        adapter.trade_queries = 1
+        adapter.trades["trade-1"] = {
+            "id": "trade-1",
+            "status": "CONFIRMED",
+            "token_id": TOKEN,
+            "side": "buy",
+            "size": "10",
+            "price": "0.50",
+            "taker_order_id": "order-1",
+            "maker_orders": [],
+            "transaction_hash": "0x" + "b" * 64,
+        }
+        with patch("execution.polymarket.engine.time.sleep"):
+            summary = execute_orders(
+                adapter=adapter,  # type: ignore[arg-type]
+                orders=plan.orders,
+                limits=RiskLimits(minimum_cash_reserve=Decimal("0"), max_price_deviation_bps=0),
+                ledger=ledger,
+                execution_id=execution_id,
+                execution_claim=claim,
+                planning={"source_intent_count": 1},
+                pre_execution_cancellation={"remaining_open_order_count": 0},
+                settlement_timeout_seconds=5,
+            )
+        self.assertEqual(summary["receipts"][0]["status"], "FULL")
+        self.assertEqual(adapter.post_count, 0)
+
+    def test_reconciliation_never_submits_an_order_missing_from_the_ledger(self) -> None:
+        markets = {TOKEN: market(asks=(("0.50", "100"),), fee_rate="0")}
+        plan = self.buy_plan(markets)
+        ledger_path = Path(tempfile.mkdtemp()) / "ledger.sqlite3"
+        ledger = ExecutionLedger(
+            path=ledger_path,
+            execution_id="execution-reconcile-only",
+            lease_owner="runner-a",
+        )
+        ledger.claim_run(
+            artifact_sha256="1" * 64,
+            planned_notional=Decimal("5"),
+            daily_notional_limit=Decimal("20"),
+        )
+        ledger.fail({"status": "UNCERTAIN"}, uncertain=True)
+        ledger = ExecutionLedger(
+            path=ledger_path,
+            execution_id="execution-reconcile-only",
+            lease_owner="runner-b",
+        )
+        claim = ledger.claim_run(
+            artifact_sha256="1" * 64,
+            planned_notional=Decimal("5"),
+            daily_notional_limit=Decimal("20"),
+        )
+        adapter = DelayedTradeEvidenceAdapter(markets)
+        with self.assertRaisesRegex(ExecutionError, "will not sign or submit"):
+            execute_orders(
+                adapter=adapter,  # type: ignore[arg-type]
+                orders=plan.orders,
+                limits=RiskLimits(minimum_cash_reserve=Decimal("0"), max_price_deviation_bps=0),
+                ledger=ledger,
+                execution_id="execution-reconcile-only",
+                execution_claim=claim,
+                planning={"source_intent_count": 1},
+            )
+        self.assertEqual(adapter.post_count, 0)
+        self.assertEqual(ledger.get(ledger.run_key)["state"], "UNCERTAIN")
+        third = ExecutionLedger(
+            path=ledger_path,
+            execution_id="execution-reconcile-only",
+            lease_owner="runner-c",
+        )
+        self.assertEqual(
+            third.claim_run(
+                artifact_sha256="1" * 64,
+                planned_notional=Decimal("5"),
+                daily_notional_limit=Decimal("20"),
+            ),
+            "reconcile",
+        )
+
     def test_batch_prevalidation_blocks_sell_before_later_rounded_buy_failure(self) -> None:
         sell_condition = "0x" + "c" * 64
         sell_token = "333333333"
@@ -784,7 +1377,7 @@ class ExecuteNoFillTests(unittest.TestCase):
         adapter.tokens[sell_token] = Decimal("10")
         initial_cash = adapter.cash
         initial_tokens = dict(adapter.tokens)
-        ledger = SQLiteLedger(
+        ledger = ExecutionLedger(
             path=Path(tempfile.mkdtemp()) / "ledger.sqlite3",
             execution_id="execution-batch-prevalidation",
             lease_owner="runner-a",
@@ -838,7 +1431,7 @@ class ExecuteNoFillTests(unittest.TestCase):
             ),
         )
         ledger_path = Path(tempfile.mkdtemp()) / "ledger.sqlite3"
-        ledger = SQLiteLedger(
+        ledger = ExecutionLedger(
             path=ledger_path,
             execution_id="execution-no-fill",
             lease_owner="runner-a",
@@ -892,6 +1485,92 @@ class ExecuteNoFillTests(unittest.TestCase):
                 summary=invalid_no_fill,
             )
 
+    def test_accepted_terminal_no_fill_keeps_order_id_and_continues(self) -> None:
+        second_condition = "0x" + "b" * 64
+        second_token = "987654321"
+        markets = {
+            TOKEN: market(asks=(("0.50", "100"),), fee_rate="0"),
+            second_token: market(
+                asks=(("0.50", "100"),),
+                condition=second_condition,
+                token=second_token,
+                fee_rate="0",
+            ),
+        }
+        plan = build_execution_plan(
+            intents=[intent(), intent(condition=second_condition, token=second_token)],
+            markets=markets,
+            positions={},
+            available_cash=Decimal("100"),
+            limits=RiskLimits(
+                minimum_cash_reserve=Decimal("0"),
+                max_price_deviation_bps=0,
+            ),
+        )
+        ledger = ExecutionLedger(
+            path=Path(tempfile.mkdtemp()) / "ledger.sqlite3",
+            execution_id="execution-accepted-no-fill",
+            lease_owner="runner-a",
+        )
+        claim = ledger.claim_run(
+            artifact_sha256="8" * 64,
+            planned_notional=Decimal("10"),
+            daily_notional_limit=Decimal("20"),
+        )
+        summary = execute_orders(
+            adapter=AcceptedNoFillThenFillAdapter(markets),  # type: ignore[arg-type]
+            orders=plan.orders,
+            limits=RiskLimits(
+                minimum_cash_reserve=Decimal("0"),
+                max_price_deviation_bps=0,
+            ),
+            ledger=ledger,
+            execution_id="execution-accepted-no-fill",
+            execution_claim=claim,
+            planning={"source_intent_count": 2},
+            pre_execution_cancellation={"remaining_open_order_count": 0},
+            settlement_timeout_seconds=0,
+        )
+        self.assertEqual(summary["status"], "COMPLETED_WITH_WARNINGS")
+        self.assertEqual(
+            [receipt["status"] for receipt in summary["receipts"]],
+            ["NO_FILL", "FULL"],
+        )
+        self.assertEqual(summary["receipts"][0]["order_id"], "order-1")
+
+    def test_verification_uses_the_final_balance_for_repeated_token_receipts(self) -> None:
+        markets = {TOKEN: market(asks=(("0.50", "100"),), fee_rate="0")}
+        adapter = NoFillThenFillAdapter(markets)
+        adapter.tokens[TOKEN] = Decimal("20")
+        adapter.cash = Decimal("90")
+        summary = {
+            "pre_execution_cancellation": {"remaining_open_order_count": 0},
+            "receipts": [
+                {
+                    "status": "FULL",
+                    "order_id": "order-1",
+                    "token_id": TOKEN,
+                    "after_token_balance": "10",
+                    "after_collateral_balance": "95",
+                },
+                {
+                    "status": "FULL",
+                    "order_id": "order-2",
+                    "token_id": TOKEN,
+                    "after_token_balance": "20",
+                    "after_collateral_balance": "90",
+                },
+            ],
+        }
+        verification = verify_receipts(
+            adapter=adapter,  # type: ignore[arg-type]
+            summary=summary,
+        )
+        self.assertEqual(
+            [item["position_balance"] for item in verification["orders"]],
+            ["20", "20"],
+        )
+
     def test_unclassified_submission_error_remains_uncertain(self) -> None:
         class TimeoutAdapter(NoFillThenFillAdapter):
             def post_order(self, _signed_order):
@@ -908,7 +1587,7 @@ class ExecuteNoFillTests(unittest.TestCase):
                 max_price_deviation_bps=0,
             ),
         )
-        ledger = SQLiteLedger(
+        ledger = ExecutionLedger(
             path=Path(tempfile.mkdtemp()) / "ledger.sqlite3",
             execution_id="execution-timeout",
             lease_owner="runner-a",
@@ -949,7 +1628,7 @@ class ExecuteNoFillTests(unittest.TestCase):
                 max_price_deviation_bps=0,
             ),
         )
-        ledger = SQLiteLedger(
+        ledger = ExecutionLedger(
             path=Path(tempfile.mkdtemp()) / "ledger.sqlite3",
             execution_id="execution-rejected",
             lease_owner="runner-a",
@@ -1039,6 +1718,12 @@ class ClientFixture:
     def __init__(self, *items: OrderFixture) -> None:
         self.items = items
 
+    def get_order(self, *, order_id: str) -> OrderFixture:
+        for item in self.items:
+            if item.id == order_id:
+                return item
+        raise RuntimeError(f"missing order {order_id}")
+
     def list_open_orders(self, *, id: str) -> PageFixture:
         return PageFixture(*(item for item in self.items if item.id == id))
 
@@ -1073,8 +1758,14 @@ class OpenOrderStatusTests(unittest.TestCase):
             },
         )
 
+    def test_delayed_order_is_still_cancelable(self) -> None:
+        result = self.adapter(OrderFixture("order-1", "DELAYED")).order_if_open(
+            "order-1"
+        )
+        self.assertEqual(result["status"], "DELAYED")
+
     def test_terminal_and_non_resting_statuses_are_not_open(self) -> None:
-        for status in ("CANCELED", "CANCELLED", "DELAYED", "UNMATCHED"):
+        for status in ("CANCELED", "CANCELLED", "UNMATCHED"):
             with self.subTest(status=status):
                 result = self.adapter(OrderFixture("order-1", status)).order_if_open("order-1")
                 self.assertIsNone(result)

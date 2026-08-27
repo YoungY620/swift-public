@@ -1,5 +1,4 @@
 # Official unified SDK with EOA, legacy Proxy/Safe, and Deposit Wallet support.
 # py-clob-client is archived and must not be reintroduced.
 polymarket-client==0.6.0
-boto3==1.40.12
 jsonschema==4.25.0

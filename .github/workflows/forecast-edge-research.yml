@@ -1400,7 +1400,7 @@ jobs:
           mv "$staging_root" "$diagnostics_root"
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
-      - name: Upload research diagnostics for post-run Judge
+      - name: Upload research diagnostics for post-release Judge
         if: ${{ always() && steps.research-diagnostics.outputs.ready == 'true' }}
         uses: actions/upload-artifact@v7
         with:

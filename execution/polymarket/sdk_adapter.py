@@ -658,37 +658,65 @@ class LivePolymarketAdapter:
         except Exception as exc:
             raise AdapterError(f"order cancellation failed for {order_id}: {exc}") from exc
 
-    def account_trades(self, trade_ids: Iterable[str]) -> tuple[dict[str, Any], ...]:
+    def account_trades(
+        self,
+        trade_ids: Iterable[str] = (),
+        *,
+        token_id: str | None = None,
+        after: int | None = None,
+        before: int | None = None,
+    ) -> tuple[dict[str, Any], ...]:
+        """Read account trades, or all account trades when no ids are known.
+
+        An accepted order can be returned before its ``trade_ids`` are attached
+        to the response.  The all-trades form is the small, safe fallback used
+        during that propagation window; the engine still requires the order id
+        to be present on the trade before accepting it as evidence.
+        """
         values: dict[str, dict[str, Any]] = {}
-        for trade_id in trade_ids:
+        trade_ids = tuple(str(trade_id) for trade_id in trade_ids if str(trade_id))
+        if not trade_ids:
             try:
-                matches = tuple(self.client.list_account_trades(id=trade_id).iter_items())
+                matches = tuple(
+                    self.client.list_account_trades(
+                        token_id=token_id,
+                        after=str(after) if after is not None else None,
+                        before=str(before) if before is not None else None,
+                    ).iter_items()
+                )
             except Exception as exc:
-                raise AdapterError(f"trade query failed for {trade_id}: {exc}") from exc
+                raise AdapterError(f"account trade query failed: {exc}") from exc
             for match in matches:
                 raw = _model_dict(match)
-                values[str(raw.get("id", trade_id))] = raw
+                values[str(raw.get("id", ""))] = raw
+        else:
+            for trade_id in trade_ids:
+                try:
+                    matches = tuple(self.client.list_account_trades(id=trade_id).iter_items())
+                except Exception as exc:
+                    raise AdapterError(f"trade query failed for {trade_id}: {exc}") from exc
+                for match in matches:
+                    raw = _model_dict(match)
+                    values[str(raw.get("id", trade_id))] = raw
         return tuple(values[key] for key in sorted(values))
 
     def order(self, order_id: str) -> dict[str, Any] | None:
         try:
-            values = tuple(self.client.list_open_orders(id=order_id).iter_items())
+            value = self.client.get_order(order_id=order_id)
         except Exception as exc:
+            if _is_request_rejected(exc) and getattr(exc, "status", None) == 404:
+                return None
             raise AdapterError(f"order query failed for {order_id}: {exc}") from exc
-        if len(values) > 1:
-            raise AdapterError(f"CLOB returned duplicate order {order_id}")
-        if not values:
-            return None
-        return _model_dict(values[0])
+        return _model_dict(value)
 
     def order_if_open(self, order_id: str) -> dict[str, Any] | None:
         order = self.order(order_id)
         if order is None:
             return None
         status = str(order.get("status", "")).strip().upper()
-        if status == "LIVE":
+        if status in {"LIVE", "DELAYED"}:
             return order
-        if status in {"MATCHED", "CANCELED", "CANCELLED", "DELAYED", "UNMATCHED"}:
+        if status in {"MATCHED", "CANCELED", "CANCELLED", "UNMATCHED"}:
             return None
         raise AdapterError(
             f"CLOB returned unknown order status {status or '<missing>'} for {order_id}"

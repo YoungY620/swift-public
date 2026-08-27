@@ -35,13 +35,14 @@ class WorkflowContractTests(unittest.TestCase):
         end = workflow.find("\n      - name: ", start + len(marker))
         return workflow[start:] if end == -1 else workflow[start:end]
 
-    def test_parent_owns_schedule_and_calls_two_reusable_subworkflows(self) -> None:
+    def test_parent_owns_schedule_and_calls_three_reusable_subworkflows(self) -> None:
         self.assertIn('cron: "23 2,10,18 * * *"', self.parent)
         self.assertNotIn('cron: "23 * * * *"', self.parent)
         self.assertNotIn("FORECAST_EDGE_INTERVAL_HOURS", self.parent)
         self.assertNotIn("epoch_hour", self.parent)
         self.assertIn("uses: ./.github/workflows/forecast-edge-research.yml", self.parent)
         self.assertIn("uses: ./.github/workflows/execute-polymarket.yml", self.parent)
+        self.assertIn("uses: ./.github/workflows/forecast-edge-audit.yml", self.parent)
         self.assertIn("needs: [gate, research]", self.parent)
         self.assertIn("needs.gate.outputs.execution-ready == 'true'", self.parent)
         execution_call = self.parent[
@@ -103,21 +104,17 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("AUTOMATION_PAUSED", self.parent)
         self.assertIn("interval_hours:($schedule_interval_hours|tonumber)", self.parent)
 
-    def test_audit_is_triggered_only_after_the_parent_completes(self) -> None:
+    def test_parent_calls_audit_after_release_even_when_upstream_failed(self) -> None:
         trigger = self.audit[: self.audit.index("\npermissions:\n")]
-        self.assertIn("workflow_run:", trigger)
-        self.assertIn("Forecast Edge research and optional execution", trigger)
-        self.assertIn("types:\n      - completed", trigger)
+        self.assertIn("workflow_call:", trigger)
+        self.assertNotIn("workflow_run:", trigger)
         self.assertNotIn("schedule:", trigger)
         self.assertNotIn("cron:", trigger)
-
-    def test_every_completed_parent_run_enters_audit_selection(self) -> None:
-        select = self.step(
-            self.audit, "Select completed iterations that need agent review"
-        )
-        self.assertIn('echo "audit-applicable=true"', select)
-        self.assertNotIn('echo "audit-applicable=false"', select)
-        self.assertNotIn("secrets.", select)
+        audit_call = self.parent[self.parent.index("  audit:\n") :]
+        self.assertIn("needs: [gate, research, execution, release]", audit_call)
+        self.assertIn("if: ${{ always() }}", audit_call)
+        self.assertIn("uses: ./.github/workflows/forecast-edge-audit.yml", audit_call)
+        self.assertLess(self.parent.index("  release:\n"), self.parent.index("  audit:\n"))
 
     def test_parent_grants_children_artifact_and_checkout_permissions(self) -> None:
         research_call = self.parent[
@@ -410,13 +407,13 @@ class WorkflowContractTests(unittest.TestCase):
         combined = self.parent + self.research + self.execution
         self.assertNotIn("actions/download-artifact", self.research)
         self.assertGreaterEqual(self.research.count("actions/upload-artifact@v7"), 2)
-        self.assertIn("Upload research diagnostics for post-run Judge", self.research)
+        self.assertIn("Upload research diagnostics for post-release Judge", self.research)
         self.assertIn("wire.jsonl", self.research)
         self.assertIn("output.log", self.research)
         self.assertIn("retention-days: 90", self.research)
         self.assertIn("actions/download-artifact@v8", self.execution)
         self.assertIn("actions/upload-artifact@v7", self.execution)
-        self.assertIn("Upload private-fork execution diagnostics for post-run Judge", self.execution)
+        self.assertIn("Upload private-fork execution diagnostics for post-release Judge", self.execution)
         self.assertIn("forecast-edge-research-handoff-", combined)
 
     def test_execution_gate_checks_toggle_without_loading_trading_credentials(self) -> None:
@@ -447,6 +444,17 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("scp ", self.execution)
         self.assertNotIn("aws ec2 run-instances", self.execution)
         self.assertNotIn("Dynamo", self.execution)
+        self.assertIn(
+            '"$GITHUB_REPOSITORY:$GITHUB_RUN_ID:$actual_digest"', self.execution
+        )
+        self.assertNotIn(
+            '"$GITHUB_REPOSITORY:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT:$actual_digest"',
+            self.execution,
+        )
+        self.assertIn(
+            '--lease-owner "github-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"',
+            self.execution,
+        )
 
     def test_execution_details_are_captured_in_phase_logs_and_not_streamed(self) -> None:
         install = self.step(self.execution, "Install isolated execution dependencies")
@@ -472,7 +480,7 @@ class WorkflowContractTests(unittest.TestCase):
             ROOT / "scripts" / "build_polymarket_execution_diagnostics.py"
         ).read_text(encoding="utf-8"))
         upload = self.step(
-            self.execution, "Upload private-fork execution diagnostics for post-run Judge"
+            self.execution, "Upload private-fork execution diagnostics for post-release Judge"
         )
         self.assertIn("retention-days: 90", upload)
 

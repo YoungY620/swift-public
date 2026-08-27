@@ -1,6 +1,6 @@
 # GitHub Actions Agent 工作流设计记录
 
-状态：父工作流、私有研究子图、Polymarket 执行子图和 post-run Agent Judge 已实现；生产交易开关已启用，并受自动熔断保护。
+状态：父工作流、私有研究子图、Polymarket 执行子图和发布后 Agent Judge 已实现；生产开关由仓库运行时配置控制，并受自动熔断保护。
 
 本文件记录基于 GitHub Actions 运行 Forecast Edge Agent 的已确定需求、当前设计和待确认事项。父 workflow 负责调度、发布与通知；研究和真实交易分别由 reusable 子 workflow 完成。
 
@@ -10,14 +10,14 @@
 - 各市场的执行子图必须重新校验 Actions handoff artifact 中的 JSONL、摘要、市场、持仓、价格、金额、数量和成交后状态，不能把研究结果直接当成可信订单。
 - Kimi Code API Key 和通知凭据通过 GitHub Actions Secrets 注入；fork 不继承任何 Repository Secrets。Research 不需要 EC2 SSH key；Polymarket signer private key 与 CLOB credentials 不进入 GitHub。
 - 研究子图只接收 Kimi Code API Key 和受保护的账户输入 Secret；执行子图不接收任何 Polymarket 签名/CLOB Secret，只在 EC2 本机调用权限 `0600` 的 `/home/ubuntu/poly-edge-live/runtime/secrets.json`。
-- 研究报告、通知正文和 `trade-intents.jsonl` 在执行子图结束前只存在于 runner 临时目录和 private-fork Actions artifact，不进入 Release、Issue 或飞书消息，也不写入 EC2。研究诊断 artifact 包含 Kimi stream、stderr、session/sub-agent 事件和校验日志；执行诊断 artifact 包含执行链证据。两者上传前均拒绝私钥、密码、token、认证头和已知秘密值，且只供有仓库权限的操作者和 post-run Agent Judge 使用。
+- 研究报告、通知正文和 `trade-intents.jsonl` 在执行子图结束前只存在于 runner 临时目录和 private-fork Actions artifact，不进入 Release、Issue 或飞书消息，也不写入 EC2。该 handoff artifact 是同一轮内部受控传输，不是正式发布。研究诊断 artifact 包含 Kimi stream、stderr、session/sub-agent 事件和校验日志；执行诊断 artifact 包含执行链证据。两者上传前均拒绝私钥、密码、token、认证头和已知秘密值，且只供有仓库权限的操作者和发布后 Agent Judge 使用。
 - 不使用 VPN 绕过交易平台的地域、条款或法律限制。真实交易只能运行在操作者依法获准使用 Polymarket 的网络和司法辖区中。
 
 ## 总体架构：统一研究，adapter 隔离
 
 ### 父图：统一编排与最终发布
 
-`.github/workflows/forecast-edge.yml` 是唯一的 schedule/manual 入口。它先运行配置 gate，再调用研究子图；生产执行已请求时，研究成功后始终调用执行子图，不以交易意图数量为 gate。零意图也必须在 EC2 上完成撤单、preflight、空 plan、`NO_ACTIONS` 回执、verify 和诊断。EC2 本地执行器在下单前校验本地凭据文件；校验失败会使执行失败且禁止发布。父图等待执行成功，或确认本轮明确未请求生产执行后，才统一创建最终 Release、Issue；飞书通知在 post-run Judge 之后发送。
+`.github/workflows/forecast-edge.yml` 是唯一的 schedule/manual 入口，固定顺序为 `gate → research → execution → release → audit → notify / breaker`。生产执行已请求时，研究成功后始终调用执行子图，不以交易意图数量为 gate。零意图也必须在 EC2 上完成撤单、preflight、空 plan、`NO_ACTIONS` 回执、verify 和诊断。EC2 本地执行器在下单前校验本地凭据文件；校验失败会使执行失败且禁止发布。父图等待执行成功，或确认本轮明确未请求生产执行后，才统一创建最终 Release、Issue；随后直接调用 reusable audit。审计不阻止本轮发布，只判断异常和下一轮能否继续；最后发送飞书通知并按严重安全发现熔断。
 
 ### 子图一：统一研究工作流
 
@@ -144,7 +144,7 @@ GitHub Release 继承仓库可见性。private repository 中的 Release 受仓�
 
 稳定且公开的实现参数直接写在 Workflow：Kimi Code 为 `0.37.2`、模型名为 `kimi-for-coding`、provider URL 与类型、telemetry 开关、重试次数、总 timeout、900 秒无事件 timeout 和文件名。venue 不是实现常量，必须通过上述通用 Repository Variable 显式配置；账户输入只通过 Actions Secret 提供。`${{ github.token }}` 是 GitHub 为每次 Run 自动生成的短期 token，也不需要用户设置。
 
-父图先做 fail-closed 配置 gate。任一必需 Secret 或 Variable 缺失、生产暂停，或 schedule 触发时 live trading 未开启，gate 都显式失败；不能用成功结论加 downstream `skipped` 掩盖配置错误。失败的父 run 仍进入 post-run audit 和最终通知。
+父图先做 fail-closed 配置 gate。任一必需 Secret 或 Variable 缺失、生产暂停，或 schedule 触发时 live trading 未开启，gate 都显式失败；不能用成功结论加 downstream `skipped` 掩盖配置错误。失败的父 run 仍由 `always()` 进入发布后 audit 和最终通知。
 
 父图、研究子图和执行子图都不接收任何 Polymarket 签名私钥、CLOB Secret、VPN Secret 或 Kalshi Secret。Polymarket 凭据只存在于 EC2 本地 mode-0600 文件；父图只判断交易开关与意图是否存在，服务器本地执行器负责凭据完整性校验。
 
@@ -154,9 +154,9 @@ GitHub Release 继承仓库可见性。private repository 中的 Release 受仓�
 
 真正的端到端交易由受保护的 `execute-polymarket.yml` 子图完成：它在实际执行 EC2 上检查 geoblock，再做 authenticated 账户、余额和 allowance 检查。任何创建后立即取消的订单仍然是真实订单，存在成交可能，必须经过生产交易开关、完整配置 gate 和受保护的 GitHub Environment，而不能作为普通健康检查。
 
-## Post-run Agent Judge 与熔断
+## 发布后 Agent Judge 与熔断
 
-`.github/workflows/forecast-edge-audit.yml` 由父 workflow 的 `workflow_run` 事件触发。Kimi Code 使用专用只读 Agent profile：主 Agent 必须主动 `Read` 证据并调用只读 `explore` subagent，再由主 Agent 复核；`Bash`、写文件、凭据、登录态和交易工具均禁止。CLI 使用 `--output-format stream-json`，确定性 harness 要求实际出现完整的 `Read` 和 `Agent` tool call 链，单次普通模型回答不能算 Agent 判断。Judge 判断或飞书 Agent 简报未通过 schema、报告绑定和工具轨迹校验时，本轮审计 job 明确失败并发送带 Warning 的 fallback 通知，不能显示成业务成功；该失败本身不触发交易熔断。只有资金安全、订单保护、残留挂单或秘密泄露白名单中的确定性异常才关闭 live-trading、暂停调度并禁用父 workflow。
+`.github/workflows/forecast-edge-audit.yml` 是父 workflow 在 Release job 之后直接调用的 reusable workflow。父 run 此时仍是 `in_progress`，但 gate/research/execution/release 已形成确定结论；如果上游失败，Release 可以跳过，audit 仍读取失败日志和诊断 artifact。Kimi Code 使用专用只读 Agent profile：主 Agent 必须主动 `Read` 证据并调用只读 `explore` subagent，再由主 Agent 复核；`Bash`、写文件、凭据、登录态和交易工具均禁止。CLI 使用 `--output-format stream-json`，确定性 harness 要求实际出现完整的 `Read` 和 `Agent` tool call 链，单次普通模型回答不能算 Agent 判断。Judge 判断或飞书 Agent 简报未通过 schema、报告绑定和工具轨迹校验时，本轮审计 job 明确失败并发送带 Warning 的 fallback 通知，不能显示成业务成功；该失败本身不触发交易熔断。只有资金安全、订单保护、残留挂单或秘密泄露白名单中的确定性异常才关闭 live-trading、暂停调度并禁用父 workflow。
 
 审计 workflow 另行保存私有 `forecast-edge-audit-diagnostics-*` artifact：包括 Judge/简报 Agent 的原始 stream、stderr、确定性 trace、Kimi Code session、最终结构化结果、报告来源绑定和业务验收布尔值。上传前会按模型 secret 精确值及凭据模式统一脱敏并生成 SHA-256 manifest；任何未通过秘密扫描的诊断包都不得上传。
 熔断步骤使用专用 Actions Secret `FORECAST_EDGE_BREAKER_TOKEN`。该 secret 不是 Polymarket 凭据，不会传入 Judge Agent，不会被诊断打包器读取，也不会写入日志或 Release；未配置时父 workflow 和 audit 都只完成 no-op gate，不进入生产 iteration。
@@ -231,7 +231,7 @@ Schema 使用 `additionalProperties: false`，并校验价格范围、正数金�
 
 父图在 private repository 中默认于最终 Release 成功后创建一个新 Issue。将 Repository Variable `CREATE_TRADE_INTENT_ISSUE` 设为 `false` 可以关闭 Issue，仅保留本轮最终 Release；public repository 不创建包含交易数量的 Issue。
 
-父 workflow 不在研究或执行过程中发送飞书消息。post-run audit workflow 对每个已完成的父 iteration 只发送一张最终卡片：由只读 Kimi Code Agent 阅读已验证报告生成研究简报，并附父 run 各阶段结论、Judge 有效性、简报有效性、业务验收、严重检查项和熔断结果；执行失败或审计失败也必须通知。无熔断时卡片为绿色，实际触发或需要触发熔断时为红色；Warning 和 Error 详情分别放入折叠面板。若当轮报告未生成，fallback 读取秘密扫描后的账户摘要、上一份验证报告基线和实际研究阶段；未知数量使用 `null` 并显示“未获得”，只有验证报告明确证明零结果时才显示 0。Workflow 使用 App ID 与 App Secret 获取短期 tenant token，不保存该 token；发送请求带有基于 GitHub run 和 attempt 的幂等键。
+父 workflow 不在研究或执行过程中发送飞书消息。父图调用的 audit workflow 对每个 iteration 只发送一张最终卡片：由只读 Kimi Code Agent 阅读已经发布或从失败诊断恢复的证据生成研究简报，并附父 run 各阶段结论、Judge 有效性、简报有效性、业务验收、严重检查项和熔断结果；执行失败或审计失败也必须通知。无熔断时卡片为绿色，实际触发或需要熔断时为红色；Warning 和 Error 详情分别放入折叠面板。若当轮报告未生成，fallback 读取秘密扫描后的账户摘要、上一份验证报告基线和实际研究阶段；未知数量使用 `null` 并显示“未获得”，只有验证报告明确证明零结果时才显示 0。Workflow 使用 App ID 与 App Secret 获取短期 tenant token，不保存该 token；发送请求带有基于 GitHub run 和 attempt 的幂等键。
 
 如果仓库是 public，Issue 会公开交易方向、价格、金额、份额和账户线索，可能造成隐私、策略泄露或抢跑风险。默认建议只在 private repository 创建包含数量的 Issue；public repository 应使用主动降敏的公共简报格式。
 
@@ -246,7 +246,7 @@ GitHub Release 和 Actions artifact 都不是应用层加密存储。最终 Rele
 - 只由父图在研究成功、生产执行已请求且配置齐全时调用；零交易意图也必须运行完整 EC2 执行生命周期；
 - 使用 `GITHUB_RUN_ID` 和 `GITHUB_RUN_ATTEMPT` 下载本轮唯一命名的 Actions handoff artifact；
 - 使用父图传入的 SHA-256 校验 `trade-intents.jsonl`，再独立完成 JSONL Schema、市场、持仓和实时报价校验；
-- 使用 `GITHUB_REPOSITORY`、run ID、attempt 和摘要派生 execution ID，并用长期 EC2 上的 SQLite ledger 保证重试幂等和共享单日限额；
+- 使用 `GITHUB_REPOSITORY`、run ID 和交易意图摘要派生稳定 execution ID；run attempt 只进入 lease owner，使 rerun 复用同一执行身份但不能继承旧租约。长期 EC2 上的 SQLite ledger 保证重试幂等和共享单日限额，并在任何旧 `IN_PROGRESS/UNCERTAIN` 批次未解决时拒绝新批次；
 - 成交后核对订单与账户变化，取消未成交余量，只把清洗后的 receipt/verification 和诊断包上传为本轮执行 artifact。
 
 这样每个 venue 执行子图都锚定到唯一的父 run，不会误取其他定时或手动运行的文件。多个 venue workflow 可以锚定同一个 artifact，各自只处理自己的 item；父图负责等待全部子图结束。

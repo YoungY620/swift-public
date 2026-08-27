@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, ROUND_UP
 from typing import Any, Iterable
 
-from .ledger import DynamoLedger, SQLiteLedger
+from .ledger import ExecutionLedger
 from .models import (
     SHARE_QUANTUM,
     ZERO,
@@ -242,7 +242,7 @@ def _prevalidate_unsigned_batch(
     adapter: LivePolymarketAdapter,
     orders: Iterable[PlannedOrder],
     limits: RiskLimits,
-    ledger: DynamoLedger | SQLiteLedger,
+    ledger: ExecutionLedger,
     expires_at: datetime | None,
 ) -> None:
     """Prove every fresh order is locally submittable before the first POST.
@@ -270,43 +270,248 @@ def _trade_ids_from_order(raw: dict[str, Any] | None) -> set[str]:
     return {str(value) for value in values if str(value)} if isinstance(values, (list, tuple)) else set()
 
 
-def _wait_balances(
+def _trade_belongs_to_order(trade: dict[str, Any], order_id: str) -> bool:
+    if str(trade.get("taker_order_id", "")) == order_id:
+        return True
+    maker_orders = trade.get("maker_orders", ())
+    return isinstance(maker_orders, (list, tuple)) and any(
+        isinstance(item, dict) and str(item.get("order_id", "")) == order_id
+        for item in maker_orders
+    )
+
+
+def _order_trade_evidence(
+    trades: Iterable[dict[str, Any]], *, order_id: str, token_id: str
+) -> tuple[dict[str, Any], ...]:
+    return tuple(
+        trade
+        for trade in trades
+        if str(trade.get("token_id", trade.get("asset_id", ""))) == token_id
+        and _trade_belongs_to_order(trade, order_id)
+    )
+
+
+def _reconciliation_observation(
     *,
-    adapter: LivePolymarketAdapter,
-    token_id: str,
+    order: PlannedOrder,
+    order_id: str,
+    latest_order: dict[str, Any] | None,
+    matching: Iterable[dict[str, Any]],
+    token_balance: Decimal,
+    collateral_balance: Decimal,
+) -> dict[str, Any]:
+    """Return the minimal durable evidence needed for offline diagnosis."""
+
+    trades = []
+    for trade in matching:
+        maker_orders = trade.get("maker_orders", ())
+        maker_order_ids = (
+            sorted(
+                str(item.get("order_id", ""))
+                for item in maker_orders
+                if isinstance(item, dict) and str(item.get("order_id", ""))
+            )
+            if isinstance(maker_orders, (list, tuple))
+            else []
+        )
+        trades.append(
+            {
+                name: value
+                for name, value in {
+                    "id": str(trade.get("id", "")) or None,
+                    "status": str(trade.get("status", "")) or None,
+                    "token_id": str(
+                        trade.get("token_id", trade.get("asset_id", ""))
+                    ) or None,
+                    "side": str(trade.get("side", "")).lower() or None,
+                    "size": trade.get("size"),
+                    "price": trade.get("price"),
+                    "taker_order_id": str(trade.get("taker_order_id", "")) or None,
+                    "maker_order_ids": maker_order_ids,
+                    "transaction_hash": str(trade.get("transaction_hash", "")) or None,
+                }.items()
+                if value is not None
+            }
+        )
+    return {
+        "observed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "intent_index": order.intent_index,
+        "order_id": order_id,
+        "order_status": (
+            str(latest_order.get("status", "")) or None
+            if latest_order is not None
+            else None
+        ),
+        "token_balance": decimal_string(token_balance),
+        "collateral_balance": decimal_string(collateral_balance),
+        "matching_trades": trades,
+    }
+
+
+def _balance_changes(
+    *,
+    order: PlannedOrder,
     before_token: Decimal,
     before_cash: Decimal,
-    side: str,
-    timeout_seconds: int,
-) -> tuple[Decimal, Decimal]:
-    deadline = time.monotonic() + timeout_seconds
-    latest = (before_token, before_cash)
-    while True:
-        latest = (adapter.conditional_balance(token_id), adapter.collateral_balance())
-        token_changed = latest[0] > before_token if side == "buy" else latest[0] < before_token
-        cash_changed = latest[1] < before_cash if side == "buy" else latest[1] > before_cash
-        if (token_changed and cash_changed) or time.monotonic() >= deadline:
-            return latest
-        time.sleep(2)
+    after_token: Decimal,
+    after_cash: Decimal,
+) -> tuple[bool, bool]:
+    token_changed = (
+        after_token > before_token
+        if order.side == "buy"
+        else after_token < before_token
+    )
+    cash_changed = (
+        after_cash < before_cash
+        if order.side == "buy"
+        else after_cash > before_cash
+    )
+    return token_changed, cash_changed
 
 
-def _wait_trades(
+def _wait_for_order_evidence(
     *,
     adapter: LivePolymarketAdapter,
-    trade_ids: set[str],
+    order: PlannedOrder,
+    order_id: str,
+    initial_trade_ids: set[str],
+    before_token: Decimal,
+    before_cash: Decimal,
+    submitted_at: int,
     timeout_seconds: int,
-) -> tuple[dict[str, Any], ...]:
-    if not trade_ids:
-        return ()
+    ledger: ExecutionLedger,
+) -> dict[str, Any]:
+    """Wait for one coherent CLOB order/trade/balance view.
+
+    The CLOB publishes these facts independently.  An empty ``trade_ids`` in
+    the POST response is therefore an observation, not a no-fill result.  No
+    new order is signed or submitted while this loop is running.
+    """
+
     deadline = time.monotonic() + timeout_seconds
-    latest: tuple[dict[str, Any], ...] = ()
+    trade_window = {
+        "token_id": order.token_id,
+        "after": max(0, submitted_at - 300),
+        "before": submitted_at + timeout_seconds + 300,
+    }
+    hinted_trade_ids = set(initial_trade_ids)
+    latest_order: dict[str, Any] | None = None
+    observed_trades: dict[str, dict[str, Any]] = {}
+    latest_balances = (before_token, before_cash)
     while True:
-        latest = adapter.account_trades(trade_ids)
-        statuses = {str(item.get("status", "")) for item in latest}
-        if len(latest) == len(trade_ids) and statuses.issubset({"CONFIRMED", "FAILED"}):
-            return latest
+        latest_order = adapter.order(order_id)
+        hinted_trade_ids.update(_trade_ids_from_order(latest_order))
+        queried_trades = (
+            adapter.account_trades(hinted_trade_ids)
+            if hinted_trade_ids
+            else adapter.account_trades(**trade_window)
+        )
+        observed_trades.update(
+            (str(trade.get("id", "")), trade)
+            for trade in queried_trades
+            if str(trade.get("id", ""))
+        )
+        # A trade id can be attached to the order before the trade endpoint
+        # can serve that id.  If any hinted id is still missing, the all-trades
+        # query is the bounded propagation fallback; order-id matching below
+        # prevents unrelated fills.
+        if hinted_trade_ids - observed_trades.keys():
+            observed_trades.update(
+                (str(trade.get("id", "")), trade)
+                for trade in adapter.account_trades(**trade_window)
+                if str(trade.get("id", ""))
+            )
+        missing_trade_ids = hinted_trade_ids - observed_trades.keys()
+        latest_balances = (
+            adapter.conditional_balance(order.token_id),
+            adapter.collateral_balance(),
+        )
+        matching = _order_trade_evidence(
+            observed_trades.values(), order_id=order_id, token_id=order.token_id
+        )
+        ledger.record_reconciliation_observation(
+            order.intent_index,
+            _reconciliation_observation(
+                order=order,
+                order_id=order_id,
+                latest_order=latest_order,
+                matching=matching,
+                token_balance=latest_balances[0],
+                collateral_balance=latest_balances[1],
+            ),
+        )
+        matching_terminal = bool(matching) and all(
+            str(trade.get("status", "")) in {"CONFIRMED", "FAILED"}
+            for trade in matching
+        )
+        token_changed, cash_changed = _balance_changes(
+            order=order,
+            before_token=before_token,
+            before_cash=before_cash,
+            after_token=latest_balances[0],
+            after_cash=latest_balances[1],
+        )
+        balance_changed = token_changed or cash_changed
+        balances_ready = token_changed and cash_changed
+        terminal_without_fill = (
+            latest_order is not None
+            and str(latest_order.get("status", "")).upper()
+            in {"CANCELED", "CANCELLED", "UNMATCHED"}
+            and not balance_changed
+            and not matching
+        )
+        matching_failed = bool(matching) and all(
+            str(trade.get("status", "")) == "FAILED" for trade in matching
+        )
+        if matching_terminal and balances_ready:
+            transaction_hashes = tuple(
+                sorted(
+                    {
+                        str(trade.get("transaction_hash", ""))
+                        for trade in matching
+                        if str(trade.get("transaction_hash", ""))
+                    }
+                )
+            )
+            return _verify_fill(
+                order=order,
+                before_token=before_token,
+                before_cash=before_cash,
+                after_token=latest_balances[0],
+                after_cash=latest_balances[1],
+                trades=matching,
+                order_id=order_id,
+                transaction_hashes=transaction_hashes,
+            )
         if time.monotonic() >= deadline:
-            raise UncertainExecutionError("one or more CLOB trades did not reach a terminal state")
+            if terminal_without_fill or (
+                matching_failed and not balance_changed and not missing_trade_ids
+            ):
+                return _definitive_no_fill_receipt(
+                    adapter=adapter,
+                    order=order,
+                    before_token=before_token,
+                    before_cash=before_cash,
+                    order_id=order_id,
+                )
+            if matching_failed and missing_trade_ids:
+                raise UncertainExecutionError(
+                    f"order {order_id} has account trades that are not visible yet"
+                )
+            if balance_changed or matching:
+                # Let the invariant checker produce the precise contradiction
+                # and keep the run UNCERTAIN rather than guessing a result.
+                return _verify_fill(
+                    order=order,
+                    before_token=before_token,
+                    before_cash=before_cash,
+                    after_token=latest_balances[0],
+                    after_cash=latest_balances[1],
+                    trades=matching,
+                    order_id=order_id,
+                    transaction_hashes=(),
+                )
+            raise UncertainExecutionError(f"order {order_id} did not reach a terminal CLOB state")
         time.sleep(2)
 
 
@@ -430,6 +635,7 @@ def _definitive_no_fill_receipt(
     order: PlannedOrder,
     before_token: Decimal,
     before_cash: Decimal,
+    order_id: str | None = None,
 ) -> dict[str, Any]:
     """Prove an SDK FOK rejection did not change the account."""
 
@@ -449,7 +655,7 @@ def _definitive_no_fill_receipt(
         )
     return {
         "intent_index": order.intent_index,
-        "order_id": None,
+        "order_id": order_id,
         "market_id": order.market_id,
         "token_id": order.token_id,
         "side": order.side,
@@ -529,7 +735,7 @@ def execute_orders(
     adapter: LivePolymarketAdapter,
     orders: Iterable[PlannedOrder],
     limits: RiskLimits,
-    ledger: DynamoLedger | SQLiteLedger,
+    ledger: ExecutionLedger,
     settlement_timeout_seconds: int = 90,
     expected_account: dict[str, Any] | None = None,
     expires_at: datetime | None = None,
@@ -561,8 +767,6 @@ def execute_orders(
                 raise ExecutionError("execution credentials differ from the preflight account")
         for original in orders:
             ledger.renew()
-            if expires_at is not None and datetime.now(timezone.utc) > expires_at:
-                raise ExecutionError("execution plan expired before the next order")
             previous = ledger.get(ledger.order_key(original.intent_index))
             if previous and previous.get("state") == "VERIFIED":
                 receipt = json.loads(str(previous["receipt"]))
@@ -581,11 +785,7 @@ def execute_orders(
                 )
             if previous and previous.get("state") == "SUBMITTED":
                 current = PlannedOrder.from_dict(json.loads(str(previous["plan"])))
-                if (
-                    current.intent_index != original.intent_index
-                    or current.token_id != original.token_id
-                    or current.quantity > original.quantity
-                ):
+                if current != original:
                     raise UncertainExecutionError("stored execution plan differs from the approved plan")
                 before_token = Decimal(previous["before_token_balance"])
                 before_cash = Decimal(previous["before_collateral_balance"])
@@ -595,6 +795,12 @@ def execute_orders(
                     f"{previous.get('state', '<missing>')}"
                 )
             else:
+                if execution_claim == "reconcile":
+                    raise ExecutionError(
+                        "reconciliation will not sign or submit an order missing from the ledger"
+                    )
+                if expires_at is not None and datetime.now(timezone.utc) > expires_at:
+                    raise ExecutionError("execution plan expired before the next unsigned order")
                 if not fresh_batch_prevalidated:
                     unsigned_orders = tuple(
                         candidate
@@ -629,6 +835,7 @@ def execute_orders(
             response: Any | None = None
             if previous and previous.get("state") == "SUBMITTED":
                 post_response = json.loads(str(previous["post_response"]))
+                submitted_at = int(previous.get("submitted_at", previous["updated_at"]))
                 account_may_have_changed = True
             else:
                 account_may_have_changed = True
@@ -676,15 +883,13 @@ def execute_orders(
                     raise ExecutionError(
                         f"intent {current.intent_index} was rejected: {receipt['code']}"
                     )
-                ledger.mark_submitted(current.intent_index, post_response)
+                submitted_at = ledger.mark_submitted(current.intent_index, post_response)
 
             order_id = str(post_response.get("order_id", ""))
             if not order_id:
                 uncertain = True
                 raise UncertainExecutionError("accepted order has no order id")
             trade_ids = {str(item) for item in post_response.get("trade_ids", []) if str(item)}
-            order_record = adapter.order(order_id)
-            trade_ids.update(_trade_ids_from_order(order_record))
             open_order = adapter.order_if_open(order_id)
             if open_order is not None:
                 cancel = adapter.cancel_order(order_id)
@@ -696,41 +901,21 @@ def execute_orders(
                 uncertain = True
                 raise UncertainExecutionError(f"order {order_id} remains open after cancellation")
 
-            transaction_hashes: tuple[str, ...] = ()
-            if trade_ids:
-                # Reconstructing an AcceptedOrder after process recovery is not
-                # necessary: account trades below are independently polled.
-                if response is not None and getattr(response, "ok", False):
-                    transaction_hashes = adapter.wait_for_settlement(
-                        response, timeout_seconds=settlement_timeout_seconds
-                    )
-            trades = _wait_trades(
+            receipt = _wait_for_order_evidence(
                 adapter=adapter,
-                trade_ids=trade_ids,
-                timeout_seconds=settlement_timeout_seconds,
-            )
-            after_token, after_cash = _wait_balances(
-                adapter=adapter,
-                token_id=current.token_id,
-                before_token=before_token,
-                before_cash=before_cash,
-                side=current.side,
-                timeout_seconds=settlement_timeout_seconds,
-            )
-            receipt = _verify_fill(
                 order=current,
+                order_id=order_id,
+                initial_trade_ids=trade_ids,
                 before_token=before_token,
                 before_cash=before_cash,
-                after_token=after_token,
-                after_cash=after_cash,
-                trades=trades,
-                order_id=order_id,
-                transaction_hashes=transaction_hashes,
+                submitted_at=submitted_at,
+                timeout_seconds=settlement_timeout_seconds,
+                ledger=ledger,
             )
             ledger.mark_order_terminal(current.intent_index, receipt)
             receipts.append(receipt)
             account_may_have_changed = False
-            if receipt["status"] != "FULL":
+            if receipt["status"] not in {"FULL", "NO_FILL"}:
                 raise ExecutionError(
                     f"intent {current.intent_index} ended as {receipt['status']}; "
                     "remaining orders were stopped"
@@ -738,10 +923,17 @@ def execute_orders(
         warning_receipts = [
             receipt for receipt in receipts if receipt.get("status") != "FULL"
         ]
+        status = (
+            "NO_ACTIONS"
+            if not orders
+            else "COMPLETED_WITH_WARNINGS"
+            if warning_receipts
+            else "COMPLETED"
+        )
         summary = {
             "schema_version": "1.0",
             "completed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "status": "COMPLETED_WITH_WARNINGS" if warning_receipts else "COMPLETED",
+            "status": status,
             "execution_id": execution_id,
             "claim": execution_claim,
             "planning": planning,
@@ -774,7 +966,8 @@ def execute_orders(
         ledger.fail(summary, uncertain=True)
         raise
     except Exception:
-        uncertain = uncertain or account_may_have_changed
+        # A failed reconciliation must remain read-only on every later retry.
+        uncertain = uncertain or account_may_have_changed or execution_claim == "reconcile"
         summary = {
             "schema_version": "1.0",
             "completed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -809,6 +1002,7 @@ def verify_receipts(
     if not isinstance(receipts, list):
         raise ExecutionError("execution summary has no receipts list")
     checks: list[dict[str, Any]] = []
+    expected_tokens: dict[str, Decimal] = {}
     expected_final_cash: Decimal | None = None
     for receipt in receipts:
         if not isinstance(receipt, dict) or receipt.get("status") not in {
@@ -828,8 +1022,8 @@ def verify_receipts(
         else:
             if receipt.get("code") != "FOK_NOT_FILLED":
                 raise ExecutionError("a definitive NO_FILL receipt has no FOK kill proof")
-            if order_id:
-                raise ExecutionError("a definitive NO_FILL receipt must not contain an order id")
+            if order_id and adapter.order_if_open(order_id) is not None:
+                raise UncertainExecutionError(f"no-fill order {order_id} is still open")
             if decimal_value(receipt.get("filled_quantity"), "no-fill quantity") != ZERO:
                 raise ExecutionError("a definitive NO_FILL receipt contains a fill")
             if decimal_value(receipt.get("collateral_effect"), "no-fill cash effect") != ZERO:
@@ -855,14 +1049,9 @@ def verify_receipts(
         token_id = str(receipt.get("token_id", ""))
         if not token_id:
             raise ExecutionError("execution receipt is missing its outcome token id")
-        expected_token = decimal_value(
+        expected_tokens[token_id] = decimal_value(
             receipt.get("after_token_balance"), "receipt outcome-token balance"
         )
-        actual_token = adapter.conditional_balance(token_id)
-        if abs(actual_token - expected_token) > SHARE_QUANTUM:
-            raise UncertainExecutionError(
-                f"post-execution position changed for token {token_id}"
-            )
         expected_final_cash = decimal_value(
             receipt.get("after_collateral_balance"), "receipt collateral balance"
         )
@@ -872,9 +1061,18 @@ def verify_receipts(
                 "token_id": token_id,
                 "status": status,
                 "open": False,
-                "position_balance": decimal_string(actual_token),
             }
         )
+    actual_tokens = {
+        token_id: adapter.conditional_balance(token_id) for token_id in expected_tokens
+    }
+    for token_id, expected_token in expected_tokens.items():
+        if abs(actual_tokens[token_id] - expected_token) > SHARE_QUANTUM:
+            raise UncertainExecutionError(
+                f"post-execution position changed for token {token_id}"
+            )
+    for check in checks:
+        check["position_balance"] = decimal_string(actual_tokens[check["token_id"]])
     if expected_final_cash is not None:
         actual_cash = adapter.collateral_balance()
         if abs(actual_cash - expected_final_cash) > Decimal("0.01"):

@@ -525,3 +525,19 @@ jobs:
           gh issue create \
             --title "Forecast Edge iteration — $GENERATED_AT" \
             --body-file "$ISSUE_BODY_PATH"
+
+  audit:
+    needs: [gate, research, execution, release]
+    if: ${{ always() }}
+    permissions:
+      actions: write
+      contents: read
+    uses: ./.github/workflows/forecast-edge-audit.yml
+    with:
+      parent-run-id: ${{ github.run_id }}
+    secrets:
+      KIMI_CODE_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
+      FORECAST_EDGE_BREAKER_TOKEN: ${{ secrets.FORECAST_EDGE_BREAKER_TOKEN }}
+      FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+      FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+      FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}

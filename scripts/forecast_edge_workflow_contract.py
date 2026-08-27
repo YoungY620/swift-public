@@ -27,7 +27,8 @@ def main() -> int:
         encoding="utf-8"
     )
     combined = parent + research + execution
-    release = between(parent, "  release:\n")
+    release = between(parent, "  release:\n", "\n  audit:\n")
+    audit_call = between(parent, "  audit:\n")
     execution_call = between(parent, "  execution:\n", "\n  release:\n")
     execution_step = between(
         execution,
@@ -106,7 +107,7 @@ def main() -> int:
             and "actions: write" in execution
             and execution.index("Validate, cancel open orders, price, execute FOK market orders, and verify locally")
             < execution.index("Build and persist secret-free execution diagnostics")
-            < execution.index("Upload private-fork execution diagnostics for post-run Judge")
+            < execution.index("Upload private-fork execution diagnostics for post-release Judge")
         ),
         "research_ec2_isolation": (
             "runs-on: ubuntu-latest" in research
@@ -129,7 +130,7 @@ def main() -> int:
         ),
         "research_diagnostics": (
             "Prepare secret-free research diagnostics" in research
-            and "Upload research diagnostics for post-run Judge" in research
+            and "Upload research diagnostics for post-release Judge" in research
             and "forecast-edge-research-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}" in research
             and "kimi-sessions" in research
             and "fallback-brief-context.json" in research
@@ -192,12 +193,14 @@ def main() -> int:
             and "sanitize_research_diagnostics.py" in audit
             and "--secret-env KIMI_MODEL_API_KEY" in audit
         ),
-        "all_completed_parent_runs_are_audited": (
-            'echo "audit-applicable=true"' in between(
-                audit, "  select:\n", "\n  audit:\n"
-            )
+        "all_iterations_are_audited_after_release": (
+            "uses: ./.github/workflows/forecast-edge-audit.yml" in audit_call
+            and "needs: [gate, research, execution, release]" in audit_call
+            and "if: ${{ always() }}" in audit_call
+            and "parent-run-id: ${{ github.run_id }}" in audit_call
+            and "workflow_call:" in audit
+            and "workflow_run:" not in audit
             and "Successful hourly wake-up was gated off" not in audit
-            and 'echo "audit-applicable=false"' not in audit
         ),
         "research_kimi_live_stream": (
             research.count("--output-format stream-json") >= 4
@@ -226,9 +229,7 @@ def main() -> int:
         "final_iteration_notification": (
             "  notify:\n" in audit
             and "always()" in between(audit, "  notify:\n")
-            and "github.event.workflow_run.id || inputs['parent-run-id']" in between(
-                audit, "  notify:\n"
-            )
+            and "PARENT_RUN_ID: ${{ inputs['parent-run-id'] }}" in between(audit, "  notify:\n")
             and "FEISHU_APP_ID" in between(audit, "  notify:\n")
             and "AUDIT_OVERALL_STATUS" in between(audit, "  notify:\n")
             and "Run read-only Kimi Code Feishu briefing agent" in audit
@@ -240,6 +241,21 @@ def main() -> int:
             and "template=green" in between(audit, "  notify:\n")
             and "template=red" in between(audit, "  notify:\n")
             and "Send post-release notification to Feishu" not in parent
+        ),
+        "notification_and_breaker_share_final_job": (
+            "Trip production circuit breaker on serious findings"
+            in between(audit, "  notify:\n")
+            and between(audit, "  notify:\n").index(
+                "Trip production circuit breaker on serious findings"
+            )
+            < between(audit, "  notify:\n").index(
+                "Send final production iteration status to Feishu"
+            )
+            and "if: ${{ always() }}"
+            in between(
+                audit,
+                "      - name: Send final production iteration status to Feishu\n",
+            ).split("        env:\n", 1)[0]
         ),
         "notification_actual_trade_details": (
             "forecast_edge_execution_brief.py" in audit
@@ -260,6 +276,11 @@ def main() -> int:
             and "needs.execution.result == 'success'" in release
             and "needs.gate.outputs.execution-ready != 'true'" in release
             and "needs.execution.result == 'skipped'" in release
+        ),
+        "release_before_audit": (
+            parent.index("  release:\n") < parent.index("  audit:\n")
+            and "needs: [gate, research, execution, release]" in audit_call
+            and "if: ${{ always() }}" in audit_call
         ),
         "release_direct_report_inventory_safe": (
             'actual-direct-reports.txt' in parent
@@ -303,11 +324,10 @@ def main() -> int:
         "execution_id_derivation": {
             "algorithm": "sha256",
             "payload_format": (
-                "repository:workflow_run_id:workflow_run_attempt:"
-                "trade_intents_sha256"
+                "repository:workflow_run_id:trade_intents_sha256"
             ),
             "source_verified": (
-                '"$GITHUB_REPOSITORY:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT:$actual_digest"'
+                '"$GITHUB_REPOSITORY:$GITHUB_RUN_ID:$actual_digest"'
                 in execution
                 and "| sha256sum | cut -d ' ' -f 1" in execution
                 and 'echo "EXECUTION_ID=$execution_id" >> "$GITHUB_ENV"' in execution
@@ -350,7 +370,8 @@ def main() -> int:
                 root / "scripts/forecast_edge_audit.py"
             ).read_text(encoding="utf-8")
             and 'and .status == "INSUFFICIENT_EVIDENCE"' not in audit
-            and "github.event_name == 'workflow_run'" in audit
+            and 'CIRCUIT_BREAKER_ENABLED: "true"' in audit
+            and "workflow_call:" in audit
         ),
         "persistent_pause_gate": (
             "AUTOMATION_PAUSED" in parent

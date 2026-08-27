@@ -27,7 +27,7 @@
 
 `scripts/verify_forecast_edge_production_run.py` 对同一父 run 的以下输入做绑定检查：
 
-1. parent conclusion 及 gate/research/execution/release 四个必要 job；
+1. audit 启动时 parent 为 `in_progress`（兼容历史已完成输入），且 gate/research/execution/release 四个上游 job 已形成确定结论；
 2. manifest 的 run id、attempt、commit 和 schedule/execution 字段；
 3. receipt 只含 `FULL` 或有 `FOK_NOT_FILLED` 证明的 `NO_FILL`，或合法 `NO_ACTIONS`；
 4. 事前撤单后 `remaining_open_order_count=0`；
@@ -60,6 +60,7 @@
 | 实际交易说明 | 逐市场列出成交、NO_FILL、SKIPPED、REJECTED、缺失回执和白名单失败根因 | execution brief |
 | Judge Agent | 使用 Kimi Code Agent，真实 `Read` + `Agent/explore` 工具链，不是单次 LLM 文本 | raw stream、trace、schema-valid JSON |
 | 熔断 | 只有资金安全、订单保护、残留挂单或秘密泄露触发；研究质量/基础设施为 Warning/Error 但不熔断 | rubric classification、变量与 workflow 状态 |
+| 执行去重 | execution ID 在 rerun 间稳定；旧 `IN_PROGRESS/UNCERTAIN` 批次未解决时共享 ledger 拒绝任何新批次 | SQLite ledger、receipt、执行回归测试 |
 | 本机去重 | Mac launchd 和 Mac runner 不参与调度 | 本机服务清单、GitHub runner API |
 
 任何密钥、密码、私钥、签名原文、Authorization header 或完整凭据不得进入上述证据。

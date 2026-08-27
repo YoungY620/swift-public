@@ -19,7 +19,7 @@ from .artifact import (
     write_filtered_jsonl,
 )
 from .engine import ExecutionError, UncertainExecutionError, execute_orders, verify_receipts
-from .ledger import DynamoLedger, LedgerError, SQLiteLedger
+from .ledger import ExecutionLedger, LedgerError, UnresolvedExecutionsError
 from .models import (
     ZERO,
     MarketSnapshot,
@@ -256,44 +256,43 @@ def command_execute(args: argparse.Namespace) -> int:
         raise ExecutionError("execution plan id does not match the workflow")
     if document.get("artifact_sha256") != args.artifact_sha256:
         raise ExecutionError("execution plan is bound to another upstream artifact")
-    if datetime.now(timezone.utc) > _parse_utc(str(document.get("expires_at", "")), "expires_at"):
-        raise ExecutionError("execution plan expired before order submission")
+    expires_at = _parse_utc(str(document.get("expires_at", "")), "expires_at")
     limits = RiskLimits.from_dict(document.get("limits", {}))
     orders = tuple(PlannedOrder.from_dict(item) for item in document.get("orders", []))
     planning = _planning_summary(document)
-    if not orders:
-        summary = {
-            "schema_version": "1.0",
-            "status": "NO_ACTIONS",
-            "execution_id": args.execution_id,
-            "claim": "not_required",
-            "planning": planning,
-            "pre_execution_cancellation": cancellations,
-            "receipts": [],
-        }
-        _write_json(args.output, summary)
-        return 0
-
-    if args.ledger_path is not None:
-        ledger = SQLiteLedger(
-            path=args.ledger_path,
-            execution_id=args.execution_id,
-            lease_owner=args.lease_owner,
-        )
-    else:
-        ledger = DynamoLedger(
-            table_name=args.ledger_table,
-            execution_id=args.execution_id,
-            lease_owner=args.lease_owner,
-        )
-    planned_notional = sum((order.gross_notional for order in orders), ZERO)
-    claim = ledger.claim_run(
-        artifact_sha256=args.artifact_sha256,
-        planned_notional=planned_notional,
-        daily_notional_limit=decimal_value(
-            args.daily_notional_limit, "daily notional limit", positive=True
-        ),
+    ledger = ExecutionLedger(
+        path=args.ledger_path,
+        execution_id=args.execution_id,
+        lease_owner=args.lease_owner,
     )
+    existing_run = ledger.get(ledger.run_key)
+    if datetime.now(timezone.utc) > expires_at and existing_run is None:
+        raise ExecutionError("execution plan expired before its first execution claim")
+    planned_notional = sum((order.gross_notional for order in orders), ZERO)
+    try:
+        claim = ledger.claim_run(
+            artifact_sha256=args.artifact_sha256,
+            planned_notional=planned_notional,
+            daily_notional_limit=decimal_value(
+                args.daily_notional_limit, "daily notional limit", positive=True
+            ),
+            execution_plan=document,
+        )
+    except UnresolvedExecutionsError as exc:
+        _write_json(
+            args.output,
+            {
+                "schema_version": "1.0",
+                "status": "UNCERTAIN",
+                "execution_id": args.execution_id,
+                "claim": "blocked",
+                "planning": planning,
+                "pre_execution_cancellation": cancellations,
+                "blocked_execution_ids": list(exc.execution_ids),
+                "receipts": [],
+            },
+        )
+        raise
     if claim == "completed":
         existing = ledger.get(ledger.run_key) or {}
         summary = json.loads(str(existing.get("summary", "{}")))
@@ -302,6 +301,11 @@ def command_execute(args: argparse.Namespace) -> int:
         summary["idempotent_replay"] = True
         _write_json(args.output, summary)
         return 0
+    document = ledger.load_execution_plan()
+    expires_at = _parse_utc(str(document.get("expires_at", "")), "expires_at")
+    limits = RiskLimits.from_dict(document.get("limits", {}))
+    orders = tuple(PlannedOrder.from_dict(item) for item in document.get("orders", []))
+    planning = _planning_summary(document)
     try:
         with LivePolymarketAdapter(Credentials.from_env()) as adapter:
             summary = execute_orders(
@@ -310,6 +314,8 @@ def command_execute(args: argparse.Namespace) -> int:
                 limits=limits,
                 ledger=ledger,
                 settlement_timeout_seconds=args.settlement_timeout_seconds,
+                expected_account=document.get("account"),
+                expires_at=expires_at,
                 pre_execution_cancellation=cancellations,
                 execution_id=args.execution_id,
                 execution_claim=claim,
@@ -376,9 +382,7 @@ def build_parser(root: Path) -> argparse.ArgumentParser:
     execute.add_argument("--output", required=True, type=Path)
     execute.add_argument("--execution-id", required=True)
     execute.add_argument("--artifact-sha256", required=True)
-    ledger = execute.add_mutually_exclusive_group(required=True)
-    ledger.add_argument("--ledger-table")
-    ledger.add_argument("--ledger-path", type=Path)
+    execute.add_argument("--ledger-path", required=True, type=Path)
     execute.add_argument("--lease-owner", required=True)
     execute.add_argument("--daily-notional-limit", required=True)
     execute.add_argument("--settlement-timeout-seconds", type=int, default=90)

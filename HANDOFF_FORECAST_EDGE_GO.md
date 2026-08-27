@@ -13,10 +13,10 @@
   -> GitHub-hosted research
   -> SHA-256 绑定的私有 handoff artifact
   -> EC2 self-hosted Polymarket execution
-  -> 只有子图完成后才 Release / Issue / Feishu
-  -> workflow_run 触发的 Kimi Code Agent Judge
-  -> 按 rubric 分级；严重资金安全异常才熔断
-  -> 每个真正进入 gate 的轮次都通知 Feishu
+  -> execution 结束后 Release / Issue
+  -> parent 直接调用 Kimi Code Agent Judge
+  -> 按 rubric 分级；严重资金安全异常才熔断下一轮
+  -> 每轮通知 Feishu
 ```
 
 除非下面的验收条件全部满足，否则不得声称“已完成”。“gate 成功但正常跳过”“只生成了研究”“只做了模拟”“只有一次普通 LLM 回答”“Release 失败”都不算完成。
@@ -52,7 +52,7 @@
 7. Judge 必须是 Agent judge，不是一次普通模型调用。它必须实际使用 `Read` 读取证据，至少调用一次只读 `explore` subagent，再由主 Agent 复核；必须能检查 Kimi Code session/sub-agent/tool 事件和执行链证据。Judge 禁止 Bash、Write、Edit、登录态、钱包、交易 API、凭据和下单。
 8. 不使用 VPN、代理或地域绕过来规避 Polymarket 条款、地区限制或合规要求。执行前如 geoblock/账户健康不满足，安全失败并通知，不要绕过。
 9. 交易使用受价格保护的 FOK 市价单：先取消全部未成交挂单并复查为零，再按实时订单簿逐档模拟；不追价、不留下余量、不自动补单。
-10. 只有确定性且已验证的 FOK `NO_FILL` 才能作为 warning；余额未变化、没有成交、没有开放挂单必须有证据。`UNCERTAIN`、`PARTIAL`、`REJECTED`、保护越界、残留挂单、秘密/诊断校验失败仍是 fatal。
+10. 只有确定性且已验证的 FOK `NO_FILL` 才能作为 warning；余额未变化、没有成交、没有开放挂单必须有证据。`UNCERTAIN`、`PARTIAL`、保护越界、残留挂单或秘密泄露是熔断候选；确定性 `REJECTED`、诊断缺失和 Agent 基础设施失败必须显式报告，但没有资金/订单安全证据时不能单独熔断。
 
 ## 2. 空服务器接管流程
 
@@ -158,8 +158,8 @@ git diff --check
 - parent 在 UTC 02:23、10:23、18:23 直接启动完整 iteration，不使用小时唤醒或取模 gate；
 - research 与 audit 在 GitHub-hosted runner；execution 在 EC2 self-hosted runner；
 - child workflows 使用 `workflow_call`，不能自行发布 Release/Issue；
-- Release、Issue、Feishu 的顺序严格为 Release → Issue → Feishu；
-- audit 由 parent 完成后通过 `workflow_run` 触发；每个已完成 parent run 都必须审计并发送最终通知；
+- 顺序严格为 gate → research → execution → Release/Issue → audit → breaker/Feishu；
+- audit 是 parent 以 `always()` 在 Release job 后直接调用的 reusable workflow；上游失败时 Release 可跳过，但 audit 和最终通知不能跳过；
 - research 诊断和 execution 诊断上传前都经过秘密扫描，执行诊断要包含安装、validate、cancel、preflight、plan、execute、verify 的逐阶段日志；
 - trade intent 通过本轮唯一 handoff artifact 和 SHA-256 交接，不读取“最新 artifact”。
 
@@ -201,7 +201,7 @@ ALLOW_PUBLIC_TRADE_INTENTS              private repo 通常保持 false
 ALLOW_PUBLIC_RESEARCH_RELEASES          private repo 通常保持 false
 ```
 
-如果缺少配置，parent gate 应成功并安全跳过 downstream；不要为了“让它跑起来”把缺少的 Secret 写进代码或把 live trading 强行打开。
+如果缺少配置，parent gate 应显式失败，随后仍进入 audit 和最终通知；不要为了“让它跑起来”把缺少的 Secret 写进代码或把 live trading 强行打开。
 
 ### 4.3 Environment 和权限
 
@@ -317,7 +317,7 @@ validate-artifact
 2. production execution 成功；零意图也必须完成 EC2 撤单、preflight、空 plan、`NO_ACTIONS` 回执、verify 和诊断，不能 skipped；
 3. 私有 handoff、digest、receipt、verification 和诊断校验成功；
 
-之后才能创建唯一最终 Release。报告文件清单必须用排序文件和 `cmp`/`diff` 比较，不能用容易受 Bash 数组空格影响的字符串比较。Release 成功后才允许创建 Issue 和发送 post-release Feishu；执行失败时不得发布未成交的研究/意图。
+之后才能创建唯一最终 Release。报告文件清单必须用排序文件和 `cmp`/`diff` 比较，不能用容易受 Bash 数组空格影响的字符串比较。Release 成功后才允许创建 Issue；随后 parent 调用 audit，最终 job 先执行必要的 breaker，再用 `always()` 发送 Feishu。执行失败时不得发布未成交的研究/意图，但 audit 和通知仍必须运行。
 
 每个父轮次无论成功、warning、失败或熔断，都要有一条 Feishu 状态通知；不存在正常的 hourly gate-off。
 
@@ -395,7 +395,8 @@ gate=success
 research=success（ubuntu-latest）
 execution=success（EC2 self-hosted labels 全部匹配）
 release=success
-audit select/audit/notify=success
+audit/audit=success
+audit/notify=success
 ```
 
 如果 execution 失败，优先下载 private execution diagnostics 和 research diagnostics，在本地受限目录检查：

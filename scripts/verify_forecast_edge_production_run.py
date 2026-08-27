@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministically verify one completed Forecast Edge parent iteration."""
+"""Deterministically verify upstream stages of one Forecast Edge iteration."""
 
 from __future__ import annotations
 
@@ -96,12 +96,17 @@ def build_document(
     event = str(run.get("event") or "")
     run_attempt = str(run.get("run_attempt") or "")
     head_sha = str(run.get("head_sha") or "")
-    parent_success = run.get("status") == "completed" and run.get("conclusion") == "success"
+    parent_context_valid = run.get("status") in {"in_progress", "completed"} and (
+        run.get("status") != "completed" or run.get("conclusion") == "success"
+    )
     check(
         "PARENT-CONCLUSION",
-        parent_success,
+        parent_context_valid,
         ["run"],
-        f"parent status={run.get('status')!r}, conclusion={run.get('conclusion')!r}",
+        (
+            "audit runs after release but before the parent finishes; "
+            f"parent status={run.get('status')!r}, conclusion={run.get('conclusion')!r}"
+        ),
     )
 
     stage_conclusions: dict[str, str] = {}
@@ -156,7 +161,7 @@ def build_document(
             "RELEASE-LINEAGE",
             lineage_ok,
             ["run", "release.manifest"],
-            "manifest run id, attempt and commit must match the completed parent run",
+            "manifest run id, attempt and commit must match the parent iteration",
         )
 
     if event == "schedule":

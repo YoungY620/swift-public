@@ -4,12 +4,12 @@ Poly-edge 是面向多预测市场的长期概率优势研究与交易意图生�
 
 ## 自动化入口
 
-- `.github/workflows/forecast-edge.yml`：定时/手动父流程，串联私有研究与按配置启用的交易执行，并在子图全部结束后统一发布 Release 与 Issue。
+- `.github/workflows/forecast-edge.yml`：定时/手动父流程，按 `gate → research → execution → release → audit → notify / breaker` 编排一轮运行。
 - `.github/workflows/forecast-edge-research.yml`：reusable 私有研究子图，只生成、校验并暂存报告与交易意图，不发布。
 - `.github/workflows/execute-polymarket.yml`：reusable 执行子图；仅在显式启用且交易配置齐全时消费私有交易意图。
-- `.github/workflows/forecast-edge-audit.yml`：父流程完成后由 Kimi Code Judge 审计；另一个只读 Agent 阅读本轮完整报告和版本化格式模板，生成最终飞书扫描简报。未熔断卡片为绿色，触发或需要熔断时为红色。
+- `.github/workflows/forecast-edge-audit.yml`：父流程在 Release 之后直接调用的 reusable 审计子图；Kimi Code Judge 检查完整成果，随后发送最终飞书扫描简报，并在严重安全异常时阻止下一轮。未熔断卡片为绿色，触发或需要熔断时为红色。
 
-研究子图在 GitHub 托管的 `ubuntu-latest` runner 上，通过 `kimi --skills-dir "$GITHUB_WORKSPACE/skills"` 直接加载 `skills/forecast-edge`。研究产物先写入 private-fork 的逐次 Actions handoff artifact；交易执行完成或被明确跳过前，不创建 Release、Issue 或飞书通知。它依赖：
+研究子图在 GitHub 托管的 `ubuntu-latest` runner 上，通过 `kimi --skills-dir "$GITHUB_WORKSPACE/skills"` 直接加载 `skills/forecast-edge`。研究产物先写入 private-fork 的逐次 Actions handoff artifact；该 artifact 只是同一轮内部的受控传输，不是正式发布。交易执行完成或被明确跳过前，不创建 Release、Issue 或飞书通知。它依赖：
 
 ```text
 automation/prompts/                 扫描与修复提示词

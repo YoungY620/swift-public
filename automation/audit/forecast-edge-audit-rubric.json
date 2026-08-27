@@ -1,8 +1,8 @@
 {
   "schema_version": "1.0",
-  "rubric_version": "1.12",
+  "rubric_version": "1.13",
   "rubric_id": "forecast-edge-production-audit",
-  "description": "Forecast Edge 父工作流完成后的研究、真实执行、发布和安全审计。缺少必要证据时不得判定通过。",
+  "description": "Forecast Edge 父工作流在发布后直接调用的研究、真实执行、发布和安全审计。缺少必要证据时不得判定通过。",
   "statuses": [
     "PASS",
     "WARN",
@@ -15,10 +15,10 @@
       "id": "CONTROL-001",
       "severity": "high",
       "title": "严重异常触发生产熔断",
-      "applies_when": "automatic workflow_run audit",
-      "expected": "只有明确的资金安全、订单保护、残留挂单或秘密泄露证据，或这些类别对应的 critical Judge FAIL，才关闭 live-trading 变量、设置持久 automation pause 并禁用父 workflow；研究/交接质量、人工取消、诊断缺失、Judge 超时、证据不足和 high/medium 问题只告警。手工历史回放默认不熔断。",
+      "applies_when": "parent-called production audit",
+      "expected": "只有明确的资金安全、订单保护、残留挂单或秘密泄露证据，或这些类别对应的 critical Judge FAIL，才关闭 live-trading 变量、设置持久 automation pause 并禁用父 workflow；研究/交接质量、人工取消、诊断缺失、Judge 超时、证据不足和 high/medium 问题只告警。",
       "evidence_required": ["source_contract.audit_circuit_breaker", "source_contract.persistent_pause_gate", "configuration"],
-      "pass_condition": "源码使用资金/订单/残留挂单/秘密泄露白名单；自动审计仅对这些明确安全异常执行三重熔断，研究质量、交接、人工取消、基础设施或证据不足只告警，手工回放只有显式启用后才允许熔断。"
+      "pass_condition": "源码使用资金/订单/残留挂单/秘密泄露白名单；父图调用的生产审计仅对这些明确安全异常执行三重熔断，研究质量、交接、人工取消、基础设施或证据不足只告警。"
     },
     {
       "id": "SCHED-001",
@@ -90,7 +90,7 @@
       "applies_when": "iteration research ran",
       "expected": "研究 manifest 和最终 manifest 的 trade-intents SHA-256 完全一致，执行回执绑定由该摘要和 run identity 派生的 execution id。",
       "evidence_required": ["release.manifest", "release.research_manifest", "release.execution_receipt"],
-      "pass_condition": "摘要一致；有执行时 execution_id 与 run_id/run_attempt/digest 的确定性计算一致。"
+      "pass_condition": "摘要一致；有执行时 execution_id 与 repository/run_id/digest 的确定性计算一致，run attempt 只区分租约所有者。"
     },
     {
       "id": "HANDOFF-002",
@@ -205,9 +205,9 @@
       "severity": "high",
       "title": "执行幂等且不重复成交",
       "applies_when": "execution receipt exists",
-      "expected": "execution_id 与 repository/run/attempt/digest 唯一绑定；回执没有重复 order_id、trade id 或 transaction hash。",
+      "expected": "execution_id 与 repository/run/digest 稳定绑定，run attempt 只区分租约所有者；任何旧的 IN_PROGRESS/UNCERTAIN 批次会阻止新批次；回执没有重复 order_id、trade id 或 transaction hash。",
       "evidence_required": ["run", "source_contract.execution_id_derivation", "release.manifest", "release.execution_receipt", "diagnostics.execution_identity", "diagnostics.ledger"],
-      "pass_condition": "source_contract 公开记录 SHA-256 输入契约，diagnostics.execution_identity.matches=true，且各标识符无重复；账本 run/order 状态与回执一致，且账本摘要不含签名原文。"
+      "pass_condition": "source_contract 公开记录 SHA-256 输入契约，diagnostics.execution_identity.matches=true，且各标识符无重复；共享账本拒绝在旧批次未解决时创建新批次，run/order 状态与回执一致，且账本摘要不含签名原文。"
     },
     {
       "id": "EXEC-011",
@@ -232,9 +232,9 @@
       "severity": "high",
       "title": "发布后审计并发送 Agent 简报",
       "applies_when": "release job ran",
-      "expected": "父 workflow 先完成 Release 和可选 Issue，不提前发送飞书；post-run workflow 在审计后由只读 Kimi Code Agent 阅读报告和模板生成扫描简报，最后发送飞书。未熔断卡片为绿色，触发或需要熔断时为红色。",
+      "expected": "父 workflow 先完成 Release 和可选 Issue，不提前发送飞书；随后直接调用 reusable audit，由只读 Kimi Code Agent 阅读报告和模板生成扫描简报，最后发送飞书。未熔断卡片为绿色，触发或需要熔断时为红色。",
       "evidence_required": ["source_contract.notification_order", "source_contract.final_iteration_notification", "jobs"],
-      "pass_condition": "两个源码合约成立，release job 成功；可选 Issue 被合法跳过不算异常。飞书投递发生在本 Judge 之后，只能由 post-run workflow 的最终通知 job 负责。"
+      "pass_condition": "两个源码合约成立，release job 成功；可选 Issue 被合法跳过不算异常。飞书投递发生在本 Judge 之后，只能由 reusable audit workflow 的最终通知 job 负责。"
     },
     {
       "id": "SEC-001",

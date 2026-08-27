@@ -134,6 +134,13 @@ class ExecutionDiagnosticTests(unittest.TestCase):
                     {
                         "intent_index": 1,
                         "state": "VERIFIED",
+                        "reconciliation_observation": json.dumps(
+                            {
+                                "order_id": "order-1",
+                                "order_status": "MATCHED",
+                                "matching_trades": [{"id": "trade-1"}],
+                            }
+                        ),
                         "signed_order": "must-never-be-exported",
                         "signed_order_digest": "c" * 64,
                         "receipt": json.dumps(receipt["receipts"][0]),
@@ -201,6 +208,12 @@ class ExecutionDiagnosticTests(unittest.TestCase):
         self.assertNotIn("must-never-be-exported", serialized_ledger)
         self.assertNotIn('"signed_order":', serialized_ledger)
         self.assertIn("signed_order_digest", serialized_ledger)
+        self.assertEqual(
+            ledger_snapshot["orders"][0]["reconciliation_observation"][
+                "matching_trades"
+            ][0]["id"],
+            "trade-1",
+        )
         all_bytes = b"".join(path.read_bytes() for path in output.iterdir() if path.is_file())
         self.assertNotIn(b"diagnostic-test-api-secret", all_bytes)
 
