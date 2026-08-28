@@ -463,7 +463,7 @@ def _wait_for_order_evidence(
         matching_failed = bool(matching) and all(
             str(trade.get("status", "")) == "FAILED" for trade in matching
         )
-        if matching_terminal and balances_ready:
+        if matching_terminal and balances_ready and not missing_trade_ids:
             transaction_hashes = tuple(
                 sorted(
                     {
@@ -484,6 +484,10 @@ def _wait_for_order_evidence(
                 transaction_hashes=transaction_hashes,
             )
         if time.monotonic() >= deadline:
+            if missing_trade_ids:
+                raise UncertainExecutionError(
+                    f"order {order_id} has account trades that are not visible yet"
+                )
             if terminal_without_fill or (
                 matching_failed and not balance_changed and not missing_trade_ids
             ):
@@ -493,10 +497,6 @@ def _wait_for_order_evidence(
                     before_token=before_token,
                     before_cash=before_cash,
                     order_id=order_id,
-                )
-            if matching_failed and missing_trade_ids:
-                raise UncertainExecutionError(
-                    f"order {order_id} has account trades that are not visible yet"
                 )
             if balance_changed or matching:
                 # Let the invariant checker produce the precise contradiction

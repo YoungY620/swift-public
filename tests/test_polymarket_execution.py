@@ -1022,6 +1022,24 @@ class IncompleteFailedTradeEvidenceAdapter(NoFillThenFillAdapter):
         )
 
 
+class CanceledWithUnseenAssociatedTradeAdapter(NoFillThenFillAdapter):
+    """A canceled order names a trade that the account-trades API has not exposed."""
+
+    def post_order(self, _signed_order):
+        self.post_count += 1
+        return AcceptedOrderFixture(True, f"order-{self.post_count}", ("trade-hidden",))
+
+    def order(self, order_id: str):
+        return {
+            "id": order_id,
+            "status": "CANCELED",
+            "associate_trades": ("trade-hidden",),
+        }
+
+    def account_trades(self, trade_ids=(), **_kwargs):
+        return ()
+
+
 class AcceptedNoFillThenFillAdapter(NoFillThenFillAdapter):
     """The CLOB accepts the first FOK and later proves it was not filled."""
 
@@ -1186,6 +1204,35 @@ class ExecuteNoFillTests(unittest.TestCase):
                 pre_execution_cancellation={"remaining_open_order_count": 0},
                 settlement_timeout_seconds=0,
             )
+        self.assertEqual(ledger.get(ledger.run_key)["state"], "UNCERTAIN")
+
+    def test_unseen_associated_trade_never_becomes_no_fill(self) -> None:
+        markets = {TOKEN: market(asks=(("0.50", "100"),), fee_rate="0")}
+        plan = self.buy_plan(markets)
+        ledger = ExecutionLedger(
+            path=Path(tempfile.mkdtemp()) / "ledger.sqlite3",
+            execution_id="execution-unseen-associated-trade",
+            lease_owner="runner-a",
+        )
+        claim = ledger.claim_run(
+            artifact_sha256="6" * 64,
+            planned_notional=Decimal("5"),
+            daily_notional_limit=Decimal("20"),
+        )
+        adapter = CanceledWithUnseenAssociatedTradeAdapter(markets)
+        with self.assertRaisesRegex(UncertainExecutionError, "not visible yet"):
+            execute_orders(
+                adapter=adapter,  # type: ignore[arg-type]
+                orders=plan.orders,
+                limits=RiskLimits(minimum_cash_reserve=Decimal("0"), max_price_deviation_bps=0),
+                ledger=ledger,
+                execution_id="execution-unseen-associated-trade",
+                execution_claim=claim,
+                planning={"source_intent_count": 1},
+                pre_execution_cancellation={"remaining_open_order_count": 0},
+                settlement_timeout_seconds=0,
+            )
+        self.assertEqual(adapter.post_count, 1)
         self.assertEqual(ledger.get(ledger.run_key)["state"], "UNCERTAIN")
 
 
