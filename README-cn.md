@@ -1,6 +1,6 @@
 # SWIFT
 
-**Simplest Workflow for Intent-based Forecast Trading**
+**Simple Workflow for Intent-based Forecast Trading**
 
 SWIFT 是一个面向预测市场的自动研究与交易 Agent，力求用小型、低成本、易理解的系统完成从信息搜集到真实执行的闭环。
 
