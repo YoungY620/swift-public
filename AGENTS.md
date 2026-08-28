@@ -5,6 +5,7 @@
 ## 零、项目事实与代码入口
 
 - SWIFT 是 venue-neutral 的长期预测市场研究与交易系统。研究核心只通过 `skills/forecast-edge/config/adapters.json` 注册的只读 adapter 访问市场；目前只内置 Polymarket。新增 venue 不得修改共享研究逻辑或交易意图 envelope。
+- 生产部署强烈建议使用私有 fork/私有仓库（当前为 `YoungY620/swift`），不要使用公开仓库部署。`YoungY620/swift-public` 仅是关闭 Actions 的只读代码镜像，不得连接 Secrets、Runner、EC2 或真实交易账户；没有私有 fork 时先停止并请求维护者准备，不要把公开仓库临时改成生产入口。
 - `.github/workflows/forecast-edge.yml` 是唯一的定时/手动父流程；`forecast-edge-research.yml`、`execute-polymarket.yml`、`forecast-edge-audit.yml` 是 reusable 子流程。本机不运行定时任务。
 - Research 用 `kimi --skills-dir "$GITHUB_WORKSPACE/skills"` 加载 `skills/forecast-edge/`。提示词和通知模板在 `automation/`，交易意图 Schema 在 `schemas/trade-intent.schema.json`，研究校验入口是 `scripts/validate_trade_intents.py` 与 `scripts/validate_research_iteration.py`。
 - 执行代码位于 `execution/`、`scripts/polymarket_execution.py` 和 `scripts/run_with_polymarket_secrets.py`；账户认证与凭据初始化规则见 `docs/polymarket-authentication.md`。
@@ -21,6 +22,7 @@
 
 ## 一、不可违反的边界
 
+- 生产 workflow、Secrets、Artifacts、诊断和 Release 只能位于私有 fork/私有仓库；公开镜像保持 Actions 关闭且永不承载生产配置或运行。
 - 使用 **Kimi Code Agent**（`@moonshot-ai/kimi-code` 及 workflow 固定版本），不是 Kimi CLI、普通 LLM HTTP 调用或一次性模型回答。
 - 父流程固定为：`gate → research → execution → release → audit → breaker/notify`。Research 和 audit 在 GitHub-hosted `ubuntu-latest`；真实交易只在长期 Ubuntu EC2 self-hosted runner。
 - Research 不连接 EC2，不创建 Release/Issue，不发 Feishu。交易意图只通过同一 parent run 的 SHA-256 绑定私有 Actions artifact 传递；execution 结束前不得公开报告、意图或交易结果。
@@ -69,7 +71,7 @@
 
    未登录时使用组织批准的设备登录或受控凭据注入；不要把 PAT 放在 URL、参数、脚本或日志中。
 
-2. 使用新目录从私有仓库的批准分支（通常 `main`）克隆；发现旧目录、旧 runner、`repo/` 或 `poly-edge-smoke/` 时只列清单，不复用或覆盖。需要保留的未提交修改先以不含秘密的 patch/bundle 备份到仓库外的 `0700` 目录。
+2. 使用新目录从私有 fork/私有仓库的批准分支（通常 `main`）克隆；确认远端不是 `swift-public`。发现旧目录、旧 runner、`repo/` 或 `poly-edge-smoke/` 时只列清单，不复用或覆盖。需要保留的未提交修改先以不含秘密的 patch/bundle 备份到仓库外的 `0700` 目录。
 
    ```bash
    git clone --single-branch --branch main \
