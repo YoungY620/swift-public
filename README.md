@@ -1,44 +1,48 @@
-# Poly-edge
+# SWIFT
 
-Poly-edge 是面向多预测市场的长期概率优势研究与交易意图生成项目。研究核心通过只读 venue adapter 获取市场数据，不默认绑定任何市场；当前注册表只内置 Polymarket adapter，后续可以在不修改共享研究流程或交易意图 envelope 的前提下增加其他市场。
+**Simple Workflow for Intent-based Forecast Trading**
 
-## 自动化入口
+SWIFT 是一个面向预测市场的自动研究与交易 Agent，以尽可能简单、低成本的方式完成从信息搜集到真实执行的闭环。
 
-- `.github/workflows/forecast-edge.yml`：定时/手动父流程，按 `gate → research → execution → release → audit → notify / breaker` 编排一轮运行。
-- `.github/workflows/forecast-edge-research.yml`：reusable 私有研究子图，只生成、校验并暂存报告与交易意图，不发布。
-- `.github/workflows/execute-polymarket.yml`：reusable 执行子图；仅在显式启用且交易配置齐全时消费私有交易意图。
-- `.github/workflows/forecast-edge-audit.yml`：父流程在 Release 之后直接调用的 reusable 审计子图；Kimi Code Judge 检查完整成果，随后发送最终飞书扫描简报，并在严重安全异常时阻止下一轮。未熔断卡片为绿色，触发或需要熔断时为红色。
+它自主检索公开信息，用概率图分解事件并估计最终结果概率，将该概率视为公允价格，再与市场的可成交价格比较。当价差足够显著且满足组合与风险约束时，SWIFT 会生成结构化交易意图，交由隔离的执行器复核并成交。
 
-研究子图在 GitHub 托管的 `ubuntu-latest` runner 上，通过 `kimi --skills-dir "$GITHUB_WORKSPACE/skills"` 直接加载 `skills/forecast-edge`。研究产物先写入 private-fork 的逐次 Actions handoff artifact；该 artifact 只是同一轮内部的受控传输，不是正式发布。交易执行完成或被明确跳过前，不创建 Release、Issue 或飞书通知。它依赖：
+除真实交易外，研究、校验、发布、审计和通知都运行在 GitHub Actions。交易私钥只保存在 EC2 的本地受限文件中，研究 Agent 无法读取；workflow 只向 EC2 传递经过摘要绑定的交易意图，从架构上降低凭据暴露风险。
 
-```text
-automation/prompts/                 扫描与修复提示词
-automation/templates/               通知模板
-automation/requirements-*.txt       workflow Python 依赖
-schemas/trade-intent.schema.json    交易意图协议
-scripts/validate_trade_intents.py   研究产物校验
-scripts/validate_research_iteration.py 多 venue 单轮交付校验
-skills/forecast-edge/               核心研究 Skill
+## 执行流程
+
+```mermaid
+flowchart LR
+    A[定时或手动触发] --> B[Gate]
+    B --> C[Research]
+    C --> D[校验交易意图]
+    D --> E[EC2 Execution]
+    E --> F[Release]
+    F --> G[Agent Audit]
+    G --> H[飞书通知]
+    G -->|严重安全异常| I[熔断下一轮]
 ```
 
-执行 workflow 直接运行在长期 Ubuntu EC2 的 Linux/X64 self-hosted runner 上，并依赖 `execution/`、`scripts/polymarket_execution.py`、`scripts/run_with_polymarket_secrets.py` 和对应 requirements。每次执行先取消账户全部未成交挂单，再使用有价格保护的 FOK 市价单立即成交。Polymarket 私钥与 CLOB credentials 只保存在 EC2 本地 mode-0600 文件中，不进入 GitHub Secrets；workflow 只交接交易意图与摘要。
+研究只生成并校验决策，不接触交易凭据；执行器在 EC2 上重新检查账户、盘口、价格保护和旧挂单。结果发布后，独立 Judge Agent 审计完整证据；每轮都会通知，只有明确的资金安全异常才熔断后续交易。
 
-Polymarket 的 Google/email、外部 wallet、legacy Proxy/Safe 与新 Deposit Wallet 认证映射、凭证初始化和 GitHub Environment 配置见 [docs/polymarket-authentication.md](docs/polymarket-authentication.md)。
+## 资源需求
 
-部署时必须显式配置 `FORECAST_EDGE_MARKET_ADAPTERS`，并通过同名 Actions Secret `FORECAST_EDGE_MARKET_ACCOUNTS_JSON` 为每个启用的 adapter 提供一个账户输入。账户名、profile URL 和钱包地址即使可公开查询，也属于操作者身份信息，不得写入代码、Repository Variable、日志或 public mirror。核心 workflow 不提供默认 venue，也不读取任何 venue 专属的兼容账户变量。
+只需一台长期运行、位于合规地区的 EC2 作为 GitHub self-hosted execution runner：
 
-每轮 research 必须生成并校验 `trade-intents.jsonl`；即使没有满足策略门槛的操作，也必须产出合法的零字节文件。只有通过统一 Schema、adapter 标识和账户快照校验的 JSONL 才能进入私有 handoff。研究与可选执行结束后，有条目的 JSONL 由父 workflow 发布；无条目轮次在最终 manifest 中保留空文件摘要和 `has_items=false`，不向拒绝零字节上传的 GitHub Release API 提交空 asset。
+- Ubuntu x86_64；
+- 1–2 vCPU、2 GiB 内存即可起步；
+- 16 GiB EBS 在实践中足够，建议 30 GiB 以预留日志、缓存和系统更新空间；
+- 可主动访问 GitHub、Polymarket 和依赖源。
 
-## 本机定时任务
+Research 使用 GitHub-hosted runner，不占用 EC2 计算资源。
 
-定时研究只通过私有 GitHub 仓库中的工作流运行，不依赖个人电脑上的本地定时任务。
+## 安装和用法
 
-## 验证
+准备私有 GitHub 仓库、上述 EC2、Kimi Code API Key、飞书机器人配置和可程序化签名的 Polymarket 账户，然后让 Coding Agent 阅读 [`AGENTS.md`](AGENTS.md)，按其中的部署与验收规则执行。
 
-```bash
-python3 -m unittest discover -s tests -p 'test_*.py'
-python3 -m unittest discover -s skills/forecast-edge/tests -p 'test_*.py'
-bash skills/forecast-edge/tests/test_cli.sh
-```
+账户类型、私钥恢复和 CLOB 凭据初始化见 [`docs/polymarket-authentication.md`](docs/polymarket-authentication.md)。启用真实交易前，请完成测试、runner、网络合规、凭据权限和端到端诊断验收。
 
-每条交易意图都显式包含 `venue`、`multi_market_identifier` 和 `instrument_identifier`；三者共同确定意图指向的 venue 原生标的。账户标识、凭据、聊天 ID 和私有报告必须通过运行时配置提供，不得写入仓库。真实下单仅由长期 EC2 上的 Polymarket 执行子图完成。
+> SWIFT 会操作真实资金。请自行确认所在地区、账户和使用方式符合适用条款与法律，并从严格限额开始。
+
+## 致谢
+
+参考与灵感来源：[issue_wong 的分享](https://x.com/issue_wong/status/2048222298197676286?s=20)。
