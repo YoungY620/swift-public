@@ -1,6 +1,6 @@
 # SWIFT
 
-**Simple Workflow for Intent-based Forecast Trading**
+**Simplest Workflow for Intent-based Forecast Trading**
 
 SWIFT is an automated research and trading agent for prediction markets. It is designed to complete the path from information gathering to real execution with a small, low-cost, understandable system.
 
